@@ -1,125 +1,124 @@
-# MyDAW - Logic Pro スタイル オーディオ録音・再生 DAW プロトタイプ (Mac / Apple Silicon)
+# MyDAW - Logic Pro-Style Audio Recording & Playback DAW Prototype (Mac / Apple Silicon)
 
-Apple Silicon (Mac) にネイティブ対応した、Logic Pro スタイルのマルチトラック・オーディオ録音・再生 DAW（Digital Audio Workstation）のプロトタイプです。
+A prototype of a Logic Pro-style multitrack audio recording and playback DAW (Digital Audio Workstation) with native support for Apple Silicon (Mac).
 
-Core Audio (AVAudioEngine / CoreAudio HAL) をバックエンドとし、24ビット 44.1kHz / 48kHz のディスク直書き（Direct-to-Disk）録音、無制限マルチトラック再生・ミキシング、リアルタイム波形描画、タイムライン・プレイヘッド制御を備えています。
-
----
-
-## 主な機能と仕様
-
-1. **オーディオ仕様**
-   - **サンプリングレート**: 44.1 kHz または 48.0 kHz（画面上部で即時切替可能）
-   - **量子化ビット数**: 24-bit Linear PCM WAV（業界標準フォーマット）
-   - **トラックフォーマット**: モノラル（1ch）/ ステレオ（2ch）対応
-2. **Direct-to-Disk（ディスク直書き録音）**
-   - メモリ圧迫を防ぎ、長時間の録音でも安定動作するよう、Core Audio の入力バッファからバックグラウンド I/O スレッド経由で即座に SSD/HDD（`Recordings/` フォルダ）へストリーミング保存されます。
-3. **Core Audio 入力チャンネル選択**
-   - 接続されているオーディオインターフェースや内蔵マイクの物理チャンネル（Input 1, Input 2, Input 3...）を検出。
-   - トラックごとに録音する入力チャンネルをドロップダウンメニューから個別に割り当て可能。
-4. **トラックモード（録音モード / 再生モード）**
-   - **録音モード (`[R]` ボタン ON / 赤点灯)**:
-     - 入力信号のリアルタイム・ピークレベルメーターが表示されます。
-     - スタート（Play/Record）すると、指定したチャンネルの音声を 24-bit WAV でディスクに録音しながら、波形をリアルタイムに右方向へ描画します。
-   - **再生モード (`[R]` ボタン OFF)**:
-     - 録音済みのオーディオファイルを指定位置から再生します。
-     - 全ての再生トラックの音声がミックス（Summing）され、マスター出力から同時に再生されます。
-5. **トランスポート制御**
-   - **スタート (`▶` Play)**: 録音・再生を開始 / 一時停止。
-   - **ストップ (`■` Stop)**: 録音ファイルを確定・保存し、全再生を停止。
-   - **リワインド (`|<<` Rewind)**: プレイヘッド位置をタイムラインの先頭（`00:00.000`）へ瞬時にリセット。
-   - **ルーラークリック**: タイムライン上の任意の位置をクリックすると、その位置へ瞬時にシーク。
-6. **トラック管理（無制限追加）**
-   - `+ Add Track` ボタンより、モノラルまたはステレオトラックを無制限に追加可能。
-   - トラック名編集、ミュート (`[M]`)、ソロ (`[S]`)、ボリュームフェーダー、パンポットを各トラックに装備。
-7. **波形表示 & プレイヘッド**
-   - Logic Pro スタイルのダークテーマ UI。
-   - 高速ピークキャッシングにより、長いオーディオも GPU 描画で軽快にスクロール・ズーム表示。
-   - 再生／録音と完全に同期する垂直プレイヘッドバー（オレンジ色）。
+It uses Core Audio (AVAudioEngine / CoreAudio HAL) as its backend and provides 24-bit 44.1 kHz / 48 kHz Direct-to-Disk recording, unlimited multitrack playback and mixing, real-time waveform rendering, and timeline/playhead control.
 
 ---
 
-## ディレクトリ構成
+## Main Features & Specifications
 
-```
+1. **Audio Specifications**
+   - **Sample Rate**: 44.1 kHz or 48.0 kHz (switchable instantly from the top of the screen)
+   - **Bit Depth**: 24-bit Linear PCM WAV (industry-standard format)
+   - **Track Format**: Mono (1ch) / Stereo (2ch)
+2. **Direct-to-Disk Recording**
+   - To prevent memory pressure and ensure stable operation during long recordings, audio is streamed immediately from the Core Audio input buffer to the SSD/HDD (the `Recordings/` folder) via a background I/O thread.
+3. **Core Audio Input Channel Selection**
+   - Detects the physical channels (Input 1, Input 2, Input 3...) of connected audio interfaces and built-in microphones.
+   - The input channel to be recorded can be individually assigned to each track from a drop-down menu.
+4. **Track Modes (Record Mode / Playback Mode)**
+   - **Record Mode (`[R]` button ON / lit red)**:
+     - Displays a real-time peak level meter for the input signal.
+     - When Start (Play/Record) is pressed, audio from the specified channel is recorded to disk as a 24-bit WAV file while the waveform is drawn in real time toward the right.
+   - **Playback Mode (`[R]` button OFF)**:
+     - Plays recorded audio files from the specified position.
+     - Audio from all playback tracks is mixed (summed) and played simultaneously through the master output.
+5. **Transport Controls**
+   - **Start (`▶` Play)**: Starts / pauses recording and playback.
+   - **Stop (`■` Stop)**: Finalizes and saves the recording file, then stops all playback.
+   - **Rewind (`|<<` Rewind)**: Instantly resets the playhead position to the beginning of the timeline (`00:00.000`).
+   - **Ruler Click**: Clicking anywhere on the timeline ruler instantly seeks to that position.
+6. **Track Management (Unlimited Tracks)**
+   - Add unlimited mono or stereo tracks using the `+ Add Track` button.
+   - Each track includes track-name editing, mute (`[M]`), solo (`[S]`), a volume fader, and a pan pot.
+7. **Waveform Display & Playhead**
+   - Logic Pro-style dark-theme UI.
+   - Fast peak caching enables smooth scrolling and zooming of long audio using GPU rendering.
+   - A vertical playhead bar (orange) fully synchronized with playback/recording.
+
+---
+
+## Directory Structure
+
+```text
 MyDAW/
-├── MyDAW.xcodeproj/          # Xcode プロジェクト（ダブルクリックで起動可能）
+├── MyDAW.xcodeproj/          # Xcode project (can be launched by double-clicking)
 │   └── project.pbxproj
-├── Package.swift             # Swift Package Manager 定義
-├── Info.plist                # アプリ設定 & マイクアクセス許可定義 (NSMicrophoneUsageDescription)
-├── MyDAW.entitlements        # macOS オーディオ入力・ファイルアクセス権限
+├── Package.swift             # Swift Package Manager definition
+├── Info.plist                # App settings & microphone access permission definition (NSMicrophoneUsageDescription)
+├── MyDAW.entitlements        # macOS audio input & file access permissions
 ├── Sources/
-│   ├── MyDAWApp.swift        # アプリケーション起動エントリーポイント (@main)
+│   ├── MyDAWApp.swift        # Application entry point (@main)
 │   ├── Models/
-│   │   ├── AudioTrack.swift  # トラックデータモデル (ID, 名前, R/M/S, ボリューム, パン等)
-│   │   ├── WaveformCache.swift # 高速ピーク計算 & リアルタイム波形キャッシュ
-│   │   └── ProjectState.swift # プロジェクト管理 (トラック追加/削除, ズーム, 選択)
+│   │   ├── AudioTrack.swift  # Track data model (ID, name, R/M/S, volume, pan, etc.)
+│   │   ├── WaveformCache.swift # Fast peak calculation & real-time waveform cache
+│   │   └── ProjectState.swift # Project management (add/delete tracks, zoom, selection)
 │   ├── Audio/
-│   │   ├── AudioEngineManager.swift # Core Audio エンジン (AVAudioEngine)
-│   │   ├── AudioDiskWriter.swift    # 24-bit WAV ディスク直書きストリーマー
-│   │   └── AudioDeviceManager.swift # Core Audio ハードウェアチャンネル列挙
+│   │   ├── AudioEngineManager.swift # Core Audio engine (AVAudioEngine)
+│   │   ├── AudioDiskWriter.swift    # 24-bit WAV Direct-to-Disk streamer
+│   │   └── AudioDeviceManager.swift # Core Audio hardware channel enumeration
 │   └── Views/
-│       ├── MainDAWView.swift        # 全体レイアウト & ステータスバー
-│       ├── TransportBarView.swift   # トランスポート操作 & LCD ディスプレイ
-│       ├── ArrangerView.swift       # アレンジ画面 (トラックヘッダー + タイムライン)
-│       ├── TrackHeaderView.swift    # トラック操作部 (R, M, S, 入力選択, メーター, フェーダー)
-│       ├── WaveformLaneView.swift   # トラック波形レーン
-│       └── WaveformCanvas.swift     # GPU (Metal) 加速波形レンダラー
+│       ├── MainDAWView.swift        # Overall layout & status bar
+│       ├── TransportBarView.swift   # Transport controls & LCD display
+│       ├── ArrangerView.swift       # Arranger view (track headers + timeline)
+│       ├── TrackHeaderView.swift    # Track controls (R, M, S, input selection, meter, fader)
+│       ├── WaveformLaneView.swift   # Track waveform lane
+│       └── WaveformCanvas.swift     # GPU (Metal)-accelerated waveform renderer
 ├── scripts/
-│   ├── build.sh              # コマンドラインからのワンクリックビルドスクリプト
-│   └── run.sh                # ビルド＆即時起動スクリプト
-└── Recordings/               # 録音された 24-bit WAV ファイルが保存されるフォルダ
+│   ├── build.sh              # One-click build script from the command line
+│   └── run.sh                # Build & launch script
+└── Recordings/               # Folder where recorded 24-bit WAV files are stored
 ```
 
 ---
 
-## ビルド＆実行方法
+## How to Build & Run
 
-お好みに応じて、**Xcode** または **ターミナル** からビルド・実行できます。
+You can build and run the application from either **Xcode** or the **Terminal**, depending on your preference.
 
-### 方法1: Xcode を使用する場合（推奨）
+### Method 1: Using Xcode (Recommended)
 
-1. Finder で `MyDAW.xcodeproj` をダブルクリックして Xcode で開きます。
-2. 画面上部のターゲットが `MyDAW`（My Mac）になっていることを確認します。
-3. `⌘R`（Product -> Run）を押すと、ビルドされて即座にアプリが起動します。
+1. Double-click `MyDAW.xcodeproj` in Finder to open it in Xcode.
+2. Confirm that the target at the top of the window is `MyDAW` (My Mac).
+3. Press `⌘R` (Product -> Run) to build and immediately launch the application.
 
-### 方法2: ターミナルからビルド＆実行する場合
+### Method 2: Build & Run from the Terminal
 
-プロジェクトのルートディレクトリで以下のスクリプトを実行します。
+Run the following script from the project's root directory.
 
 ```bash
-# ビルドして起動する
+# Build and launch
 ./scripts/run.sh
 ```
 
-または、ビルドのみを行う場合：
+Or, to build only:
 
 ```bash
 ./scripts/build.sh
-# 生成されたアプリを起動
+# Launch the generated application
 open build/MyDAW.app
 ```
 
 ---
 
-## 基本的な使い方
+## Basic Usage
 
-1. **初回起動時のマイク許可**:
-   - アプリ起動時、macOS から「"MyDAW" がマイクへのアクセスを求めています」というダイアログが表示されたら「OK」をクリックしてください。
-2. **トラックの録音待機 (Arm)**:
-   - 録音したいトラックの `[R]` ボタンをクリックして赤く点灯させます。
-   - `Input 1`, `Input 2` 等のドロップダウンから、インターフェースの入力チャンネルを選択します。
-   - マイクに向かって音を出すと、トラックヘッダー内のレベルメーターが緑〜黄に振れることを確認できます。
-3. **録音の開始**:
-   - 上部トランスポートバーの `▶`（Play）ボタンを押すか、キーボードの `Space` キーを押します。
-   - 録音が開始され、タイムライン上に入力波形がリアルタイムに伸びていきます。同時に、既に録音済みの他トラックがあれば自動で再生（モニター）されます。
-4. **録音の停止**:
-   - `■`（Stop）ボタンを押すか、`Space` キーを押します。
-   - 録音されたオーディオが 24-bit WAV として `Recordings/` フォルダに確定保存され、静的波形として描画されます。
-5. **リワインド & 全トラック再生**:
-   - `|<<`（Rewind）ボタンを押すと、再生カーソルが `00:00.000` に戻ります。
-   - トラックの `[R]` ボタンを押してオフにすると、そのトラックは「再生モード」になります。
-   - `▶`（Play）ボタンを押すと、録音されたすべてのトラックがミックスされてスピーカー／ヘッドフォンから再生されます。
-6. **トラックの追加・削除**:
-   - 上部の `+ Add Track` ボタンを押すと、ステレオまたはモノラルのトラックをいくつでも追加できます。
-
+1. **Microphone Permission on First Launch**:
+   - When macOS displays the dialog saying `"MyDAW" would like to access the microphone`, click **OK**.
+2. **Arm a Track for Recording**:
+   - Click the `[R]` button on the track you want to record so that it lights up red.
+   - Select the interface input channel from the drop-down menu, such as `Input 1` or `Input 2`.
+   - Make a sound into the microphone and confirm that the level meter in the track header moves from green to yellow.
+3. **Start Recording**:
+   - Press the `▶` (Play) button in the top transport bar, or press the `Space` key.
+   - Recording starts, and the input waveform extends in real time along the timeline. At the same time, any previously recorded tracks are automatically played back (monitored).
+4. **Stop Recording**:
+   - Press the `■` (Stop) button or the `Space` key.
+   - The recorded audio is finalized and saved as a 24-bit WAV file in the `Recordings/` folder and displayed as a static waveform.
+5. **Rewind & Play All Tracks**:
+   - Press the `|<<` (Rewind) button to return the playback cursor to `00:00.000`.
+   - Turn the track's `[R]` button off to put that track into "Playback Mode."
+   - Press the `▶` (Play) button to mix and play all recorded tracks through the speakers/headphones.
+6. **Add & Delete Tracks**:
+   - Press the `+ Add Track` button at the top to add as many stereo or mono tracks as needed.
