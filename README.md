@@ -4,7 +4,12 @@ A prototype of a Logic Pro-style multitrack audio recording and playback DAW (Di
 
 It uses Core Audio (AVAudioEngine / CoreAudio HAL) as its backend and provides 24-bit 44.1 kHz / 48 kHz Direct-to-Disk recording, unlimited multitrack playback and mixing, real-time waveform rendering, and timeline/playhead control.
 
----
+[NOTE]
+This project was automatically generated using AI (Copilot, Antigravity). Please refer to the article below for details.
+
+* [Japanese, original] https://note.com/tokada375/n/n750bfe9ef3f7
+* [English, translated] https://note.com/tokada375/n/n750bfe9ef3f7?hl=en
+
 
 ## Main Features & Specifications
 
