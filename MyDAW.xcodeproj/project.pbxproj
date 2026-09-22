@@ -1,0 +1,325 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		DAWB00010000000000000001 /* MyDAWApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00010000000000000001 /* MyDAWApp.swift */; };
+		DAWB00020000000000000001 /* AudioTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00020000000000000001 /* AudioTrack.swift */; };
+		DAWB00030000000000000001 /* WaveformCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00030000000000000001 /* WaveformCache.swift */; };
+		DAWB00040000000000000001 /* ProjectState.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00040000000000000001 /* ProjectState.swift */; };
+		DAWB00050000000000000001 /* AudioDiskWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00050000000000000001 /* AudioDiskWriter.swift */; };
+		DAWB00060000000000000001 /* AudioDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00060000000000000001 /* AudioDeviceManager.swift */; };
+		DAWB00070000000000000001 /* AudioEngineManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00070000000000000001 /* AudioEngineManager.swift */; };
+		DAWB00080000000000000001 /* MainDAWView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00080000000000000001 /* MainDAWView.swift */; };
+		DAWB00090000000000000001 /* TransportBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00090000000000000001 /* TransportBarView.swift */; };
+		DAWB00100000000000000001 /* ArrangerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00100000000000000001 /* ArrangerView.swift */; };
+		DAWB00110000000000000001 /* TrackHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00110000000000000001 /* TrackHeaderView.swift */; };
+		DAWB00120000000000000001 /* WaveformLaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00120000000000000001 /* WaveformLaneView.swift */; };
+		DAWB00130000000000000001 /* WaveformCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00130000000000000001 /* WaveformCanvas.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		DAW000070000000000000001 /* MyDAW.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyDAW.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DAWF00010000000000000001 /* MyDAWApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyDAWApp.swift; sourceTree = "<group>"; };
+		DAWF00020000000000000001 /* AudioTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioTrack.swift; sourceTree = "<group>"; };
+		DAWF00030000000000000001 /* WaveformCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformCache.swift; sourceTree = "<group>"; };
+		DAWF00040000000000000001 /* ProjectState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectState.swift; sourceTree = "<group>"; };
+		DAWF00050000000000000001 /* AudioDiskWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDiskWriter.swift; sourceTree = "<group>"; };
+		DAWF00060000000000000001 /* AudioDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceManager.swift; sourceTree = "<group>"; };
+		DAWF00070000000000000001 /* AudioEngineManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineManager.swift; sourceTree = "<group>"; };
+		DAWF00080000000000000001 /* MainDAWView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainDAWView.swift; sourceTree = "<group>"; };
+		DAWF00090000000000000001 /* TransportBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBarView.swift; sourceTree = "<group>"; };
+		DAWF00100000000000000001 /* ArrangerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrangerView.swift; sourceTree = "<group>"; };
+		DAWF00110000000000000001 /* TrackHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackHeaderView.swift; sourceTree = "<group>"; };
+		DAWF00120000000000000001 /* WaveformLaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformLaneView.swift; sourceTree = "<group>"; };
+		DAWF00130000000000000001 /* WaveformCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformCanvas.swift; sourceTree = "<group>"; };
+		DAWF00140000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		DAWF00150000000000000001 /* MyDAW.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyDAW.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DAW000110000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		DAW000030000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				DAW000040000000000000001 /* Sources */,
+				DAWF00140000000000000001 /* Info.plist */,
+				DAWF00150000000000000001 /* MyDAW.entitlements */,
+				DAW000060000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DAW000040000000000000001 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				DAWF00010000000000000001 /* MyDAWApp.swift */,
+				DAW000041000000000000001 /* Models */,
+				DAW000042000000000000001 /* Audio */,
+				DAW000043000000000000001 /* Views */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		DAW000041000000000000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				DAWF00020000000000000001 /* AudioTrack.swift */,
+				DAWF00030000000000000001 /* WaveformCache.swift */,
+				DAWF00040000000000000001 /* ProjectState.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		DAW000042000000000000001 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				DAWF00050000000000000001 /* AudioDiskWriter.swift */,
+				DAWF00060000000000000001 /* AudioDeviceManager.swift */,
+				DAWF00070000000000000001 /* AudioEngineManager.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		DAW000043000000000000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				DAWF00080000000000000001 /* MainDAWView.swift */,
+				DAWF00090000000000000001 /* TransportBarView.swift */,
+				DAWF00100000000000000001 /* ArrangerView.swift */,
+				DAWF00110000000000000001 /* TrackHeaderView.swift */,
+				DAWF00120000000000000001 /* WaveformLaneView.swift */,
+				DAWF00130000000000000001 /* WaveformCanvas.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		DAW000060000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				DAW000070000000000000001 /* MyDAW.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		DAW000020000000000000001 /* MyDAW */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DAW000090000000000000001 /* Build configuration list for PBXNativeTarget "MyDAW" */;
+			buildPhases = (
+				DAW000100000000000000001 /* Sources */,
+				DAW000110000000000000001 /* Frameworks */,
+				DAW000120000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MyDAW;
+			productName = MyDAW;
+			productReference = DAW000070000000000000001 /* MyDAW.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		DAW000010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					DAW000020000000000000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = DAW000080000000000000001 /* Build configuration list for PBXProject "MyDAW" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = DAW000030000000000000001;
+			productRefGroup = DAW000060000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DAW000020000000000000001 /* MyDAW */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DAW000120000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DAW000100000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DAWB00010000000000000001 /* MyDAWApp.swift in Sources */,
+				DAWB00020000000000000001 /* AudioTrack.swift in Sources */,
+				DAWB00030000000000000001 /* WaveformCache.swift in Sources */,
+				DAWB00040000000000000001 /* ProjectState.swift in Sources */,
+				DAWB00050000000000000001 /* AudioDiskWriter.swift in Sources */,
+				DAWB00060000000000000001 /* AudioDeviceManager.swift in Sources */,
+				DAWB00070000000000000001 /* AudioEngineManager.swift in Sources */,
+				DAWB00080000000000000001 /* MainDAWView.swift in Sources */,
+				DAWB00090000000000000001 /* TransportBarView.swift in Sources */,
+				DAWB00100000000000000001 /* ArrangerView.swift in Sources */,
+				DAWB00110000000000000001 /* TrackHeaderView.swift in Sources */,
+				DAWB00120000000000000001 /* WaveformLaneView.swift in Sources */,
+				DAWB00130000000000000001 /* WaveformCanvas.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		DAW000081000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "$(ARCHS_STANDARD)";
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		DAW000082000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "$(ARCHS_STANDARD)";
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		DAW000091000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MyDAW.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "MyDAW needs access to your audio input/microphone to record audio tracks in 24-bit direct to disk.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tokada.MyDAW;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		DAW000092000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MyDAW.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "MyDAW needs access to your audio input/microphone to record audio tracks in 24-bit direct to disk.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tokada.MyDAW;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		DAW000080000000000000001 /* Build configuration list for PBXProject "MyDAW" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DAW000081000000000000001 /* Debug */,
+				DAW000082000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DAW000090000000000000001 /* Build configuration list for PBXNativeTarget "MyDAW" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DAW000091000000000000001 /* Debug */,
+				DAW000092000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = DAW000010000000000000001 /* Project object */;
+}
+
