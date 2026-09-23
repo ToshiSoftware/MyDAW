@@ -66,6 +66,45 @@ public final class WaveformCache: ObservableObject {
         }
     }
 
+    public func appendLiveChannelPeaks(_ channelPoints: [[(min: Float, max: Float)]]) {
+        guard !channelPoints.isEmpty else { return }
+        let pointCount = channelPoints.map(\.count).max() ?? 0
+        var combinedPoints: [(min: Float, max: Float)] = []
+        combinedPoints.reserveCapacity(pointCount)
+        for index in 0..<pointCount {
+            var minimum: Float = 0.0
+            var maximum: Float = 0.0
+            for points in channelPoints where index < points.count {
+                minimum = min(minimum, points[index].min)
+                maximum = max(maximum, points[index].max)
+            }
+            combinedPoints.append((min: minimum, max: maximum))
+        }
+        if channelPeaks.count < channelPoints.count {
+            channelPeaks.append(contentsOf: Array(
+                repeating: [],
+                count: channelPoints.count - channelPeaks.count
+            ))
+        }
+        let startIndex = peaks.count
+        peaks.append(contentsOf: combinedPoints.enumerated().map { offset, point in
+            PeakPoint(
+                id: startIndex + offset,
+                min: Swift.max(-1.0, Swift.min(1.0, point.min)),
+                max: Swift.max(-1.0, Swift.min(1.0, point.max))
+            )
+        })
+        for channel in channelPoints.indices {
+            for (offset, point) in channelPoints[channel].enumerated() {
+                channelPeaks[channel].append(PeakPoint(
+                    id: startIndex + offset,
+                    min: Swift.max(-1.0, Swift.min(1.0, point.min)),
+                    max: Swift.max(-1.0, Swift.min(1.0, point.max))
+                ))
+            }
+        }
+    }
+
     public func loadPeaks(from url: URL, sampleRate: Double = 48000.0) {
         isLoading = true
         let targetSamplesPerPeak = self.samplesPerPeak

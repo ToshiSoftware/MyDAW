@@ -202,10 +202,13 @@ public struct ClipDocument: Codable {
     public let sourceStartTime: Double
     public let duration: Double
     public let originalDuration: Double
+    public let gainDB: Double
+    public let fadeInDuration: Double
+    public let fadeOutDuration: Double
     public let filePath: String
 
     private enum CodingKeys: String, CodingKey {
-        case id, startTime, sourceStartTime, duration, originalDuration, filePath
+        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, fadeInDuration, fadeOutDuration, filePath
     }
 
     public init(
@@ -214,6 +217,9 @@ public struct ClipDocument: Codable {
         sourceStartTime: Double,
         duration: Double,
         originalDuration: Double,
+        gainDB: Double = 0.0,
+        fadeInDuration: Double = 0.0,
+        fadeOutDuration: Double = 0.0,
         filePath: String
     ) {
         self.id = id
@@ -221,6 +227,9 @@ public struct ClipDocument: Codable {
         self.sourceStartTime = sourceStartTime
         self.duration = duration
         self.originalDuration = originalDuration
+        self.gainDB = min(24.0, max(-24.0, gainDB))
+        self.fadeInDuration = max(0.0, fadeInDuration)
+        self.fadeOutDuration = max(0.0, fadeOutDuration)
         self.filePath = filePath
     }
 
@@ -231,6 +240,9 @@ public struct ClipDocument: Codable {
         sourceStartTime = try values.decodeIfPresent(Double.self, forKey: .sourceStartTime) ?? 0.0
         duration = try values.decode(Double.self, forKey: .duration)
         originalDuration = try values.decodeIfPresent(Double.self, forKey: .originalDuration) ?? duration
+        gainDB = min(24.0, max(-24.0, try values.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0.0))
+        fadeInDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeInDuration) ?? 0.0)
+        fadeOutDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeOutDuration) ?? 0.0)
         filePath = try values.decode(String.self, forKey: .filePath)
     }
 }

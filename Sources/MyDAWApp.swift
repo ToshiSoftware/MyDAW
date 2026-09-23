@@ -20,7 +20,7 @@ struct MyDAWApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About MyDAW") {
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationVersion: "1.0"
+                        .applicationVersion: "1.1"
                     ])
                 }
             }

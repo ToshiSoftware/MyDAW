@@ -76,25 +76,6 @@ public struct TransportBarView: View {
                 .buttonStyle(PlainButtonStyle())
                 .help("Rewind to Beginning (00:00.000)")
 
-                // Stop (■)
-                Button(action: {
-                    audioEngine.stop(tracks: projectState.tracks)
-                }) {
-                    Image(systemName: "square.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(audioEngine.isPlaying ? .white : .white.opacity(0.6))
-                        .frame(width: 34, height: 28)
-                        .background(
-                            !audioEngine.isPlaying && !audioEngine.isRecording
-                                ? Color.white.opacity(0.2)
-                                : Color.white.opacity(0.12)
-                        )
-                        .cornerRadius(5)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .help("Stop Playback / Recording")
-
-                // Play (▶)
                 Button(action: {
                     audioEngine.startPlayOrRecord(
                         tracks: projectState.tracks,
@@ -189,6 +170,7 @@ public struct TransportBarView: View {
                 .toggleStyle(.button)
                 .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
                 .frame(width: 34, height: 28)
+                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
                 .help("Toggle Metronome Click")
 
                 Button(action: { showingBufferSettings = true }) {
@@ -518,10 +500,6 @@ private struct BufferSettingsView: View {
             }
             .pickerStyle(.menu)
 
-            Text("Estimated recording latency: \(String(format: "%.1f", audioEngine.estimatedRecordingLatencyMs)) ms")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
             HStack {
                 Text("Additional recording compensation")
                 TextField("0", text: $recordingCompensationText)
@@ -587,8 +565,10 @@ private struct BufferSettingsView: View {
                             outputDeviceID: selectedOutputDeviceID
                         )
                         if applied {
-                            deviceManager.selectedInputDeviceID = selectedInputDeviceID
-                            deviceManager.selectedOutputDeviceID = selectedOutputDeviceID
+                            deviceManager.setSelectedDeviceIDs(
+                                input: selectedInputDeviceID,
+                                output: selectedOutputDeviceID
+                            )
                         }
                     }
                     if bufferChanged,

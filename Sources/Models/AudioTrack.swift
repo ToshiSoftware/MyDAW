@@ -89,6 +89,10 @@ public final class AudioTrack: Identifiable, ObservableObject {
         clips.last?.appendLivePeaks(points)
     }
 
+    public func appendLiveChannelPeaks(_ channelPoints: [[(min: Float, max: Float)]]) {
+        clips.last?.appendLiveChannelPeaks(channelPoints)
+    }
+
     public func moveClip(id: UUID, to startTime: Double) {
         clips.first(where: { $0.id == id })?.startTime = max(0.0, startTime)
     }
@@ -128,6 +132,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
             sourceStartTime: source.sourceStartTime + splitOffset,
             duration: source.duration - splitOffset
         )
+        rightClip.setGainDB(source.gainDB)
         source.setTrim(
             startTime: source.startTime,
             sourceStartTime: source.sourceStartTime,

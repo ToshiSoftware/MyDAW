@@ -9,6 +9,8 @@ public struct WaveformCanvas: View {
     public let visibleDuration: Double?
     public let channelIndex: Int?
     public let verticalScale: CGFloat
+    public let fadeInDuration: Double
+    public let fadeOutDuration: Double
 
     public init(
         waveformCache: WaveformCache,
@@ -18,7 +20,9 @@ public struct WaveformCanvas: View {
         sampleOffset: Double = 0.0,
         visibleDuration: Double? = nil,
         channelIndex: Int? = nil,
-        verticalScale: CGFloat = 1.0
+        verticalScale: CGFloat = 1.0,
+        fadeInDuration: Double = 0.0,
+        fadeOutDuration: Double = 0.0
     ) {
         self.waveformCache = waveformCache
         self.trackColor = trackColor
@@ -28,6 +32,8 @@ public struct WaveformCanvas: View {
         self.visibleDuration = visibleDuration
         self.channelIndex = channelIndex
         self.verticalScale = verticalScale
+        self.fadeInDuration = max(0.0, fadeInDuration)
+        self.fadeOutDuration = max(0.0, fadeOutDuration)
     }
 
     public var body: some View {
@@ -98,6 +104,21 @@ public struct WaveformCanvas: View {
 
             // Crisp stroke contour
             context.stroke(topPath, with: .color(trackColor.opacity(0.95)), lineWidth: 1.0)
+
+            let fadeInX = min(size.width, CGFloat(fadeInDuration * Double(pixelsPerSecond)))
+            let fadeOutX = max(0.0, size.width - CGFloat(fadeOutDuration * Double(pixelsPerSecond)))
+            if fadeInDuration > 0.0 {
+                var fadeInPath = Path()
+                fadeInPath.move(to: CGPoint(x: 0.0, y: size.height))
+                fadeInPath.addLine(to: CGPoint(x: fadeInX, y: 0.0))
+                context.stroke(fadeInPath, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
+            }
+            if fadeOutDuration > 0.0 {
+                var fadeOutPath = Path()
+                fadeOutPath.move(to: CGPoint(x: fadeOutX, y: 0.0))
+                fadeOutPath.addLine(to: CGPoint(x: size.width, y: size.height))
+                context.stroke(fadeOutPath, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
+            }
         }
     }
 }

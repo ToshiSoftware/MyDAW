@@ -107,10 +107,14 @@ private struct AudioClipView: View {
     @ObservedObject var clip: AudioClip
     @ObservedObject var track: AudioTrack
     @ObservedObject var projectState: ProjectState
-    @State private var dragPointerOffset: CGFloat?
+    @State private var dragStartTime: Double?
+    @State private var dragStartLocationX: CGFloat?
     @State private var resizeStartTime: Double?
     @State private var resizeSourceStartTime: Double?
     @State private var resizeDuration: Double?
+    @State private var gainStartDB: Double?
+    @State private var fadeInStartDuration: Double?
+    @State private var fadeOutStartDuration: Double?
     let height: CGFloat
 
     init(clip: AudioClip, track: AudioTrack, projectState: ProjectState, height: CGFloat) {
@@ -121,11 +125,14 @@ private struct AudioClipView: View {
     }
 
     var body: some View {
-        let isActiveClip = clip.id == track.clips.last?.id && projectState.audioEngine.isRecording
+        let isActiveClip = track.isRecordArmed &&
+            clip.id == track.clips.last?.id &&
+            projectState.audioEngine.isRecording
         let liveDuration = max(0.0, projectState.audioEngine.currentTime - clip.startTime)
         let displayDuration = max(clip.duration, isActiveClip ? liveDuration : 0.0)
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipId == clip.id
+        let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
 
         if !clip.waveformCache.peaks.isEmpty || isActiveClip {
             Group {
@@ -134,33 +141,39 @@ private struct AudioClipView: View {
                         WaveformCanvas(
                             waveformCache: clip.waveformCache,
                             trackColor: track.color,
-                            sampleRate: projectState.audioEngine.hardwareSampleRate,
+                            sampleRate: clip.sampleRate,
                             pixelsPerSecond: projectState.pixelsPerSecond,
                             sampleOffset: clip.sourceStartTime,
                             visibleDuration: displayDuration,
                             channelIndex: 0,
-                            verticalScale: projectState.waveformVerticalScale
+                            verticalScale: projectState.waveformVerticalScale * clipGainScale,
+                            fadeInDuration: clip.fadeInDuration,
+                            fadeOutDuration: clip.fadeOutDuration
                         )
                         WaveformCanvas(
                             waveformCache: clip.waveformCache,
                             trackColor: track.color,
-                            sampleRate: projectState.audioEngine.hardwareSampleRate,
+                            sampleRate: clip.sampleRate,
                             pixelsPerSecond: projectState.pixelsPerSecond,
                             sampleOffset: clip.sourceStartTime,
                             visibleDuration: displayDuration,
                             channelIndex: 1,
-                            verticalScale: projectState.waveformVerticalScale
+                            verticalScale: projectState.waveformVerticalScale * clipGainScale,
+                            fadeInDuration: clip.fadeInDuration,
+                            fadeOutDuration: clip.fadeOutDuration
                         )
                     }
                 } else {
                     WaveformCanvas(
                         waveformCache: clip.waveformCache,
                         trackColor: track.color,
-                        sampleRate: projectState.audioEngine.hardwareSampleRate,
+                        sampleRate: clip.sampleRate,
                         pixelsPerSecond: projectState.pixelsPerSecond,
                         sampleOffset: clip.sourceStartTime,
                         visibleDuration: displayDuration
-                        , verticalScale: projectState.waveformVerticalScale
+                        , verticalScale: projectState.waveformVerticalScale * clipGainScale,
+                        fadeInDuration: clip.fadeInDuration,
+                        fadeOutDuration: clip.fadeOutDuration
                     )
                 }
             }
@@ -178,27 +191,44 @@ private struct AudioClipView: View {
                 trimHandle
                     .gesture(rightTrimGesture)
             }
+            .overlay(alignment: .top) {
+                gainHandle
+                    .gesture(gainGesture)
+            }
+            .overlay(alignment: .topLeading) {
+                fadeInHandle
+                    .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond - 5.0, y: -5.0)
+                    .gesture(fadeInGesture)
+            }
+            .overlay(alignment: .topTrailing) {
+                fadeOutHandle
+                    .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond + 5.0, y: -5.0)
+                    .gesture(fadeOutGesture)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 3))
             .contentShape(Rectangle())
             .gesture(
                     DragGesture(coordinateSpace: .named("timeline"))
                     .onChanged { value in
                             let pixelsPerSecond = projectState.pixelsPerSecond
-                            if dragPointerOffset == nil {
+                            if dragStartTime == nil {
                                 projectState.beginClipEdit()
-                                let clipStartX = CGFloat(clip.startTime) * pixelsPerSecond
-                                dragPointerOffset = value.location.x - clipStartX
-                            projectState.selectClip(trackId: track.id, clipId: clip.id)
-                        }
-                            let pointerOffset = dragPointerOffset ?? 0.0
-                            let rawStartTime = Double((value.location.x - pointerOffset) / pixelsPerSecond)
+                                dragStartTime = clip.startTime
+                        dragStartLocationX = value.location.x
+                                projectState.selectClip(trackId: track.id, clipId: clip.id)
+                            }
+                            let initialStartTime = dragStartTime ?? clip.startTime
+                        let initialLocationX = dragStartLocationX ?? value.location.x
+                        let horizontalDelta = value.location.x - initialLocationX
+                        let rawStartTime = initialStartTime + Double(horizontalDelta / pixelsPerSecond)
                             let newStartTime = projectState.snappedTimelineTime(rawStartTime)
                             track.moveClip(id: clip.id, to: newStartTime)
                     }
                     .onEnded { _ in
-                            dragPointerOffset = nil
-                        projectState.endClipEdit()
-                        projectState.audioEngine.syncTracks(projectState.tracks)
+                            dragStartTime = nil
+                        dragStartLocationX = nil
+                            projectState.endClipEdit()
+                            projectState.audioEngine.syncTracks(projectState.tracks)
                     }
             )
             .onTapGesture {
@@ -241,6 +271,90 @@ private struct AudioClipView: View {
             .frame(width: 4, height: 34)
             .padding(.horizontal, 3)
             .contentShape(Rectangle().size(width: 16, height: 80))
+    }
+
+    private var gainHandle: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.95))
+            .frame(width: 34, height: 5)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle().size(width: 56, height: 24))
+    }
+
+    private var fadeInHandle: some View {
+        Circle()
+            .fill(Color.white.opacity(0.95))
+            .frame(width: 10, height: 10)
+            .shadow(color: .black.opacity(0.5), radius: 2)
+            .contentShape(Rectangle().size(width: 18, height: 24))
+    }
+
+    private var fadeOutHandle: some View {
+        Circle()
+            .fill(Color.white.opacity(0.95))
+            .frame(width: 10, height: 10)
+            .shadow(color: .black.opacity(0.5), radius: 2)
+            .contentShape(Rectangle().size(width: 18, height: 24))
+    }
+
+    private var gainGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if gainStartDB == nil {
+                    projectState.beginClipEdit()
+                    gainStartDB = clip.gainDB
+                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                }
+                let sensitivity = 24.0 / 80.0
+                clip.setGainDB((gainStartDB ?? clip.gainDB) - Double(value.translation.height) * sensitivity)
+            }
+            .onEnded { _ in
+                gainStartDB = nil
+                projectState.endClipEdit()
+                projectState.audioEngine.syncTracks(projectState.tracks)
+            }
+    }
+
+    private var fadeInGesture: some Gesture {
+        DragGesture(coordinateSpace: .named("timeline"))
+            .onChanged { value in
+                if fadeInStartDuration == nil {
+                    projectState.beginClipEdit()
+                    fadeInStartDuration = clip.fadeInDuration
+                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                }
+                let initial = fadeInStartDuration ?? clip.fadeInDuration
+                let duration = min(
+                    clip.duration,
+                    max(0.0, initial + Double(value.translation.width / projectState.pixelsPerSecond))
+                )
+                clip.setFadeInDuration(duration)
+            }
+            .onEnded { _ in
+                fadeInStartDuration = nil
+                projectState.endClipEdit()
+            }
+    }
+
+    private var fadeOutGesture: some Gesture {
+        DragGesture(coordinateSpace: .named("timeline"))
+            .onChanged { value in
+                if fadeOutStartDuration == nil {
+                    projectState.beginClipEdit()
+                    fadeOutStartDuration = clip.fadeOutDuration
+                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                }
+                let initial = fadeOutStartDuration ?? clip.fadeOutDuration
+                let duration = min(
+                    clip.duration,
+                    max(0.0, initial - Double(value.translation.width / projectState.pixelsPerSecond))
+                )
+                clip.setFadeOutDuration(duration)
+            }
+            .onEnded { _ in
+                fadeOutStartDuration = nil
+                projectState.endClipEdit()
+            }
     }
 
     private var leftTrimGesture: some Gesture {
@@ -311,6 +425,9 @@ private struct AudioClipView: View {
         resizeStartTime = nil
         resizeSourceStartTime = nil
         resizeDuration = nil
+        gainStartDB = nil
+        fadeInStartDuration = nil
+        fadeOutStartDuration = nil
     }
 }
 

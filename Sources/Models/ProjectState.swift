@@ -13,6 +13,9 @@ public final class ProjectState: ObservableObject {
         let sourceStartTime: Double
         let duration: Double
         let originalDuration: Double
+        let gainDB: Double
+        let fadeInDuration: Double
+        let fadeOutDuration: Double
         let fileURL: URL
     }
 
@@ -91,6 +94,13 @@ public final class ProjectState: ObservableObject {
         self.deviceManager = deviceManager ?? AudioDeviceManager()
         self.pluginManager = pluginManager ?? PluginManager()
 
+        if self.audioEngine.applyAudioDevices(
+            inputDeviceID: self.deviceManager.selectedInputDeviceID,
+            outputDeviceID: self.deviceManager.selectedOutputDeviceID
+        ) {
+            self.deviceManager.persistSelectedDevices()
+        }
+
         if audioEngine == nil {
             self.audioEngine.applyInputBufferFrameSize(self.deviceManager.bufferFrameSize)
         }
@@ -112,6 +122,9 @@ public final class ProjectState: ObservableObject {
                         sourceStartTime: clip.sourceStartTime,
                         duration: clip.duration,
                         originalDuration: clip.originalDuration,
+                        gainDB: clip.gainDB,
+                        fadeInDuration: clip.fadeInDuration,
+                        fadeOutDuration: clip.fadeOutDuration,
                         fileURL: clip.fileURL
                     )
                 }
@@ -156,6 +169,9 @@ public final class ProjectState: ObservableObject {
                     sourceStartTime: item.sourceStartTime,
                     duration: item.duration
                 )
+                clip.setGainDB(item.gainDB)
+                clip.setFadeInDuration(item.fadeInDuration)
+                clip.setFadeOutDuration(item.fadeOutDuration)
                 return clip
             }
             track.replaceClips(restoredClips)
@@ -191,7 +207,7 @@ public final class ProjectState: ObservableObject {
                       let userInfo = notif.userInfo,
                       let peaks = userInfo["peaks"] as? [Float] else { return }
 
-                let liveWaveforms = userInfo["liveWaveforms"] as? [UUID: [(min: Float, max: Float)]] ?? [:]
+                let liveChannelWaveforms = userInfo["liveChannelWaveforms"] as? [UUID: [[(min: Float, max: Float)]]] ?? [:]
                 let outputPeaks = userInfo["outputPeaks"] as? [UUID: Float] ?? [:]
 
                 // Update track input peak meters
@@ -215,8 +231,8 @@ public final class ProjectState: ObservableObject {
                     track.currentOutputPeak = max(outputPeak, track.currentOutputPeak * 0.82)
 
                     // Append live waveform points if recording
-                    if let points = liveWaveforms[track.id], !points.isEmpty {
-                        track.appendLivePeaks(points)
+                    if let channelPoints = liveChannelWaveforms[track.id], !channelPoints.isEmpty {
+                        track.appendLiveChannelPeaks(channelPoints)
                     }
                 }
             }
@@ -556,6 +572,9 @@ public final class ProjectState: ObservableObject {
                             sourceStartTime: clip.sourceStartTime,
                             duration: clip.duration,
                             originalDuration: clip.originalDuration,
+                            gainDB: clip.gainDB,
+                            fadeInDuration: clip.fadeInDuration,
+                            fadeOutDuration: clip.fadeOutDuration,
                             filePath: clip.fileURL.path
                         )
                     },
@@ -624,6 +643,9 @@ public final class ProjectState: ObservableObject {
                         sourceStartTime: clipDocument.sourceStartTime,
                         duration: clipDocument.duration
                     )
+                    clip.setGainDB(clipDocument.gainDB)
+                    clip.setFadeInDuration(clipDocument.fadeInDuration)
+                    clip.setFadeOutDuration(clipDocument.fadeOutDuration)
                 }
                 track.selectedClipId = trackDocument.selectedClipId
                 restoredTracks.append(track)

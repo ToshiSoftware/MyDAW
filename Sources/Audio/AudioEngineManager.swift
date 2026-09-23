@@ -84,6 +84,10 @@ public final class AudioEngineManager: ObservableObject {
     @Published public var isAudioInputActive: Bool = false
     @Published public var inputBufferFrameSize: Int = 1024
     @Published public private(set) var estimatedRecordingLatencyMs: Double = 0.0
+    @Published public private(set) var inputDeviceLatencyFrames: UInt32 = 0
+    @Published public private(set) var outputDeviceLatencyFrames: UInt32 = 0
+    @Published public private(set) var inputSafetyOffsetFrames: UInt32 = 0
+    @Published public private(set) var outputSafetyOffsetFrames: UInt32 = 0
     @Published public var manualRecordingCompensationMs: Double = 0.0 {
         didSet {
             guard manualRecordingCompensationMs.isFinite else {
@@ -101,7 +105,9 @@ public final class AudioEngineManager: ObservableObject {
 
     // Player node and file mapping per track ID
     private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
+    private var clipPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
     private var sendPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
+    private var sendClipPlayerNodes: [String: AVAudioPlayerNode] = [:]
     private var trackMeterTaps: Set<UUID> = []
     private var trackOutputNodes: [UUID: AVAudioMixerNode] = [:]
     private var audioFiles: [UUID: [(clip: AudioClip, file: AVAudioFile)]] = [:]
@@ -147,17 +153,23 @@ public final class AudioEngineManager: ObservableObject {
     private var captureConfigs: [TrackCaptureConfig] = []
     private var writersSnapshot: [UUID: AudioDiskWriter] = [:]
     private var recordingActiveState: Bool = false
+    private let recordingTimingLock = NSLock()
+    private var recordingTimelineStart: Double = 0.0
+    private var recordingTransportStartHostTime: UInt64?
+    private var pendingRecordingClipStartTime: Double?
+    private var hasLoggedFirstRecordingInput = false
 
     // Realtime channel peak levels written by audio thread, read by 60Hz UI timer
     private let peakLock = NSLock()
     private var rawChannelPeaks: [Float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     private var masterOutputPeak: Float = 0.0
     private var trackOutputPeaks: [UUID: Float] = [:]
-    private var liveWaveformPeaksBuffer: [UUID: [(min: Float, max: Float)]] = [:]
+    private var liveWaveformPeaksBuffer: [UUID: [[(min: Float, max: Float)]]] = [:]
 
     // Timers
     private var playheadTimer: Timer?
     private var playheadStartTime: Date?
+    private var playheadStartHostTime: UInt64?
     private var playheadStartOffset: Double = 0.0
 
     private var meterTimer: Timer?
@@ -167,10 +179,19 @@ public final class AudioEngineManager: ObservableObject {
     private var accentClickBuffer: AVAudioPCMBuffer?
     private var engineWarmupNode: AVAudioPlayerNode?
     private var engineWarmupBuffer: AVAudioPCMBuffer?
-    private var metronomeTimer: Timer?
     private var metronomeBeat: Int = 0
+    private var metronomeNextSampleTime: AVAudioFramePosition = 0
+    private var metronomeIntervalFrames: AVAudioFramePosition = 0
+    private var metronomeGeneration = 0
     private var playbackRetryTask: Task<Void, Never>?
     private var recordingFinalizationTask: Task<Void, Never>?
+
+    private var masterPluginLatency: Double {
+        masterPluginNodes
+            .compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }
+            .filter { $0.isFinite && $0 > 0.0 }
+            .reduce(0.0, +)
+    }
 
     public init() {
         self.recordingsDirectory = Self.resolveRecordingsDirectory()
@@ -256,7 +277,11 @@ public final class AudioEngineManager: ObservableObject {
         mixer.outputVolume = 1.0
 
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let inputOutputFormat = inputNode.outputFormat(forBus: 0)
+        let inputBusFormat = inputNode.inputFormat(forBus: 0)
+        let inputFormat = inputBusFormat.channelCount >= inputOutputFormat.channelCount
+            ? inputBusFormat
+            : inputOutputFormat
         let hwChannels = max(1, Int(inputFormat.channelCount))
         self.inputHardwareChannels = hwChannels
 
@@ -316,15 +341,20 @@ public final class AudioEngineManager: ObservableObject {
         // Install tap BEFORE engine.start()
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
-            self?.processInputAudioBuffer(buffer: buffer)
+            self?.processInputAudioBuffer(buffer: buffer, time: time)
         }
 
         do {
             try engine.start()
             self.isAudioInputActive = true
+            updateHardwareLatencyInfo()
             updateEstimatedRecordingLatency()
             warmUpAudioRenderPath(format: clickFormat)
-            print("AVAudioEngine started. Input format: \(inputFormat). Hardware SR: \(hwSampleRate) Hz")
+                print(
+                    "AVAudioEngine started. Input format: \(inputFormat). " +
+                        "Output format: \(inputOutputFormat). Input bus format: \(inputBusFormat). " +
+                        "Hardware SR: \(hwSampleRate) Hz"
+                )
         } catch {
             print("Failed to start AVAudioEngine: \(error)")
             self.isAudioInputActive = false
@@ -510,10 +540,67 @@ public final class AudioEngineManager: ObservableObject {
         estimatedRecordingLatencyMs = (inputLatency + outputLatency + bufferLatency) * 1000.0
     }
 
+    private func updateHardwareLatencyInfo() {
+        inputDeviceLatencyFrames = readDeviceFrameProperty(
+            kAudioDevicePropertyLatency,
+            deviceID: selectedInputDeviceID,
+            scope: kAudioDevicePropertyScopeInput
+        )
+        outputDeviceLatencyFrames = readDeviceFrameProperty(
+            kAudioDevicePropertyLatency,
+            deviceID: selectedOutputDeviceID,
+            scope: kAudioDevicePropertyScopeOutput
+        )
+        inputSafetyOffsetFrames = readDeviceFrameProperty(
+            kAudioDevicePropertySafetyOffset,
+            deviceID: selectedInputDeviceID,
+            scope: kAudioDevicePropertyScopeInput
+        )
+        outputSafetyOffsetFrames = readDeviceFrameProperty(
+            kAudioDevicePropertySafetyOffset,
+            deviceID: selectedOutputDeviceID,
+            scope: kAudioDevicePropertyScopeOutput
+        )
+    }
+
+    private func readDeviceFrameProperty(
+        _ selector: AudioObjectPropertySelector,
+        deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope
+    ) -> UInt32 {
+        guard deviceID != 0 else { return 0 }
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        )
+        return status == noErr ? value : 0
+    }
+
+    public func applyAutomaticTimingCompensation() {
+        updateEstimatedRecordingLatency()
+        manualRecordingCompensationMs = 0.0
+        metronomeTimingOffsetMs = 0.0
+    }
+
     private var recordingLatencyCompensation: Double {
         let totalMilliseconds = estimatedRecordingLatencyMs + manualRecordingCompensationMs
         guard totalMilliseconds.isFinite else { return 0.0 }
         return min(5.0, max(-5.0, totalMilliseconds / 1000.0))
+    }
+
+    private var recordingPlacementCompensation: Double {
+        recordingLatencyCompensation + masterPluginLatency
     }
 
     private static func makeClickBuffer(
@@ -551,12 +638,12 @@ public final class AudioEngineManager: ObservableObject {
         return buffer
     }
 
-    private func startMetronome() {
+    private func startMetronome(at sharedStartTime: AVAudioTime? = nil) {
         stopMetronome()
         guard metronomeEnabled,
               let clickNode,
-              clickBuffer != nil,
-              accentClickBuffer != nil else { return }
+              let clickBuffer,
+              let accentClickBuffer else { return }
 
         let interval = 60.0 / max(20.0, min(400.0, bpm))
         let beatPosition = currentTime / interval
@@ -565,50 +652,45 @@ public final class AudioEngineManager: ObservableObject {
         let nextBeatPosition = isOnBeat ? nearestBeat : ceil(beatPosition)
         let timingOffset = metronomeTimingOffsetMs / 1000.0
         let delay = max(0.0, (nextBeatPosition * interval) - currentTime + timingOffset)
+        let transportStartTime = sharedStartTime ?? AVAudioTime(
+            hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
+        )
         metronomeBeat = Int(nextBeatPosition) % 4
-        clickNode.play()
+        metronomeGeneration += 1
+        let generation = metronomeGeneration
 
-        metronomeTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let clickNode = self.clickNode,
-                      let clickBuffer = self.clickBuffer,
-                      let accentClickBuffer = self.accentClickBuffer else { return }
-                let buffer = self.metronomeBeat == 0 ? accentClickBuffer : clickBuffer
-                self.fireClick(buffer: buffer, node: clickNode)
-                self.metronomeBeat = (self.metronomeBeat + 1) % 4
-                self.scheduleMetronomeRepeats(interval: interval)
+        let beatCount = 256
+        for beatIndex in 0..<beatCount {
+            let buffer = ((metronomeBeat + beatIndex) % 4 == 0) ? accentClickBuffer : clickBuffer
+            let offset = delay + Double(beatIndex) * interval
+            let hostTime = transportStartTime.hostTime + AudioConvertNanosToHostTime(
+                UInt64(max(0.0, offset) * 1_000_000_000.0)
+            )
+            let clickTime = AVAudioTime(hostTime: hostTime)
+            if beatIndex == beatCount - 1 {
+                clickNode.scheduleBuffer(buffer, at: clickTime, options: []) { [weak self] in
+                    Task<Void, Never> { @MainActor [weak self] in
+                        guard let self,
+                              generation == self.metronomeGeneration,
+                              self.isPlaying || self.isRecording else { return }
+                        self.startMetronome()
+                    }
+                }
+            } else {
+                clickNode.scheduleBuffer(buffer, at: clickTime, options: [])
             }
         }
-    }
-
-    private func scheduleMetronomeRepeats(interval: TimeInterval) {
-        metronomeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let clickNode = self.clickNode,
-                      let clickBuffer = self.clickBuffer,
-                      let accentClickBuffer = self.accentClickBuffer else { return }
-                let buffer = self.metronomeBeat == 0 ? accentClickBuffer : clickBuffer
-                self.fireClick(buffer: buffer, node: clickNode)
-                self.metronomeBeat = (self.metronomeBeat + 1) % 4
-            }
-        }
-    }
-
-    private func fireClick(buffer: AVAudioPCMBuffer, node: AVAudioPlayerNode) {
-        node.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        clickNode.play(at: transportStartTime)
     }
 
     private func stopMetronome() {
-        metronomeTimer?.invalidate()
-        metronomeTimer = nil
+        metronomeGeneration += 1
         clickNode?.stop()
     }
 
     // MARK: - Real-time Input Processing (Audio Thread)
 
-    private func processInputAudioBuffer(buffer: AVAudioPCMBuffer) {
+    private func processInputAudioBuffer(buffer: AVAudioPCMBuffer, time: AVAudioTime) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
         if frameLength == 0 { return }
@@ -644,6 +726,41 @@ public final class AudioEngineManager: ObservableObject {
 
         guard isRec, !configs.isEmpty else { return }
 
+        var firstInputLog: String?
+        recordingTimingLock.lock()
+        if !hasLoggedFirstRecordingInput {
+            hasLoggedFirstRecordingInput = true
+            let hostDeltaMs: Double
+            if let transportHostTime = recordingTransportStartHostTime,
+               time.isHostTimeValid {
+                let deltaNanos: Int64
+                if time.hostTime >= transportHostTime {
+                    deltaNanos = Int64(AudioConvertHostTimeToNanos(time.hostTime - transportHostTime))
+                } else {
+                    deltaNanos = -Int64(AudioConvertHostTimeToNanos(transportHostTime - time.hostTime))
+                }
+                hostDeltaMs = Double(deltaNanos) / 1_000_000.0
+            } else {
+                hostDeltaMs = .nan
+            }
+            firstInputLog = String(
+                format: "[Timing] first input buffer: hostDelta=%.3f ms, sampleTime=%@, frames=%d, sampleRate=%.1f",
+                hostDeltaMs,
+                time.isSampleTimeValid ? String(format: "%.0f", time.sampleTime) : "invalid",
+                frameLength,
+                format.sampleRate
+            )
+        }
+        recordingTimingLock.unlock()
+        if let firstInputLog {
+            Task { @MainActor in
+                print(firstInputLog)
+            }
+        }
+
+        let inputFrameOffset = 0
+        let capturedFrameLength = frameLength
+
         // Process armed tracks
         for cfg in configs where cfg.isArmed {
             guard let writer = writers[cfg.trackId] else { continue }
@@ -659,31 +776,48 @@ public final class AudioEngineManager: ObservableObject {
                 channels: outChannels,
                 interleaved: false
             ),
-            let trackBuffer = AVAudioPCMBuffer(pcmFormat: subFormat, frameCapacity: AVAudioFrameCount(frameLength)) else {
+            let trackBuffer = AVAudioPCMBuffer(
+                pcmFormat: subFormat,
+                frameCapacity: AVAudioFrameCount(capturedFrameLength)
+            ) else {
                 continue
             }
-            trackBuffer.frameLength = AVAudioFrameCount(frameLength)
+            trackBuffer.frameLength = AVAudioFrameCount(capturedFrameLength)
             guard let trackData = trackBuffer.floatChannelData else { continue }
 
-            trackData[0].update(from: channelData[ch0], count: frameLength)
+            trackData[0].update(
+                from: channelData[ch0].advanced(by: inputFrameOffset),
+                count: capturedFrameLength
+            )
             if cfg.isStereo {
-                trackData[1].update(from: channelData[ch1], count: frameLength)
+                trackData[1].update(
+                    from: channelData[ch1].advanced(by: inputFrameOffset),
+                    count: capturedFrameLength
+                )
             }
 
             // Stream directly to disk writer
             writer.write(buffer: trackBuffer)
 
             // Calculate peak for live waveform
-            let peakVal = cfg.isStereo ? max(currentBufferPeaks[ch0], currentBufferPeaks[ch1]) : currentBufferPeaks[ch0]
             peakLock.lock()
             if self.liveWaveformPeaksBuffer[cfg.trackId] == nil {
-                self.liveWaveformPeaksBuffer[cfg.trackId] = []
+                self.liveWaveformPeaksBuffer[cfg.trackId] = Array(
+                    repeating: [],
+                    count: Int(outChannels)
+                )
             }
             // WaveformCache uses 512 samples per point. Keep live waveform
             // width in sync with the number of captured samples in this buffer.
-            let livePointCount = max(1, (frameLength + 511) / 512)
-            for _ in 0..<livePointCount {
-                self.liveWaveformPeaksBuffer[cfg.trackId]?.append((min: -peakVal, max: peakVal))
+            let livePointCount = max(1, (capturedFrameLength + 511) / 512)
+            for channel in 0..<Int(outChannels) {
+                let sourceChannel = channel == 0 ? ch0 : ch1
+                let peakVal = currentBufferPeaks[sourceChannel]
+                for _ in 0..<livePointCount {
+                    self.liveWaveformPeaksBuffer[cfg.trackId]?[channel].append(
+                        (min: -peakVal, max: peakVal)
+                    )
+                }
             }
             peakLock.unlock()
         }
@@ -697,12 +831,30 @@ public final class AudioEngineManager: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
 
-                let (peaks, livePeaks): ([Float], [UUID: [(min: Float, max: Float)]]) = self.peakLock.withLock {
+                let (peaks, livePeaks): ([Float], [UUID: [[(min: Float, max: Float)]]]) = self.peakLock.withLock {
                     let p = self.rawChannelPeaks
                     self.rawChannelPeaks = [Float](repeating: 0.0, count: self.rawChannelPeaks.count)
                     let lp = self.liveWaveformPeaksBuffer
                     self.liveWaveformPeaksBuffer.removeAll(keepingCapacity: true)
                     return (p, lp)
+                }
+
+                if let recordingStartTime = self.recordingTimingLock.withLock({
+                    let value = self.pendingRecordingClipStartTime
+                    self.pendingRecordingClipStartTime = nil
+                    return value
+                }) {
+                    print(
+                        String(
+                            format: "[Timing] clip position: timelineStart=%.6f, clipStart=%.6f, compensation=%.3f ms",
+                            self.recordingTimelineStart,
+                            recordingStartTime,
+                            self.recordingPlacementCompensation * 1000.0
+                        )
+                    )
+                    for clip in self.activeClips.values {
+                        clip.startTime = max(0.0, recordingStartTime)
+                    }
                 }
 
                 // Update Master Peak from the main mixer output.
@@ -725,7 +877,7 @@ public final class AudioEngineManager: ObservableObject {
                     object: nil,
                     userInfo: [
                         "peaks": peaks,
-                        "liveWaveforms": livePeaks,
+                        "liveChannelWaveforms": livePeaks,
                         "outputPeaks": outputPeaks
                     ]
                 )
@@ -763,6 +915,25 @@ public final class AudioEngineManager: ObservableObject {
             sendPlayerNodes.removeValue(forKey: sendID)
         }
         let currentTrackIDs = Set(tracks.map { $0.id })
+        let currentClipIDs = Set(tracks.flatMap { $0.clips.map(\.id) })
+        let currentSendClipKeys = Set(tracks.flatMap { track in
+            track.fxSends.filter { $0.enabled && $0.level > 0 }.flatMap { send in
+                track.clips.map { sendClipKey(sendID: send.id, clipID: $0.id) }
+            }
+        })
+
+        for (id, node) in clipPlayerNodes where !currentClipIDs.contains(id) {
+            node.stop()
+            engine.disconnectNodeOutput(node)
+            engine.detach(node)
+            clipPlayerNodes.removeValue(forKey: id)
+        }
+        for (key, node) in sendClipPlayerNodes where !currentSendClipKeys.contains(key) {
+            node.stop()
+            engine.disconnectNodeOutput(node)
+            engine.detach(node)
+            sendClipPlayerNodes.removeValue(forKey: key)
+        }
 
         for (id, node) in playerNodes where !currentTrackIDs.contains(id) {
             engine.disconnectNodeOutput(node)
@@ -902,11 +1073,28 @@ public final class AudioEngineManager: ObservableObject {
                 engine.disconnectNodeOutput(sendPlayer)
                 engine.connect(sendPlayer, to: gainNode, format: format)
                 engine.connect(gainNode, to: fxInput, fromBus: 0, toBus: inputBus, format: format)
+                for clip in track.clips {
+                    let key = sendClipKey(sendID: send.id, clipID: clip.id)
+                    let sendClipPlayer: AVAudioPlayerNode
+                    if let existing = sendClipPlayerNodes[key] {
+                        sendClipPlayer = existing
+                    } else {
+                        sendClipPlayer = AVAudioPlayerNode()
+                        engine.attach(sendClipPlayer)
+                        sendClipPlayerNodes[key] = sendClipPlayer
+                    }
+                    sendClipPlayer.volume = effectiveTrackVolume(for: track, anySolo: anySolo) *
+                        Float(pow(10.0, clip.gainDB / 20.0))
+                    engine.disconnectNodeOutput(sendClipPlayer)
+                    engine.connect(sendClipPlayer, to: gainNode, format: format)
+                }
             }
 
             let effectiveVolume = effectiveTrackVolume(for: track, anySolo: anySolo)
             node.volume = effectiveVolume
             node.pan = track.pan
+            outputNode.outputVolume = effectiveVolume
+            outputNode.pan = track.pan
 
             var filesForTrack: [(clip: AudioClip, file: AVAudioFile)] = []
             for clip in track.clips {
@@ -921,6 +1109,20 @@ public final class AudioEngineManager: ObservableObject {
                 return left.clip.startTime < right.clip.startTime
             }
             audioFiles[track.id] = filesForTrack
+
+            for clip in track.clips {
+                let clipNode: AVAudioPlayerNode
+                if let existing = clipPlayerNodes[clip.id] {
+                    clipNode = existing
+                } else {
+                    clipNode = AVAudioPlayerNode()
+                    engine.attach(clipNode)
+                    clipPlayerNodes[clip.id] = clipNode
+                }
+                clipNode.volume = 1.0
+                engine.disconnectNodeOutput(clipNode)
+                engine.connect(clipNode, to: outputNode, format: format)
+            }
         }
 
         let newConfigs = tracks.map { track in
@@ -946,10 +1148,19 @@ public final class AudioEngineManager: ObservableObject {
             let level = effectiveTrackVolume(for: track, anySolo: anySolo)
             playerNodes[track.id]?.volume = level
             playerNodes[track.id]?.pan = track.pan
+            trackOutputNodes[track.id]?.outputVolume = level
+            trackOutputNodes[track.id]?.pan = track.pan
+            for clip in track.clips {
+                clipPlayerNodes[clip.id]?.volume = 1.0
+            }
 
             for send in track.fxSends {
                 sendPlayerNodes[send.id]?.volume = level
                 sendGainNodes[send.id]?.outputVolume = send.enabled ? send.level : 0.0
+                for clip in track.clips {
+                    let key = sendClipKey(sendID: send.id, clipID: clip.id)
+                    sendClipPlayerNodes[key]?.volume = level
+                }
             }
         }
 
@@ -998,7 +1209,16 @@ public final class AudioEngineManager: ObservableObject {
                 format: format
             )
             if isPlaying {
-                scheduleClips(for: track, player: sendPlayer, startSec: currentTime)
+                let sharedStartTime = AVAudioTime(
+                    hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
+                )
+                scheduleClips(
+                    for: track,
+                    player: sendPlayer,
+                    startSec: currentTime,
+                    sharedStartTime: sharedStartTime,
+                    sendID: send.id
+                )
             }
         }
         sendPlayer.volume = effectiveTrackVolume(for: track, anySolo: anySolo)
@@ -1117,6 +1337,10 @@ public final class AudioEngineManager: ObservableObject {
             return 0.0
         }
         return track.volume
+    }
+
+    private func sendClipKey(sendID: UUID, clipID: UUID) -> String {
+        "\(sendID.uuidString):\(clipID.uuidString)"
     }
 
     private func syncFXChannels(_ fxChannels: [FXChannel]) {
@@ -1553,18 +1777,26 @@ public final class AudioEngineManager: ObservableObject {
             return
         }
 
+        let sharedStartTime = AVAudioTime(
+            hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
+        )
+
         if hasArmedTracks {
-            startRecording(armedTracks: armedTracks, playbackTracks: tracks.filter { !$0.isRecordArmed })
+            startRecording(
+                armedTracks: armedTracks,
+                playbackTracks: tracks.filter { !$0.isRecordArmed },
+                sharedStartTime: sharedStartTime
+            )
         } else {
-            startPlayback(tracks: tracks)
+            startPlayback(tracks: tracks, sharedStartTime: sharedStartTime)
         }
 
         isPlaying = true
         isRecording = hasArmedTracks
         hasWarmedUpAudioGraph = true
         schedulePendingPluginUIRequests()
-        startMetronome()
-        startPlayheadTimer()
+        startMetronome(at: sharedStartTime)
+        startPlayheadTimer(at: sharedStartTime.hostTime)
     }
 
     private func schedulePendingPluginUIRequests() {
@@ -1608,15 +1840,23 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
-    private func startPlayback(tracks: [AudioTrack]) {
+    private func startPlayback(tracks: [AudioTrack], sharedStartTime: AVAudioTime? = nil) {
         let startSec = currentTime
+        let transportStartTime = sharedStartTime ?? AVAudioTime(
+            hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
+        )
 
         for track in tracks where !track.isRecordArmed {
             guard let player = playerNodes[track.id] else {
                 continue
             }
 
-            scheduleClips(for: track, player: player, startSec: startSec)
+            scheduleClips(
+                for: track,
+                player: player,
+                startSec: startSec,
+                sharedStartTime: transportStartTime
+            )
 
             for send in track.fxSends where send.enabled && send.level > 0 {
                 guard let sendPlayer = sendPlayerNodes[send.id] else { continue }
@@ -1624,7 +1864,9 @@ public final class AudioEngineManager: ObservableObject {
                     for: track,
                     player: sendPlayer,
                     startSec: startSec,
-                    compensatePluginLatency: false
+                    compensatePluginLatency: false,
+                    sharedStartTime: transportStartTime,
+                    sendID: send.id
                 )
             }
         }
@@ -1634,10 +1876,23 @@ public final class AudioEngineManager: ObservableObject {
         for track: AudioTrack,
         player: AVAudioPlayerNode,
         startSec: Double,
-        compensatePluginLatency: Bool = true
+        compensatePluginLatency: Bool = true,
+        sharedStartTime: AVAudioTime,
+        sendID: UUID? = nil
     ) {
         guard let clips = audioFiles[track.id] else { return }
+        let isSendPlayback = sendID != nil
+        let isMainTrackPlayer = player === playerNodes[track.id]
         player.stop()
+        if isMainTrackPlayer {
+            for item in clips {
+                clipPlayerNodes[item.clip.id]?.stop()
+            }
+        } else if let sendID {
+            for item in clips {
+                sendClipPlayerNodes[sendClipKey(sendID: sendID, clipID: item.clip.id)]?.stop()
+            }
+        }
         let pluginLatency = compensatePluginLatency ? (trackPluginLatencies[track.id] ?? 0.0) : 0.0
         for item in clips {
             let file = item.file
@@ -1652,28 +1907,147 @@ public final class AudioEngineManager: ObservableObject {
             let remainingDuration = clipDuration - max(0.0, startSec - scheduledClipStart)
             let frameCount = AVAudioFrameCount(max(0.0, remainingDuration) * format.sampleRate)
             let delay = max(0.0, scheduledClipStart - startSec)
-            let startTime = delay > 0.0
-                ? AVAudioTime(sampleTime: AVAudioFramePosition(delay * hardwareSampleRate), atRate: hardwareSampleRate)
-                : nil
+            let startTime = AVAudioTime(
+                hostTime: sharedStartTime.hostTime + AudioConvertNanosToHostTime(
+                    UInt64(delay * 1_000_000_000.0)
+                )
+            )
 
-            player.scheduleSegment(
-                file,
+            let targetPlayer: AVAudioPlayerNode
+            if isMainTrackPlayer {
+                targetPlayer = clipPlayerNodes[item.clip.id] ?? player
+            } else if let sendID, let sendClipPlayer = sendClipPlayerNodes[
+                sendClipKey(sendID: sendID, clipID: item.clip.id)
+            ] {
+                targetPlayer = sendClipPlayer
+            } else {
+                targetPlayer = player
+            }
+            targetPlayer.volume = isMainTrackPlayer ? 1.0 : player.volume
+            guard let playbackBuffer = makeClipPlaybackBuffer(
+                fileURL: item.clip.fileURL,
                 startingFrame: startingFrame,
                 frameCount: frameCount,
+                gainDB: item.clip.gainDB,
+                clipOffset: max(0.0, startSec - scheduledClipStart),
+                clipDuration: clipDuration,
+                fadeInDuration: item.clip.fadeInDuration,
+                fadeOutDuration: item.clip.fadeOutDuration
+            ) else { continue }
+            targetPlayer.scheduleBuffer(
+                playbackBuffer,
                 at: startTime,
+                options: [],
                 completionHandler: nil
             )
         }
-        player.play()
+        if isMainTrackPlayer {
+            for item in clips {
+                clipPlayerNodes[item.clip.id]?.play(at: sharedStartTime)
+            }
+        } else if isSendPlayback, let sendID {
+            for item in clips {
+                sendClipPlayerNodes[sendClipKey(sendID: sendID, clipID: item.clip.id)]?.play(at: sharedStartTime)
+            }
+        } else {
+            player.play(at: sharedStartTime)
+        }
     }
 
-    private func startRecording(armedTracks: [AudioTrack], playbackTracks: [AudioTrack]) {
+    private func makeClipPlaybackBuffer(
+        fileURL: URL,
+        startingFrame: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        gainDB: Double,
+        clipOffset: Double,
+        clipDuration: Double,
+        fadeInDuration: Double,
+        fadeOutDuration: Double
+    ) -> AVAudioPCMBuffer? {
+        guard frameCount > 0,
+              let file = try? AVAudioFile(forReading: fileURL),
+              let buffer = AVAudioPCMBuffer(
+                  pcmFormat: file.processingFormat,
+                  frameCapacity: frameCount
+              ) else { return nil }
+
+        file.framePosition = startingFrame
+        do {
+            try file.read(into: buffer, frameCount: frameCount)
+        } catch {
+            return nil
+        }
+        guard let sourceChannelData = buffer.floatChannelData else { return buffer }
+        let linearGain = Float(pow(10.0, gainDB / 20.0))
+        let frames = Int(buffer.frameLength)
+        guard let outputFormat = AVAudioFormat(
+            standardFormatWithSampleRate: hardwareSampleRate,
+            channels: 2
+        ),
+        let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: AVAudioFrameCount(frames)
+        ),
+        let outputChannelData = outputBuffer.floatChannelData else {
+            return nil
+        }
+        outputBuffer.frameLength = AVAudioFrameCount(frames)
+
+        for frame in 0..<frames {
+            let position = clipOffset + Double(frame) / buffer.format.sampleRate
+            let fadeInGain = fadeInDuration > 0.0
+                ? min(1.0, max(0.0, position / fadeInDuration))
+                : 1.0
+            let remaining = clipDuration - position
+            let fadeOutGain = fadeOutDuration > 0.0
+                ? min(1.0, max(0.0, remaining / fadeOutDuration))
+                : 1.0
+            let gain = linearGain * Float(min(fadeInGain, fadeOutGain))
+            let left = sourceChannelData[0][frame] * gain
+            let right = buffer.format.channelCount > 1
+                ? sourceChannelData[1][frame] * gain
+                : left
+            outputChannelData[0][frame] = left
+            outputChannelData[1][frame] = right
+        }
+        return outputBuffer
+    }
+
+    private func startRecording(
+        armedTracks: [AudioTrack],
+        playbackTracks: [AudioTrack],
+        sharedStartTime: AVAudioTime
+    ) {
         activeWriters.removeAll()
         // CRITICAL: Use hardwareSampleRate (actual HW rate from inputNode) — NOT the UI sampleRate.
         // This ensures the WAV file header matches the actual captured audio sample rate.
         let recordSampleRate = self.hardwareSampleRate
 
         activeClips.removeAll()
+        recordingTimingLock.withLock {
+            recordingTimelineStart = currentTime
+            recordingTransportStartHostTime = sharedStartTime.hostTime
+            pendingRecordingClipStartTime = max(
+                0.0,
+                currentTime - recordingPlacementCompensation
+            )
+            hasLoggedFirstRecordingInput = false
+        }
+        let startNowHostTime = mach_absolute_time()
+        let startDelayMs = Double(
+            AudioConvertHostTimeToNanos(sharedStartTime.hostTime - startNowHostTime)
+        ) / 1_000_000.0
+        print(
+            String(
+                format: "[Timing] recording start: timeline=%.6f, currentTime=%.6f, sharedStartDelay=%.3f ms, inputStartSample=%@, deviceCompensation=%.3f ms, masterPluginLatency=%.3f ms",
+                recordingTimelineStart,
+                currentTime,
+                startDelayMs,
+                "hostTime",
+                recordingLatencyCompensation * 1000.0,
+                masterPluginLatency * 1000.0
+            )
+        )
         for track in armedTracks {
             do {
                 let writer = try AudioDiskWriter(
@@ -1685,7 +2059,7 @@ public final class AudioEngineManager: ObservableObject {
                     is24Bit: true
                 )
                 activeWriters[track.id] = writer
-                let compensatedStartTime = max(0.0, currentTime - recordingLatencyCompensation)
+                let compensatedStartTime = max(0.0, currentTime - recordingPlacementCompensation)
                 activeClips[track.id] = track.addClip(startTime: compensatedStartTime, fileURL: writer.fileURL)
                 print("Created disk writer for \(track.name) -> \(writer.fileURL.lastPathComponent) @ \(recordSampleRate) Hz")
             } catch {
@@ -1698,7 +2072,7 @@ public final class AudioEngineManager: ObservableObject {
             self.recordingActiveState = true
         }
 
-        startPlayback(tracks: playbackTracks)
+        startPlayback(tracks: playbackTracks, sharedStartTime: sharedStartTime)
     }
 
     // MARK: - Transport: Stop
@@ -1722,6 +2096,12 @@ public final class AudioEngineManager: ObservableObject {
 
         // 2. Stop player nodes
         for (_, player) in playerNodes {
+            player.stop()
+        }
+        for player in clipPlayerNodes.values {
+            player.stop()
+        }
+        for player in sendClipPlayerNodes.values {
             player.stop()
         }
         for (_, player) in sendPlayerNodes {
@@ -1748,6 +2128,9 @@ public final class AudioEngineManager: ObservableObject {
         }
 
         stopPlayheadTimer()
+        recordingTimingLock.withLock {
+            pendingRecordingClipStartTime = nil
+        }
         isPlaying = false
         isRecording = false
     }
@@ -1817,6 +2200,7 @@ public final class AudioEngineManager: ObservableObject {
         } catch is CancellationError {
             captureNode.removeTap(onBus: 0)
             for player in playerNodes.values { player.stop() }
+            for player in clipPlayerNodes.values { player.stop() }
             for player in sendPlayerNodes.values { player.stop() }
             writeQueue.sync { }
             isPlaying = false
@@ -1826,6 +2210,7 @@ public final class AudioEngineManager: ObservableObject {
         } catch {
             captureNode.removeTap(onBus: 0)
             for player in playerNodes.values { player.stop() }
+            for player in clipPlayerNodes.values { player.stop() }
             for player in sendPlayerNodes.values { player.stop() }
             writeQueue.sync { }
             isPlaying = false
@@ -1835,6 +2220,7 @@ public final class AudioEngineManager: ObservableObject {
         }
 
         for player in playerNodes.values { player.stop() }
+        for player in clipPlayerNodes.values { player.stop() }
         for player in sendPlayerNodes.values { player.stop() }
         captureNode.removeTap(onBus: 0)
         writeQueue.sync { }
@@ -1872,15 +2258,30 @@ public final class AudioEngineManager: ObservableObject {
 
     // MARK: - Playhead Timer
 
-    private func startPlayheadTimer() {
+    private func startPlayheadTimer(at hostTime: UInt64? = nil) {
         playheadStartTime = Date()
+        playheadStartHostTime = hostTime
         playheadStartOffset = currentTime
 
         playheadTimer?.invalidate()
         playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self, let startTime = self.playheadStartTime else { return }
-                let elapsed = Date().timeIntervalSince(startTime)
+                guard let self else { return }
+                let elapsed: Double
+                if let startHostTime = self.playheadStartHostTime {
+                    let nowHostTime = mach_absolute_time()
+                    let elapsedNanos: UInt64
+                    if nowHostTime >= startHostTime {
+                        elapsedNanos = AudioConvertHostTimeToNanos(nowHostTime - startHostTime)
+                    } else {
+                        elapsedNanos = 0
+                    }
+                    elapsed = Double(elapsedNanos) / 1_000_000_000.0
+                } else if let startTime = self.playheadStartTime {
+                    elapsed = Date().timeIntervalSince(startTime)
+                } else {
+                    return
+                }
                 self.currentTime = self.playheadStartOffset + elapsed
             }
         }
