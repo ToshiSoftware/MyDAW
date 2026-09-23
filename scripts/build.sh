@@ -20,6 +20,7 @@ CACHE_DIR="$PROJECT_DIR/.build_cache"
 
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
+rm -rf "$CACHE_DIR"
 mkdir -p "$CACHE_DIR"
 mkdir -p "$PROJECT_DIR/Recordings"
 

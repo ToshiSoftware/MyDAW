@@ -8,6 +8,7 @@ PROJECT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 "$SCRIPT_DIR/build.sh"
 
 APP_BUNDLE="$PROJECT_DIR/build/MyDAW.app"
-echo "Launching $APP_BUNDLE ..."
-open "$APP_BUNDLE"
+APP_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/MyDAW"
+echo "Launching $APP_EXECUTABLE ..."
+exec "$APP_EXECUTABLE"
 
