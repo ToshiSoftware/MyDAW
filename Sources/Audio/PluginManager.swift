@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import CryptoKit
 
 public enum TrackPluginKind: String, Codable, Sendable {
     case au = "AU"
@@ -37,16 +38,24 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
     public let componentSubType: UInt32
     public let componentManufacturer: UInt32
     public let componentFlags: UInt32
+    public let pluginUID: String?
+    public let version: String?
     public var enabled: Bool
     public var compatibility: PluginCompatibilityProfile
 
     private enum CodingKeys: String, CodingKey {
         case id, name, kind, bundleURL, componentType, componentSubType
-        case componentManufacturer, componentFlags, enabled, compatibility
+        case componentManufacturer, componentFlags, pluginUID, version
+        case enabled, compatibility
     }
 
     public var isLoadable: Bool {
-        kind == .au && componentType != 0
+        switch kind {
+        case .au:
+            return componentType != 0
+        case .vst3:
+            return bundleURL != nil
+        }
     }
 
     public var audioComponentDescription: AudioComponentDescription {
@@ -68,6 +77,8 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
         componentSubType: UInt32 = 0,
         componentManufacturer: UInt32 = 0,
         componentFlags: UInt32 = 0,
+        pluginUID: String? = nil,
+        version: String? = nil,
         enabled: Bool = true,
         compatibility: PluginCompatibilityProfile = .automatic
     ) {
@@ -79,6 +90,8 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
         self.componentSubType = componentSubType
         self.componentManufacturer = componentManufacturer
         self.componentFlags = componentFlags
+        self.pluginUID = pluginUID
+        self.version = version
         self.enabled = enabled
         self.compatibility = compatibility
     }
@@ -92,6 +105,8 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
             componentSubType: componentSubType,
             componentManufacturer: componentManufacturer,
             componentFlags: componentFlags,
+            pluginUID: pluginUID,
+            version: version,
             enabled: enabled,
             compatibility: compatibility
         )
@@ -108,6 +123,8 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
         componentSubType = try values.decodeIfPresent(UInt32.self, forKey: .componentSubType) ?? 0
         componentManufacturer = try values.decodeIfPresent(UInt32.self, forKey: .componentManufacturer) ?? 0
         componentFlags = try values.decodeIfPresent(UInt32.self, forKey: .componentFlags) ?? 0
+        pluginUID = try values.decodeIfPresent(String.self, forKey: .pluginUID)
+        version = try values.decodeIfPresent(String.self, forKey: .version)
         enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         compatibility = try values.decodeIfPresent(
             PluginCompatibilityProfile.self,
@@ -118,21 +135,50 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
     public var resolvedCompatibility: PluginCompatibilityProfile {
         compatibility
     }
+
+    public var menuDisplayName: String {
+        let format = kind == .au ? "AU" : "VST"
+        return "\(format): \(name)"
+    }
 }
 
 public final class PluginManager: ObservableObject {
     @Published public var availablePlugins: [TrackPluginDescriptor] = []
+    public let vst3Host: any VST3Host
 
-    public init() {
-        discoverAvailablePlugins()
+    public init(vst3Host: (any VST3Host)? = nil) {
+        self.vst3Host = vst3Host ?? UnavailableVST3Host()
     }
 
-    public func discoverAvailablePlugins() {
-        let discovered = discoverAUComponents()
+    public func discoverAvailablePlugins(
+        onLog: @escaping (String) -> Void = { _ in },
+        completion: @escaping () -> Void = {}
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let log: (String) -> Void = { message in
+                DispatchQueue.main.async {
+                    onLog(message)
+                }
+            }
 
-        let unique = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
-        availablePlugins = Array(unique.values).sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            log("Audio Unitプラグインを検出中...")
+            let audioUnits = self.discoverAUComponents()
+            log("Audio Unit: \(audioUnits.count)件")
+
+            log("VST3プラグインを検出中...")
+            let vst3Plugins = self.discoverVST3Bundles(onLog: log)
+            let discovered = audioUnits + vst3Plugins
+            let unique = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
+            let sorted = Array(unique.values).sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+
+            DispatchQueue.main.async {
+                self.availablePlugins = sorted
+                onLog("プラグイン検出完了: \(sorted.count)件")
+                completion()
+            }
         }
     }
 
@@ -175,6 +221,60 @@ public final class PluginManager: ObservableObject {
         return plugins
     }
 
+    private func discoverVST3Bundles(onLog: @escaping (String) -> Void = { _ in }) -> [TrackPluginDescriptor] {
+        let fileManager = FileManager.default
+        let searchDirectories = [
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Audio/Plug-Ins/VST3"),
+            URL(fileURLWithPath: "/Library/Audio/Plug-Ins/VST3")
+        ]
+
+        return searchDirectories.flatMap { directoryURL -> [TrackPluginDescriptor] in
+            guard let urls = try? fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return []
+            }
+
+            let bundles = urls
+                .filter { $0.pathExtension.lowercased() == "vst3" }
+            return bundles.flatMap { bundleURL in
+                    onLog("VST3: \(bundleURL.lastPathComponent)")
+                    // Third-party VST3 modules register Objective-C classes while
+                    // loading. Keep module loading on the main thread on macOS.
+                    let metadata = DispatchQueue.main.sync {
+                        VST3HostBridge.enumerate(bundleURL: bundleURL)
+                    }
+                    return metadata.map { metadata in
+                        TrackPluginDescriptor(
+                            id: stablePluginID(
+                                kind: .vst3,
+                                value: "\(bundleURL.path):\(metadata.uid)"
+                            ),
+                            name: metadata.name,
+                            kind: .vst3,
+                            bundleURL: bundleURL.path,
+                            pluginUID: metadata.uid,
+                            version: metadata.version
+                        )
+                    }
+                }
+        }
+    }
+
+    private func stablePluginID(kind: TrackPluginKind, value: String) -> UUID {
+        let digest = SHA256.hash(data: Data("\(kind.rawValue):\(value)".utf8))
+        var bytes = Array(digest.prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
+
     public func instantiateAudioUnit(
         for descriptor: TrackPluginDescriptor,
         completion: @escaping (AVAudioUnit?) -> Void
@@ -193,6 +293,24 @@ public final class PluginManager: ObservableObject {
                 }
                 completion(audioUnit)
             }
+        )
+    }
+
+    public func instantiateVST3(
+        for descriptor: TrackPluginDescriptor,
+        sampleRate: Double,
+        maxFrames: AVAudioFrameCount
+    ) throws -> any VST3PluginInstance {
+        guard descriptor.kind == .vst3,
+              let bundlePath = descriptor.bundleURL,
+              let pluginUID = descriptor.pluginUID else {
+            throw VST3HostError.invalidBundle(URL(fileURLWithPath: descriptor.bundleURL ?? ""))
+        }
+        return try vst3Host.instantiate(
+            bundleURL: URL(fileURLWithPath: bundlePath),
+            pluginUID: pluginUID,
+            sampleRate: sampleRate,
+            maxFrames: maxFrames
         )
     }
 }

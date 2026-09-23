@@ -86,6 +86,11 @@ public struct MainDAWView: View {
         .sheet(isPresented: $projectState.isShowingMasterExportDialog) {
             MasterExportDialog(projectState: projectState)
         }
+        .overlay {
+            StartupLogDialog(logs: projectState.startupLog)
+                .opacity(projectState.isShowingStartupLog ? 1.0 : 0.0)
+                .allowsHitTesting(projectState.isShowingStartupLog)
+        }
         .background(
             SpacebarHandler {
                 guard !projectState.isShowingMasterExportDialog else { return }
@@ -117,6 +122,52 @@ public struct MainDAWView: View {
             guard !didInitializePlayhead else { return }
             didInitializePlayhead = true
             projectState.audioEngine.rewind(tracks: projectState.tracks)
+        }
+    }
+}
+
+private struct StartupLogDialog: View {
+    let logs: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("プラグインを検出しています")
+                        .font(.headline)
+                }
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(logs.enumerated()), id: \.offset) { index, log in
+                                Text(log)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(index)
+                            }
+                        }
+                    }
+                    .frame(height: 190)
+                    .onChange(of: logs.count) { _ in
+                        if let lastIndex = logs.indices.last {
+                            proxy.scrollTo(lastIndex, anchor: .bottom)
+                        }
+                    }
+                }
+        }
+        .padding(20)
+        .frame(width: 520, height: 280)
+        .background(Color.black)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.white.opacity(0.45), lineWidth: 1)
+        )
+        .interactiveDismissDisabled(true)
+        .onAppear {
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 }

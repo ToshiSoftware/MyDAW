@@ -43,6 +43,17 @@ echo "Developer Dir: $DEVELOPER_DIR"
 echo "SDK Path: $SDK_PATH"
 echo "Compiler: $SWIFTC_CMD"
 
+# Build the isolated VST3 bridge. The AU path remains Swift/AVAudioEngine-only.
+VST3_BUILD_DIR="$PROJECT_DIR/.build_myDAW_vst3"
+echo "Building VST3 bridge..."
+cmake -S "$PROJECT_DIR/VST3Host" -B "$VST3_BUILD_DIR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+    -DCMAKE_OSX_ARCHITECTURES=arm64
+cmake --build "$VST3_BUILD_DIR" --target MyDAWVST3Bridge -j2
+VST3_BRIDGE_LIBRARY_DIR="$VST3_BUILD_DIR"
+VST3_SDK_LIBRARY_DIR="$VST3_BUILD_DIR/lib/Release"
+
 # Gather all swift files
 SWIFT_FILES=$(find Sources -name "*.swift")
 
@@ -54,6 +65,16 @@ echo "Compiling Swift sources..."
     -O \
     -parse-as-library \
     $SWIFT_FILES \
+    -L "$VST3_BRIDGE_LIBRARY_DIR" \
+    -L "$VST3_SDK_LIBRARY_DIR" \
+    -lMyDAWVST3Bridge \
+    -lsdk_hosting \
+    -lsdk_common \
+    -lbase \
+    -lpluginterfaces \
+    -lc++ \
+    -framework CoreFoundation \
+    -framework Foundation \
     -o "$MACOS_DIR/$APP_NAME"
 
 echo "Copying Info.plist and app icon..."

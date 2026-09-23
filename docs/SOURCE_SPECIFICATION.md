@@ -26,10 +26,12 @@ flowchart TD
     Engine --> AV[AVAudioEngine]
     Engine --> Writer[AudioDiskWriter]
     Engine --> AU[Audio Unit / Core Audio]
+    Engine --> VST3[VST3 native bridge]
     Engine --> Files[Recordings/*.wav]
     Engine --> Meter[NotificationCenter\nピーク通知]
     Device --> HAL[Core Audio HAL]
     Plugin --> AU
+    Plugin --> VST3
     Document --> ProjectFile[.mydaw JSON]
 ```
 
@@ -42,7 +44,7 @@ flowchart TD
 | 状態 | `ProjectState` | トラック、編集履歴、保存、読込、ミキサー操作を統括 |
 | モデル | `AudioTrack`、`AudioClip`、`FXChannel` | DAWの編集可能なドメインデータを保持 |
 | 音声 | `AudioEngineManager`、`AudioDiskWriter` | 再生、録音、ミックス、メーター、WAV出力 |
-| デバイス/プラグイン | `AudioDeviceManager`、`PluginManager` | Core AudioデバイスとAudio Unitの列挙・適用 |
+| デバイス/プラグイン | `AudioDeviceManager`、`PluginManager`、`VST3HostBridge` | Core Audioデバイス、AU、VST3エフェクトの列挙・適用 |
 | 永続化 | `ProjectDocument`群 | `.mydaw` JSONへ編集状態を保存。音声本体はWAV参照 |
 
 録音時は `AVAudioEngine` の入力タップがバッファを受け取り、armedトラックごとに入力チャンネルを抽出します。モノラル録音は1ch、ステレオ録音は指定したInput 1/2などの2chをWAVへ保存します。音声は `AudioDiskWriter` が非同期でWAVへ書き、録音中のピークはチャンネル別に `MyDAWNotificationCenter` を経由して `ProjectState` と画面へ通知されます。再生時はクリップを `AVAudioPlayerNode` にスケジュールし、トラック、FX、マスターのノードをミックスします。モノラル再生バッファは2ch出力形式へ正規化し、左右へ同じ信号を出力します。
@@ -59,6 +61,8 @@ flowchart TD
 - **プロパティ**: `projectState: ProjectState`。アプリ全体で共有する状態。
 - **`init()`**: `requestAudioPermissions()` を呼び、マイク権限の要求を開始する。
 - **`body`**: `WindowGroup`、メニュー、保存・読込・マスター書出し、Undo/Redoのコマンドを構築する。
+- **アプリバージョン**: Aboutダイアログには `1.2` を表示する。
+- **`MyDAWApplicationDelegate`**: 最後のウインドウが閉じてもアプリを自動終了しない。
 - **`requestAudioPermissions()`**: macOSのバージョンに応じて `AVAudioApplication` または `AVCaptureDevice` のマイク権限APIを呼ぶ。OSの権限ダイアログという副作用がある。
 
 ## 3. モデル
@@ -149,7 +153,8 @@ WAVを描画用の最小値・最大値列へ変換します。
 
 - **状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`、`timelineScrollTime`、`showsBeats`、`snapToGrid`、波形・トラック高さ倍率、Undo/Redo可否、保存・書出し状態、`pluginManager`、`audioEngine`、`deviceManager`。
 - **`audioContentEndTime`**: 全クリップの `startTime + duration` の最大値を返す。
-- **`init(audioEngine:deviceManager:pluginManager:)`**: 依存オブジェクトを生成または受け取り、ピーク通知を購読し、初期トラック2本を作る。
+- **`init(audioEngine:deviceManager:pluginManager:)`**: 依存オブジェクトを生成または受け取り、ピーク通知を購読し、初期トラック2本を作る。プラグイン検出を非同期で開始する。
+- **起動ログ**: `startupLog` と `isShowingStartupLog` を公開し、AU/VST3検出の進捗を起動画面へ通知する。検出完了時にログ表示を終了する。
 - **Undo/Redo**: `beginClipEdit()` が編集前スナップショットを保持し、`endClipEdit()` が履歴へ登録する。`undo()`、`redo()` は再生・録音中は何もしない。privateな `makeClipEditSnapshot()`、`recordClipEdit()`、`updateHistoryAvailability()`、`restoreClipEditSnapshot(_:)` が履歴を支える。
 - **トラック**: `addTrack(name:mode:isArmed:)`、`deleteTrack(id:)`、`toggleRecordArm(for:)`、`toggleMute(for:)`、`toggleSolo(for:)`。状態変更後は音声エンジンを同期する。
 - **クリップ**: `selectClip(trackId:clipId:)`、`deleteSelectedClip()`、`deleteClip(trackId:clipId:)`、`duplicateClip(trackId:clipId:)`、`splitSelectedClip()`、`splitClip(trackId:clipId:)`。編集操作はUndo対象になる。
@@ -190,11 +195,22 @@ Core Audio HALからデバイス、チャンネル数、サンプルレート、
 
 ### `Sources/Audio/PluginManager.swift`
 
-- **`TrackPluginKind`**: `.au`、`.vst3`。現実装の検出・生成はAudio Unit中心。
+- **`TrackPluginKind`**: `.au`、`.vst3`。Audio UnitとVST3エフェクトの検出・生成に対応する。
 - **`PluginUICompatibility`**: `automatic`、`custom`、`customMainThread`、`genericOnly`、`disabled`。UI表示方式を表す。
 - **`PluginCompatibilityProfile`**: UI互換性、要求タイムアウト、注記をまとめ、`automatic` で既定プロファイルを作る。
 - **`TrackPluginDescriptor`**: ID、名称、種類、bundle URL、Audio Component識別子、flags、有効状態、互換性を保持する。`isLoadable` はAUかつcomponent typeが有効かを返し、`audioComponentDescription` はCore Audio用構造体を生成する。`init(...)`、`newInstance()`、`init(from:)` を持つ。
-- **`PluginManager: ObservableObject`**: `availablePlugins` を所有する。`init()` は列挙を開始し、`discoverAvailablePlugins()` は重複除去・名前順整理を行う。`discoverAUComponents()` は `AudioComponentFindNext` でAUを列挙し、`instantiateAudioUnit(for:completion:)` は `AVAudioUnit.instantiate` で非同期生成する。
+- **`PluginManager: ObservableObject`**: `availablePlugins` を所有する。`init()` は検出を開始せず、`discoverAvailablePlugins(onLog:completion:)` がバックグラウンドで検出を開始する。
+- **AU検出**: `discoverAUComponents()` は `AudioComponentFindNext` でエフェクトAUを列挙する。同一AUの複数インスタンス挿入は許可する。
+- **VST3検出**: `discoverVST3Bundles(onLog:)` はユーザー／システムVST3フォルダを走査し、`VST3HostBridge.enumerate` でAudio Module Classを取得する。`Instrument` サブカテゴリは一覧から除外する。
+- **スレッド制約**: VST3モジュールのロードはサードパーティ製プラグインのObjective-Cクラス登録に配慮し、メインスレッドで実行する。検出全体はログ通知と完了コールバックを伴う。
+- **`instantiateAudioUnit(for:completion:)`**: `AVAudioUnit.instantiate` でAUを非同期生成する。
+
+### `Sources/Audio/VST3HostBridge.swift` / `Sources/Audio/VST3NativeInstance.swift`
+
+- **`VST3HostBridge`**: C++ブリッジの列挙APIをSwiftへ橋渡しし、VST3のUID、名称、ベンダー、バージョンを返す。
+- **`VST3NativeInstance`**: VST3コンポーネントの生成、インターリーブ音声処理、レイテンシー取得、状態保存・復元、NSViewエディタのattach/removeを提供する。
+- **処理経路**: VST3付きトラックはクリップを短いブロックへ分割し、VST3インスタンス列を通してから `AVAudioPlayerNode` へスケジュールする。これにより再生中のパラメータ変更を次のブロックへ反映する。
+- **終了処理**: `setProcessing(false)`、コンポーネント停止、エディタdetach、Provider／Module解放の順で終了する。
 
 ### `Sources/Audio/AudioEngineManager.swift`
 
@@ -224,7 +240,7 @@ AVAudioEngineのグラフ、再生、録音、メトロノーム、メーター�
 
 ### `Sources/Views/MainDAWView.swift`
 
-- **`MainDAWView`**: `TransportBarView`、`ArrangerView`、`MixerView`、ステータスバー、書出しダイアログ、`WindowCloseHandler`、`SpacebarHandler` を配置する。`init(projectState:)` は共有状態を受け取り、`body` は全体レイアウトを返す。
+- **`MainDAWView`**: `TransportBarView`、`ArrangerView`、`MixerView`、ステータスバー、書出しダイアログ、起動ログ、`WindowCloseHandler`、`SpacebarHandler` を配置する。起動ログは黒背景・枠線付きのオーバーレイで、検出完了後に透明化する。
 - **`MasterExportDialog`**: 開始・終了秒を入力し、`ProjectState.exportMasterMix` を呼ぶ。進行中、完了、エラーを表示する。
 - **`SpacebarHandler: NSViewRepresentable`**: `makeCoordinator()`、`makeNSView(context:)`、`updateNSView`、`dismantleNSView` でAppKitのイベント監視をSwiftUIへ橋渡しする。
 - **`SpacebarHandler.Coordinator`**: `startMonitoring()` はSpace、左矢印、R、Command-Z系を処理し、`stopMonitoring()` はイベントモニターを解除する。
@@ -265,7 +281,8 @@ AVAudioEngineのグラフ、再生、録音、メトロノーム、メーター�
 ### `Sources/Views/MixerView.swift`
 
 - **`MixerView`**: トラック、FX、マスターを横スクロール式に表示する。`init(projectState:)` で共有状態を受け、`body` がミキサーを構築し、FX追加UIから `addFXChannel` を実行する。
-- **`MasterChannelView`**: マスター音量、マスターメーター、マスタープラグイン追加・削除・UI表示を提供する。
+- **`MasterChannelView`**: マスター音量、マスターメーター、マスタープラグイン追加・削除・UI表示を提供する。挿入済みプラグイン名は `AU:` または `VST:` 接頭辞付きで表示する。
+- **トラック／FX表示**: トラックとFXチャンネルの挿入済みプラグイン名も同じ接頭辞規則を使用する。
 
 ### `Sources/Views/WindowCloseHandler.swift`
 
@@ -296,3 +313,6 @@ AVAudioEngineのグラフ、再生、録音、メトロノーム、メーター�
 - 音声処理は `@MainActor` の公開状態とリアルタイム音声スレッドをまたぐため、直接UI状態を更新せず通知・ロック経由で連携する。
 - `.mydaw` はWAVファイルを内包しないため、ファイルパスが移動・削除されるとクリップを再生できない。
 - 保存・読込、録音停止、Audio Unit復元、デバイス変更はエラー処理とキャンセル処理の影響が大きい境界である。
+- VST3検出はプラグインバイナリの副作用を伴うため、VST3モジュール列挙はメインスレッドで行う。
+- Relab LX480 AUは同一プロジェクト内に複数インスタンスがある場合、カスタムGUIの複数生成でハングする既知の制約がある。その場合はGeneric UIを使用する。通常のAU（例: UADコンプレッサー）とVST3は複数インスタンスを許可する。
+- プラグイン削除時は開いているGUIウインドウとVST3エディタを閉じる。

@@ -40,6 +40,8 @@ public final class ProjectState: ObservableObject {
         }
     }
     @Published public var pluginManager: PluginManager
+    @Published public private(set) var startupLog: [String] = ["MyDAWを起動しています..."]
+    @Published public private(set) var isShowingStartupLog = true
     @Published public var isShowingMasterExportDialog = false
     @Published public var isExportingMasterMix = false
     @Published public var masterExportCompleted = false
@@ -110,6 +112,23 @@ public final class ProjectState: ObservableObject {
         // Add 2 initial tracks as default template
         addTrack(name: "Audio 1", mode: .stereo, isArmed: true)
         addTrack(name: "Audio 2", mode: .stereo, isArmed: false)
+        startPluginDiscovery()
+    }
+
+    private func startPluginDiscovery() {
+        pluginManager.discoverAvailablePlugins(
+            onLog: { [weak self] message in
+                self?.startupLog.append(message)
+            },
+            completion: { [weak self] in
+                self?.isShowingStartupLog = false
+                DispatchQueue.main.async {
+                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.windows.first(where: { $0.title.contains("MyDAW") })?
+                        .makeKeyAndOrderFront(nil)
+                }
+            }
+        )
     }
 
     private func makeClipEditSnapshot() -> ClipEditSnapshot {

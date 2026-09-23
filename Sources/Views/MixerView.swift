@@ -97,7 +97,7 @@ private struct MasterChannelView: View {
 
             Menu {
                 ForEach(projectState.pluginManager.availablePlugins) { plugin in
-                    Button(plugin.name) {
+                    Button(plugin.menuDisplayName) {
                         projectState.insertMasterPlugin(plugin)
                     }
                 }
@@ -110,11 +110,15 @@ private struct MasterChannelView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(projectState.masterPlugins) { plugin in
                     HStack(spacing: 4) {
-                        Button(plugin.name) {
+                        Button(plugin.menuDisplayName) {
                             projectState.audioEngine.openPluginUI(pluginID: plugin.id)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .font(.system(size: 8))
+                        .foregroundColor(
+                            projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                        )
+                        .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
                         .lineLimit(1)
                         Button {
                             projectState.removeMasterPlugin(plugin.id)
@@ -202,10 +206,7 @@ private struct MixerChannelView: View {
                         projectState.insertPlugin(plugin, into: track.id)
                     } label: {
                         HStack {
-                            Text(plugin.name)
-                            Text(plugin.kind.rawValue)
-                                .font(.system(size: 8))
-                                .foregroundColor(.secondary)
+                            Text(plugin.menuDisplayName)
                         }
                     }
                 }
@@ -221,11 +222,15 @@ private struct MixerChannelView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(track.plugins) { plugin in
                             HStack(spacing: 4) {
-                                Button(plugin.name) {
+                                Button(plugin.menuDisplayName) {
                                     projectState.openPluginUI(plugin.id, on: track.id)
                                 }
                                 .buttonStyle(PlainButtonStyle())
                                 .font(.system(size: 8))
+                                .foregroundColor(
+                                    projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                                )
+                                .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
                                 .lineLimit(1)
                                 .help("Open AU plugin window")
 
@@ -407,7 +412,7 @@ private struct FXChannelView: View {
 
             Menu {
                 ForEach(projectState.pluginManager.availablePlugins) { plugin in
-                    Button(plugin.name) {
+                    Button(plugin.menuDisplayName) {
                         projectState.insertPlugin(plugin, intoFX: channel.id)
                     }
                 }
@@ -420,11 +425,15 @@ private struct FXChannelView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(channel.plugins) { plugin in
                     HStack(spacing: 4) {
-                        Button(plugin.name) {
+                        Button(plugin.menuDisplayName) {
                             projectState.audioEngine.openPluginUI(pluginID: plugin.id)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .font(.system(size: 8))
+                        .foregroundColor(
+                            projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                        )
+                        .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
                         .lineLimit(1)
                         Button {
                             projectState.removePlugin(plugin.id, fromFX: channel.id)

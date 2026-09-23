@@ -1,8 +1,16 @@
 import SwiftUI
 import AVFoundation
 
+final class MyDAWApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
+
 @main
 struct MyDAWApp: App {
+    @NSApplicationDelegateAdaptor(MyDAWApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var projectState = ProjectState()
 
     init() {
@@ -20,7 +28,7 @@ struct MyDAWApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About MyDAW") {
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationVersion: "1.1"
+                        .applicationVersion: "1.2"
                     ])
                 }
             }

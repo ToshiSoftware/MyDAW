@@ -13,6 +13,8 @@ MyDAW は macOS 向けのオーディオ録音・編集・再生を行う DAW �
 - クリップの直線フェードイン／フェードアウト
 - プロジェクト保存/読込
 - Logic Pro 風のダーク UI
+- AU／VST3エフェクトのトラック挿入と状態保存
+- 起動時のプラグイン検出ログ表示
 
 ## 2. 主要コンポーネント
 
@@ -49,7 +51,17 @@ MyDAW は macOS 向けのオーディオ録音・編集・再生を行う DAW �
 - [Sources/Views/ArrangerView.swift](../Sources/Views/ArrangerView.swift)
 - [Sources/Views/WaveformLaneView.swift](../Sources/Views/WaveformLaneView.swift)
 - トランスポートバー、タイムライン、トラックヘッダー、波形レーンを構成
-- `WaveformCanvas` は波形の描画を 담당する想定で、今後の表示最適化の中心になる
+- `WaveformCanvas` は波形の描画を担当する想定で、今後の表示最適化の中心になる
+- 起動時はプラグイン検出ログを表示し、完了後に閉じる。ログは黒背景と枠線付き。
+
+### 2.6 プラグイン
+- `PluginManager` がAudio UnitとVST3エフェクトを検出する。
+- VST3は `VST3HostBridge` と `VST3NativeInstance` を通して生成・処理・状態保存・GUI接続を行う。
+- VST3のInstrumentサブカテゴリはエフェクト一覧から除外する。
+- VST3付きトラックのクリップはブロック単位で処理され、再生中のパラメータ変更を反映する。
+- AUとVST3は同じトラックへ挿入でき、同一AUの複数インスタンスも許可する。
+- Relab LX480 AUの複数GUIには互換性制約があるため、複数インスタンス時はGeneric UIへフォールバックする。
+- ミキサーの挿入済みプラグイン名は `AU:`／`VST:` 接頭辞付きで表示する。
 
 ## 3. 実際の動作フロー
 
@@ -95,6 +107,8 @@ MyDAW は macOS 向けのオーディオ録音・編集・再生を行う DAW �
 - `AVAudioEngine` と UI の状態同期が多く、スレッド境界を意識した実装が必要
 - 録音と編集操作の同時禁止が実装されているが、複雑な編集操作に対する堅牢性は改善余地がある
 - 波形レンダリング周りとプロジェクトデータ整合性の強化が今後の重要課題
+- サードパーティVST3のObjective-Cクラス登録により、VST3モジュール列挙はメインスレッドで行う必要がある。
+- AU GUIはプラグインごとの実装差があり、Relab LX480の複数カスタムGUI表示はGeneric UIへ切り替える。
 
 ## 5. 改善候補と優先順位
 

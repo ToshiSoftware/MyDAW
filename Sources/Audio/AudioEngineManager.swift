@@ -3,6 +3,152 @@ import AVFoundation
 import AppKit
 import CoreAudioKit
 
+private final class VST3StreamingClip {
+    private let player: AVAudioPlayerNode
+    private let file: AVAudioFile
+    private let instances: [VST3NativeInstance]
+    private let outputFormat: AVAudioFormat
+    private let gain: Float
+    private let clipDuration: Double
+    private let fadeInDuration: Double
+    private let fadeOutDuration: Double
+    private var sourceFrame: AVAudioFramePosition
+    private var timelineOffset: Double
+    private let endFrame: AVAudioFramePosition
+    private let chunkFrames = 512
+    private let schedulingQueue = DispatchQueue(label: "MyDAW.vst3-streaming-clip", qos: .userInitiated)
+    private let stateLock = NSLock()
+    private var isFinished = false
+
+    init?(
+        player: AVAudioPlayerNode,
+        fileURL: URL,
+        instances: [VST3NativeInstance],
+        outputFormat: AVAudioFormat,
+        sourceStartTime: Double,
+        clipOffset: Double,
+        clipDuration: Double,
+        gainDB: Double,
+        fadeInDuration: Double,
+        fadeOutDuration: Double
+    ) {
+        guard let file = try? AVAudioFile(forReading: fileURL) else { return nil }
+        self.player = player
+        self.file = file
+        self.instances = instances
+        self.outputFormat = outputFormat
+        self.gain = Float(pow(10.0, gainDB / 20.0))
+        self.clipDuration = clipDuration
+        self.fadeInDuration = fadeInDuration
+        self.fadeOutDuration = fadeOutDuration
+        self.sourceFrame = AVAudioFramePosition((sourceStartTime + clipOffset) * file.processingFormat.sampleRate)
+        self.timelineOffset = clipOffset
+        self.endFrame = AVAudioFramePosition((sourceStartTime + clipDuration) * file.processingFormat.sampleRate)
+    }
+
+    func start(at startTime: AVAudioTime) {
+        schedulingQueue.sync {
+            for index in 0..<8 {
+                let bufferStartTime: AVAudioTime? = index == 0
+                    ? startTime
+                    : nil
+                guard scheduleNext(at: bufferStartTime) else { break }
+            }
+        }
+        player.play(at: startTime)
+    }
+
+    func stop() {
+        stateLock.withLock {
+            isFinished = true
+        }
+        player.stop()
+    }
+
+    @discardableResult
+    private func scheduleNext(at startTime: AVAudioTime?) -> Bool {
+        guard stateLock.withLock({ !isFinished }), sourceFrame < endFrame else {
+            stateLock.withLock { isFinished = true }
+            return false
+        }
+
+        let sourceFramesRemaining = endFrame - sourceFrame
+        let sourceFrames = min(
+            AVAudioFramePosition(Double(chunkFrames) * file.processingFormat.sampleRate / outputFormat.sampleRate),
+            sourceFramesRemaining
+        )
+        guard sourceFrames > 0,
+              let inputBuffer = AVAudioPCMBuffer(
+                  pcmFormat: file.processingFormat,
+                  frameCapacity: AVAudioFrameCount(sourceFrames)
+              ) else {
+            stateLock.withLock { isFinished = true }
+            return false
+        }
+
+        file.framePosition = sourceFrame
+        do {
+            try file.read(into: inputBuffer, frameCount: AVAudioFrameCount(sourceFrames))
+        } catch {
+            stateLock.withLock { isFinished = true }
+            return false
+        }
+        guard let inputChannels = inputBuffer.floatChannelData,
+              let outputBuffer = AVAudioPCMBuffer(
+                  pcmFormat: outputFormat,
+                  frameCapacity: AVAudioFrameCount(inputBuffer.frameLength)
+              ),
+              let outputChannels = outputBuffer.floatChannelData else {
+                        stateLock.withLock { isFinished = true }
+                        return false
+        }
+
+        let frames = Int(inputBuffer.frameLength)
+        outputBuffer.frameLength = inputBuffer.frameLength
+        var interleavedInput = [Float](repeating: 0.0, count: frames * 2)
+        var interleavedOutput = [Float](repeating: 0.0, count: frames * 2)
+        for frame in 0..<frames {
+            let position = timelineOffset + Double(frame) / outputFormat.sampleRate
+            let fadeInGain = fadeInDuration > 0.0 ? min(1.0, max(0.0, position / fadeInDuration)) : 1.0
+            let fadeOutGain = fadeOutDuration > 0.0 ? min(1.0, max(0.0, (clipDuration - position) / fadeOutDuration)) : 1.0
+            let frameGain = gain * Float(min(fadeInGain, fadeOutGain))
+            interleavedInput[frame * 2] = inputChannels[0][frame] * frameGain
+            interleavedInput[frame * 2 + 1] = (inputBuffer.format.channelCount > 1 ? inputChannels[1][frame] : inputChannels[0][frame]) * frameGain
+        }
+        var processed = true
+        for instance in instances {
+            let nextOutput = interleavedInput.withUnsafeBufferPointer { input in
+                interleavedOutput.withUnsafeMutableBufferPointer { output in
+                    instance.processInterleaved(input.baseAddress!, output: output.baseAddress!, frames: frames)
+                }
+            }
+            guard nextOutput else {
+                processed = false
+                break
+            }
+            interleavedInput = interleavedOutput
+        }
+        guard processed else {
+            stateLock.withLock { isFinished = true }
+            return false
+        }
+        for frame in 0..<frames {
+            outputChannels[0][frame] = interleavedOutput[frame * 2]
+            outputChannels[1][frame] = interleavedOutput[frame * 2 + 1]
+        }
+
+        sourceFrame += AVAudioFramePosition(frames)
+        timelineOffset += Double(frames) / outputFormat.sampleRate
+        player.scheduleBuffer(outputBuffer, at: startTime, options: []) { [weak self] in
+            guard let self else { return }
+            self.schedulingQueue.async {
+                _ = self.scheduleNext(at: nil)
+            }
+        }
+        return true
+    }
+}
+
 public enum MyDAWNotificationCenter {
     public static let shared = Foundation.NotificationCenter()
 }
@@ -102,6 +248,7 @@ public final class AudioEngineManager: ObservableObject {
     }
     @Published public private(set) var selectedInputDeviceID: AudioDeviceID = 0
     @Published public private(set) var selectedOutputDeviceID: AudioDeviceID = 0
+    @Published public private(set) var unavailablePluginIDs: Set<UUID> = []
 
     // Player node and file mapping per track ID
     private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
@@ -118,6 +265,8 @@ public final class AudioEngineManager: ObservableObject {
     private var fxGraphSignatures: [UUID: [UUID]] = [:]
     private var sendGainNodes: [UUID: AVAudioMixerNode] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
+    private var vst3Instances: [UUID: VST3NativeInstance] = [:]
+    private var vst3StreamingClips: [UUID: VST3StreamingClip] = [:]
     private var pluginWindows: [UUID: NSWindow] = [:]
     private let masterChannelID = UUID()
     private var masterOutputNode: AVAudioMixerNode?
@@ -143,6 +292,14 @@ public final class AudioEngineManager: ObservableObject {
     private var pluginGraphGenerations: [UUID: Int] = [:]
     private var pluginGraphSignatures: [UUID: [UUID]] = [:]
     private var fxPluginGraphGenerations: [UUID: Int] = [:]
+
+    public func isPluginUnavailable(_ pluginID: UUID) -> Bool {
+        unavailablePluginIDs.contains(pluginID)
+    }
+
+    private func markPluginUnavailable(_ pluginID: UUID) {
+        unavailablePluginIDs.insert(pluginID)
+    }
 
     // Active disk writers during recording
     private var activeWriters: [UUID: AudioDiskWriter] = [:]
@@ -422,7 +579,8 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     public func capturePluginStates() -> [PluginStateDocument] {
-        pluginAudioUnits.compactMap { pluginID, audioUnit in
+        let auStates: [PluginStateDocument] = pluginAudioUnits.compactMap { entry in
+            let (pluginID, audioUnit) = entry
             guard let state = audioUnit.auAudioUnit.fullStateForDocument else { return nil }
             guard PropertyListSerialization.propertyList(
                 state,
@@ -441,6 +599,47 @@ public final class AudioEngineManager: ObservableObject {
             } catch {
                 print("Failed to serialize state for plugin \(pluginID): \(error)")
                 return nil
+            }
+        }
+
+        let vst3States: [PluginStateDocument] = vst3Instances.compactMap { entry in
+            let (pluginID, instance) = entry
+            guard let stateData = instance.captureState() else { return nil }
+            return PluginStateDocument(
+                pluginID: pluginID,
+                stateData: stateData,
+                format: "vst3-state"
+            )
+        }
+        return auStates + vst3States
+    }
+
+    private func syncVST3Instances(for descriptors: [TrackPluginDescriptor]) {
+        let vst3Descriptors = descriptors.filter { $0.kind == .vst3 && $0.enabled }
+        let requiredIDs = Set(vst3Descriptors.map(\.id))
+        for (pluginID, instance) in vst3Instances where !requiredIDs.contains(pluginID) {
+            _ = instance
+            vst3Instances.removeValue(forKey: pluginID)
+        }
+
+        for descriptor in vst3Descriptors where vst3Instances[descriptor.id] == nil {
+            guard let instance = VST3NativeInstance(
+                descriptor: descriptor,
+                sampleRate: hardwareSampleRate,
+                maxFrames: inputBufferFrameSize
+            ) else {
+                markPluginUnavailable(descriptor.id)
+                print("Failed to create VST3 instance: \(descriptor.name)")
+                continue
+            }
+            unavailablePluginIDs.remove(descriptor.id)
+            vst3Instances[descriptor.id] = instance
+            if let stateData = savedPluginStates[descriptor.id] {
+                if instance.restoreState(stateData) {
+                    print("Restored VST3 state for plugin \(descriptor.id)")
+                } else {
+                    print("Failed to restore VST3 state for plugin \(descriptor.id)")
+                }
             }
         }
     }
@@ -893,7 +1092,16 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     public func syncTracks(_ tracks: [AudioTrack], fxChannels: [FXChannel]) {
-        pluginDescriptors = (tracks.flatMap(\.plugins) + fxChannels.flatMap(\.plugins) + configuredMasterPlugins)
+        let allPlugins = tracks.flatMap(\.plugins) + fxChannels.flatMap(\.plugins) + configuredMasterPlugins
+        let activePluginIDs = Set(allPlugins.map(\.id))
+        let removedPluginIDs = Set(pluginDescriptors.keys).subtracting(activePluginIDs)
+        for pluginID in removedPluginIDs {
+            closePluginWindow(pluginID: pluginID)
+            pluginUIRequests.remove(pluginID)
+            pendingPluginUIRequests.remove(pluginID)
+        }
+        unavailablePluginIDs.subtract(removedPluginIDs)
+        pluginDescriptors = allPlugins
             .reduce(into: [:]) { descriptors, plugin in
                 descriptors[plugin.id] = plugin
             }
@@ -924,6 +1132,7 @@ public final class AudioEngineManager: ObservableObject {
 
         for (id, node) in clipPlayerNodes where !currentClipIDs.contains(id) {
             node.stop()
+            vst3StreamingClips.removeValue(forKey: id)?.stop()
             engine.disconnectNodeOutput(node)
             engine.detach(node)
             clipPlayerNodes.removeValue(forKey: id)
@@ -1011,12 +1220,18 @@ public final class AudioEngineManager: ObservableObject {
                 }
                 trackMeterTaps.insert(track.id)
             }
-            let enabledPlugins = track.plugins.filter { $0.enabled }
+            // VST3 descriptors are persisted and shown in the mixer, but are
+            // bypassed until their native processing host is connected.
+            let enabledPlugins = track.plugins.filter { $0.enabled && $0.kind == .au }
             let desiredSignature = enabledPlugins.map(\.id)
             let existingSignature = pluginGraphSignatures[track.id]
             let graphNeedsRebuild = existingSignature != desiredSignature
 
             if graphNeedsRebuild {
+                let wasEngineRunning = engine.isRunning
+                if wasEngineRunning {
+                    engine.pause()
+                }
                 let previousNodes = trackPluginNodes[track.id] ?? []
                 for pluginNode in previousNodes {
                     engine.disconnectNodeOutput(pluginNode)
@@ -1039,6 +1254,9 @@ public final class AudioEngineManager: ObservableObject {
                         index: 0,
                         generation: graphGeneration
                     )
+                }
+                if wasEngineRunning {
+                    try? engine.start()
                 }
             }
 
@@ -1137,6 +1355,10 @@ public final class AudioEngineManager: ObservableObject {
         captureLock.withLock {
             self.captureConfigs = newConfigs
         }
+
+        // Start AU instantiation before loading VST3 modules. Some plug-ins
+        // share process-global resources between their AU and VST3 formats.
+        syncVST3Instances(for: allPlugins)
     }
 
     public func updateMixerLevels(
@@ -1241,12 +1463,14 @@ public final class AudioEngineManager: ObservableObject {
         }
         guard let masterOutputNode,
               let format = AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2) else { return }
-        let signature = plugins.filter { $0.enabled }.map(\.id)
+        let auPlugins = plugins.filter { $0.enabled && $0.kind == .au }
+        let signature = auPlugins.map(\.id)
         guard signature != masterPluginSignature else { return }
         let removedPluginIDs = Set(masterPluginSignature).subtracting(signature)
         for pluginID in removedPluginIDs {
             pluginUIRequests.remove(pluginID)
             pendingPluginUIRequests.remove(pluginID)
+            vst3Instances[pluginID]?.removeEditor()
             pluginWindows[pluginID]?.close()
             pluginWindows.removeValue(forKey: pluginID)
         }
@@ -1272,7 +1496,7 @@ public final class AudioEngineManager: ObservableObject {
             try? engine.start()
         }
         installMasterAudioUnits(
-            plugins.filter { $0.enabled },
+            auPlugins,
             previousNode: masterOutputNode,
             format: format,
             index: 0,
@@ -1292,10 +1516,13 @@ public final class AudioEngineManager: ObservableObject {
         AVAudioUnit.instantiate(with: plugin.audioComponentDescription, options: []) { [weak self] audioUnit, error in
             guard let self else { return }
             guard let audioUnit else {
-                if let error {
-                    print("Failed to create master AU \(plugin.name): \(error)")
-                } else {
-                    print("Failed to create master AU \(plugin.name): unknown error")
+                DispatchQueue.main.async {
+                    self.markPluginUnavailable(plugin.id)
+                    if let error {
+                        print("Failed to create master AU \(plugin.name): \(error)")
+                    } else {
+                        print("Failed to create master AU \(plugin.name): unknown error")
+                    }
                 }
                 return
             }
@@ -1310,6 +1537,7 @@ public final class AudioEngineManager: ObservableObject {
                 }
                 self.engine.disconnectNodeOutput(previousNode)
                 self.engine.attach(audioUnit)
+                self.unavailablePluginIDs.remove(plugin.id)
                 self.engine.connect(previousNode, to: audioUnit, format: format)
                 self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                 self.masterPluginNodes.append(audioUnit)
@@ -1372,7 +1600,7 @@ public final class AudioEngineManager: ObservableObject {
 
             input.outputVolume = channel.volume
             input.pan = channel.pan
-            let plugins = channel.plugins.filter { $0.enabled }
+            let plugins = channel.plugins.filter { $0.enabled && $0.kind == .au }
             let signature = plugins.map(\.id)
             guard fxGraphSignatures[channel.id] != signature else { continue }
             fxPluginGraphGenerations[channel.id, default: 0] += 1
@@ -1411,7 +1639,21 @@ public final class AudioEngineManager: ObservableObject {
             with: plugin.audioComponentDescription,
             options: [],
             completionHandler: { [weak self] audioUnit, _ in
-                guard let self, let audioUnit else { return }
+                guard let self else { return }
+                guard let audioUnit else {
+                    DispatchQueue.main.async {
+                        self.markPluginUnavailable(plugin.id)
+                        self.installFXAudioUnits(
+                            plugins,
+                            channelID: channelID,
+                            previousNode: previousNode,
+                            format: format,
+                            index: index + 1,
+                            generation: generation
+                        )
+                    }
+                    return
+                }
                 DispatchQueue.main.async {
                     guard self.fxGraphSignatures[channelID] == plugins.map(\.id),
                           self.fxPluginGraphGenerations[channelID] == generation else {
@@ -1419,6 +1661,7 @@ public final class AudioEngineManager: ObservableObject {
                     }
                     self.engine.disconnectNodeOutput(previousNode)
                     self.engine.attach(audioUnit)
+                    self.unavailablePluginIDs.remove(plugin.id)
                     self.engine.connect(previousNode, to: audioUnit, format: format)
                     self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                     self.fxPluginNodes[channelID, default: []].append(audioUnit)
@@ -1448,10 +1691,13 @@ public final class AudioEngineManager: ObservableObject {
             let requiredPluginIDs = track.plugins
                 .filter { $0.enabled && $0.kind == .au }
                 .map(\.id)
-            guard requiredPluginIDs.allSatisfy({ pluginAudioUnits[$0] != nil }) else {
-                return false
-            }
-            guard (trackPluginNodes[track.id]?.count ?? 0) == requiredPluginIDs.count else {
+            guard requiredPluginIDs.allSatisfy({
+                pluginAudioUnits[$0] != nil || unavailablePluginIDs.contains($0)
+            }) else { return false }
+            let availablePluginCount = requiredPluginIDs.filter {
+                !unavailablePluginIDs.contains($0)
+            }.count
+            guard (trackPluginNodes[track.id]?.count ?? 0) == availablePluginCount else {
                 return false
             }
         }
@@ -1460,10 +1706,13 @@ public final class AudioEngineManager: ObservableObject {
             let requiredPluginIDs = channel.plugins
                 .filter { $0.enabled && $0.kind == .au }
                 .map(\.id)
-            guard requiredPluginIDs.allSatisfy({ pluginAudioUnits[$0] != nil }) else {
-                return false
-            }
-            guard (fxPluginNodes[channel.id]?.count ?? 0) == requiredPluginIDs.count else {
+            guard requiredPluginIDs.allSatisfy({
+                pluginAudioUnits[$0] != nil || unavailablePluginIDs.contains($0)
+            }) else { return false }
+            let availablePluginCount = requiredPluginIDs.filter {
+                !unavailablePluginIDs.contains($0)
+            }.count
+            guard (fxPluginNodes[channel.id]?.count ?? 0) == availablePluginCount else {
                 return false
             }
         }
@@ -1517,6 +1766,7 @@ public final class AudioEngineManager: ObservableObject {
                             return
                         }
                         guard let audioUnit else {
+                            self.markPluginUnavailable(pluginID)
                             if let error {
                                 print("Failed to insert AU effect \(pluginName): \(error)")
                             }
@@ -1531,8 +1781,13 @@ public final class AudioEngineManager: ObservableObject {
                             return
                         }
 
+                        let wasEngineRunning = self.engine.isRunning
+                        if wasEngineRunning {
+                            self.engine.pause()
+                        }
                         self.engine.disconnectNodeOutput(previousNode)
                         self.engine.attach(audioUnit)
+                        self.unavailablePluginIDs.remove(pluginID)
                         self.engine.connect(previousNode, to: audioUnit, format: format)
                         self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
                         self.trackPluginNodes[trackID, default: []].append(audioUnit)
@@ -1550,6 +1805,9 @@ public final class AudioEngineManager: ObservableObject {
                             index: index + 1,
                             generation: generation
                         )
+                        if wasEngineRunning {
+                            try? self.engine.start()
+                        }
                     }
                 }
             )
@@ -1557,6 +1815,11 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     public func openPluginUI(pluginID: UUID) {
+        if pluginDescriptors[pluginID]?.kind == .vst3 {
+            openVST3PluginUI(pluginID: pluginID)
+            return
+        }
+
         guard let audioUnit = pluginAudioUnits[pluginID] else {
             print("Plugin UI requested before AU was ready: \(pluginID)")
             pendingPluginUIRequests.insert(pluginID)
@@ -1596,6 +1859,18 @@ public final class AudioEngineManager: ObservableObject {
             return
         }
 
+        if let descriptor,
+           isRelabLX480(descriptor),
+           hasMultipleRelabLX480Instances(descriptor: descriptor) {
+            print("Using Generic UI for multiple Relab LX480 AU instances: \(pluginTitle)")
+            presentGenericPluginView(
+                audioUnit: audioUnit,
+                pluginID: pluginID,
+                title: pluginTitle
+            )
+            return
+        }
+
         // Some AU implementations are not safe to initialize their custom
         // view until the host graph has rendered at least one real-time cycle.
         // Use the same warm-up rule for every plug-in and retry after playback
@@ -1614,6 +1889,66 @@ public final class AudioEngineManager: ObservableObject {
         )
     }
 
+    private func isRelabLX480(_ descriptor: TrackPluginDescriptor) -> Bool {
+        descriptor.kind == .au &&
+            descriptor.name.localizedCaseInsensitiveContains("LX480")
+    }
+
+    private func hasMultipleRelabLX480Instances(
+        descriptor: TrackPluginDescriptor
+    ) -> Bool {
+        pluginDescriptors.values.filter { candidate in
+            isRelabLX480(candidate) &&
+                candidate.componentType == descriptor.componentType &&
+                candidate.componentSubType == descriptor.componentSubType &&
+                candidate.componentManufacturer == descriptor.componentManufacturer
+        }.count > 1
+    }
+
+    private func openVST3PluginUI(pluginID: UUID) {
+        guard let instance = vst3Instances[pluginID] else {
+            print("VST3 plugin instance is not ready: \(pluginID)")
+            return
+        }
+        if let window = pluginWindows[pluginID] {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let hostView = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+        let window = NSWindow(
+            contentRect: hostView.frame,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostView
+        window.title = pluginDescriptors[pluginID]?.name ?? "VST3"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+
+        guard let contentSize = instance.attachEditor(to: hostView) else {
+            print("VST3 plugin editor attach failed: \(pluginID)")
+            window.close()
+            return
+        }
+        hostView.frame = NSRect(origin: .zero, size: contentSize)
+        window.setContentSize(contentSize)
+        window.layoutIfNeeded()
+        pluginWindows[pluginID] = window
+    }
+
+    private func closePluginWindow(pluginID: UUID) {
+        if pluginDescriptors[pluginID]?.kind == .vst3 {
+            vst3Instances[pluginID]?.removeEditor()
+        }
+        guard let window = pluginWindows.removeValue(forKey: pluginID) else { return }
+        window.contentViewController = nil
+        window.contentView = nil
+        window.close()
+    }
+
     private func requestOriginalPluginUI(
         audioUnit: AVAudioUnit,
         pluginID: UUID,
@@ -1626,9 +1961,11 @@ public final class AudioEngineManager: ObservableObject {
         // Keep a potentially blocking third-party AU request off MainActor.
         // The returned AppKit controller is installed on MainActor below.
         pluginUIRequestQueue.async { [weak self] in
+            let callbackReceived = DispatchSemaphore(value: 0)
             print("Requesting AU view controller: \(title) [\(pluginID)]")
             audioUnit.auAudioUnit.requestViewController { viewController in
                 print("AU view controller callback: \(title), returned=\(viewController != nil) [\(pluginID)]")
+                callbackReceived.signal()
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.pluginUIRequests.remove(pluginID) != nil else { return }
@@ -1648,18 +1985,18 @@ public final class AudioEngineManager: ObservableObject {
                     }
                 }
             }
-        }
-
-        let timeout = Double(timeoutMs) / 1000.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-            guard let self,
-                  self.pluginUIRequests.remove(pluginID) != nil else { return }
-            print("AU view controller timed out, using Generic UI: \(title) [\(pluginID)]")
-            self.presentGenericPluginView(
-                audioUnit: audioUnit,
-                pluginID: pluginID,
-                title: title
-            )
+            if callbackReceived.wait(timeout: .now() + .milliseconds(timeoutMs)) == .timedOut {
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.pluginUIRequests.remove(pluginID) != nil else { return }
+                    print("AU view controller timed out, using Generic UI: \(title) [\(pluginID)]")
+                    self.presentGenericPluginView(
+                        audioUnit: audioUnit,
+                        pluginID: pluginID,
+                        title: title
+                    )
+                }
+            }
         }
     }
 
@@ -1887,6 +2224,7 @@ public final class AudioEngineManager: ObservableObject {
         if isMainTrackPlayer {
             for item in clips {
                 clipPlayerNodes[item.clip.id]?.stop()
+                vst3StreamingClips.removeValue(forKey: item.clip.id)?.stop()
             }
         } else if let sendID {
             for item in clips {
@@ -1924,6 +2262,34 @@ public final class AudioEngineManager: ObservableObject {
                 targetPlayer = player
             }
             targetPlayer.volume = isMainTrackPlayer ? 1.0 : player.volume
+            let vst3Plugins = isMainTrackPlayer
+                ? track.plugins.filter { $0.enabled && $0.kind == .vst3 }
+                : []
+            if !vst3Plugins.isEmpty,
+               let outputFormat = AVAudioFormat(
+                   standardFormatWithSampleRate: hardwareSampleRate,
+                   channels: 2
+               ) {
+                let instances = vst3Plugins.compactMap { vst3Instances[$0.id] }
+                if instances.count == vst3Plugins.count,
+                   let streamingClip = VST3StreamingClip(
+                       player: targetPlayer,
+                       fileURL: item.clip.fileURL,
+                       instances: instances,
+                       outputFormat: outputFormat,
+                       sourceStartTime: item.clip.sourceStartTime,
+                       clipOffset: max(0.0, startSec - scheduledClipStart),
+                       clipDuration: clipDuration,
+                       gainDB: item.clip.gainDB,
+                       fadeInDuration: item.clip.fadeInDuration,
+                       fadeOutDuration: item.clip.fadeOutDuration
+                   ) {
+                    vst3StreamingClips[item.clip.id]?.stop()
+                    vst3StreamingClips[item.clip.id] = streamingClip
+                    streamingClip.start(at: startTime)
+                    continue
+                }
+            }
             guard let playbackBuffer = makeClipPlaybackBuffer(
                 fileURL: item.clip.fileURL,
                 startingFrame: startingFrame,
@@ -1943,7 +2309,9 @@ public final class AudioEngineManager: ObservableObject {
         }
         if isMainTrackPlayer {
             for item in clips {
-                clipPlayerNodes[item.clip.id]?.play(at: sharedStartTime)
+                if vst3StreamingClips[item.clip.id] == nil {
+                    clipPlayerNodes[item.clip.id]?.play(at: sharedStartTime)
+                }
             }
         } else if isSendPlayback, let sendID {
             for item in clips {
@@ -2101,6 +2469,10 @@ public final class AudioEngineManager: ObservableObject {
         for player in clipPlayerNodes.values {
             player.stop()
         }
+        for stream in vst3StreamingClips.values {
+            stream.stop()
+        }
+        vst3StreamingClips.removeAll()
         for player in sendClipPlayerNodes.values {
             player.stop()
         }

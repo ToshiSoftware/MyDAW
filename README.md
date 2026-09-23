@@ -30,17 +30,30 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
      - Plays recorded audio files from the specified position.
      - Audio from all playback tracks is mixed (summed) and played simultaneously through the master output.
 5. **Transport Controls**
-   - **Start (`▶` Play)**: Starts / pauses recording and playback.
-   - **Stop (`■` Stop)**: Finalizes and saves the recording file, then stops all playback.
-   - **Rewind (`|<<` Rewind)**: Instantly resets the playhead position to the beginning of the timeline (`00:00.000`).
-   - **Ruler Click**: Clicking anywhere on the timeline ruler instantly seeks to that position.
+   - **Start (`▶` Play)**: Starts recording and playback.
+   - **Stop (`■` Stop)**: Finalizes the recording file and stops playback.
+   - **Rewind (`|<<` Rewind)**: Resets the playhead to `00:00.000`.
+   - **Ruler Click**: Seeks to the clicked timeline position.
 6. **Track Management (Unlimited Tracks)**
    - Add unlimited mono or stereo tracks using the `+ Add Track` button.
    - Each track includes track-name editing, mute (`[M]`), solo (`[S]`), a volume fader, and a pan pot.
 7. **Waveform Display & Playhead**
    - Logic Pro-style dark-theme UI.
-   - Fast peak caching enables smooth scrolling and zooming of long audio using GPU rendering.
+   - Fast peak caching enables smooth scrolling and zooming of long audio using SwiftUI Canvas rendering.
    - A vertical playhead bar (orange) fully synchronized with playback/recording.
+
+8. **Audio Plug-ins**
+   - Detects Audio Unit effects and VST3 audio effects in standard macOS plug-in locations.
+   - VST3 instruments are excluded from the effect list.
+   - AU and VST3 effects can be inserted on tracks, FX channels, and the master channel.
+   - VST3 track audio is processed in short blocks, so parameter changes during playback are applied without restarting transport.
+   - Plug-in state is saved in `.mydaw` project files and restored when the project is opened.
+   - The mixer displays inserted plug-ins with `AU:` or `VST:` prefixes.
+   - Relab LX480 AU uses Generic UI when multiple LX480 AU instances are present, because its custom editor has a known multi-instance limitation.
+
+9. **Startup**
+   - The main window appears while plug-ins are detected.
+   - A black, bordered startup log shows Audio Unit and VST3 detection progress and disappears when detection completes.
 
 ---
 
@@ -69,7 +82,9 @@ MyDAW/
 │       ├── ArrangerView.swift       # Arranger view (track headers + timeline)
 │       ├── TrackHeaderView.swift    # Track controls (R, M, S, input selection, meter, fader)
 │       ├── WaveformLaneView.swift   # Track waveform lane
-│       └── WaveformCanvas.swift     # GPU (Metal)-accelerated waveform renderer
+│       └── WaveformCanvas.swift     # SwiftUI Canvas waveform renderer
+├── VST3Host/                        # C++ VST3 hosting bridge and probe
+├── ThirdParty/vst3sdk/              # Steinberg VST3 SDK
 ├── scripts/
 │   ├── build.sh              # One-click build script from the command line
 │   └── run.sh                # Build & launch script
@@ -97,7 +112,6 @@ Run the following script from the project's root directory.
 ./scripts/run.sh
 ```
 
-Or, to build only:
 
 ```bash
 ./scripts/build.sh
@@ -127,3 +141,12 @@ open build/MyDAW.app
    - Press the `▶` (Play) button to mix and play all recorded tracks through the speakers/headphones.
 6. **Add & Delete Tracks**:
    - Press the `+ Add Track` button at the top to add as many stereo or mono tracks as needed.
+
+7. **Insert Plug-ins**:
+   - Open the plug-in menu in a track, FX channel, or master channel.
+   - Click an inserted plug-in name in the mixer to open its editor.
+   - Removing a plug-in also closes its open editor window.
+
+## Version
+
+The current About dialog version is **1.2**.
