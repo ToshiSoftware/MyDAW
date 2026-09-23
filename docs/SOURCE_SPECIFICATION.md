@@ -45,7 +45,7 @@ flowchart TD
 | デバイス/プラグイン | `AudioDeviceManager`、`PluginManager` | Core AudioデバイスとAudio Unitの列挙・適用 |
 | 永続化 | `ProjectDocument`群 | `.mydaw` JSONへ編集状態を保存。音声本体はWAV参照 |
 
-録音時は `AVAudioEngine` の入力タップがバッファを受け取り、armedトラックごとに入力チャンネルを抽出します。音声は `AudioDiskWriter` が非同期でWAVへ書き、ピークは `MyDAWNotificationCenter` を経由して `ProjectState` と画面へ通知されます。再生時はクリップを `AVAudioPlayerNode` にスケジュールし、トラック、FX、マスターのノードをミックスします。
+録音時は `AVAudioEngine` の入力タップがバッファを受け取り、armedトラックごとに入力チャンネルを抽出します。モノラル録音は1ch、ステレオ録音は指定したInput 1/2などの2chをWAVへ保存します。音声は `AudioDiskWriter` が非同期でWAVへ書き、録音中のピークはチャンネル別に `MyDAWNotificationCenter` を経由して `ProjectState` と画面へ通知されます。再生時はクリップを `AVAudioPlayerNode` にスケジュールし、トラック、FX、マスターのノードをミックスします。モノラル再生バッファは2ch出力形式へ正規化し、左右へ同じ信号を出力します。
 
 > 注意: READMEなどにある「Metal波形レンダラー」という説明に対し、現在の実装は `WaveformCanvas` の SwiftUI `Canvas` です。独自Metalシェーダーは `Sources` にありません。
 
@@ -79,7 +79,7 @@ flowchart TD
 - **`init(...)`**: トラックを初期化する。音声URLが指定された場合は初期クリップを作り、メタデータを読み込む。
 - **`isRecordingMode`**: `isRecordArmed` を返す計算プロパティ。
 - **`addClip(startTime:fileURL:) -> AudioClip`**: クリップを追加し、最後に追加した音声URLを `audioFileURL` に反映する。
-- **`appendLivePeaks(_:)`**: 最後のクリップへ録音中のピーク列を追加する。
+- **`appendLivePeaks(_:)` / `appendLiveChannelPeaks(_:)`**: 最後のクリップへ録音中の合成ピークまたはチャンネル別ピーク列を追加する。
 - **`moveClip(id:to:)`**: 指定クリップの開始位置を0秒以上に補正して更新する。
 - **`deleteClip(id:removeFile:)`**: クリップを削除する。要求時、他クリップから参照されていない音声ファイルも削除する。
 - **`duplicateClip(id:) -> AudioClip?`**: クリップを直後の位置へ複製する。対象がなければ `nil`。
@@ -93,11 +93,13 @@ flowchart TD
 
 タイムライン上の配置と、WAVファイル内の再生範囲を表します。
 
-- **プロパティ**: `id`、`startTime`、`sourceStartTime`、`fileURL`、`duration`、`originalDuration`、`waveformCache`。
+- **プロパティ**: `id`、`startTime`、`sourceStartTime`、`gainDB`、`fadeInDuration`、`fadeOutDuration`、`fileURL`、`duration`、`originalDuration`、`waveformCache`。
 - **`init(id:startTime:fileURL:)`**: 開始位置を0秒以上に補正してクリップを作る。
 - **`loadMetadata()`**: `AVAudioFile` からサンプルレートとフレーム長を取得し、波形ピークの非同期読込を開始する。
-- **`appendLivePeaks(_:)`**: 録音中のピークを `WaveformCache` に追加する。
+- **`appendLivePeaks(_:)` / `appendLiveChannelPeaks(_:)`**: 録音中のピークを `WaveformCache` に追加する。
 - **`setTrim(startTime:sourceStartTime:duration:)`**: タイムライン位置、ソース開始位置、長さを更新する。長さは最低値で制限される。
+- **`setGainDB(_:)`**: クリップゲインを -24〜+24 dBへ制限する。
+- **`setFadeInDuration(_:)` / `setFadeOutDuration(_:)`**: 直線フェード長を0秒以上、クリップ長以下へ制限する。
 - **`duplicate(at:) -> AudioClip`**: 同じ音声ファイルを参照する新しいクリップを指定位置に作る。
 
 ### `Sources/Models/WaveformCache.swift`
@@ -114,7 +116,7 @@ WAVを描画用の最小値・最大値列へ変換します。
 - **`init(samplesPerPeak:)`**: 1ピークあたりのサンプル数を設定する。既定値は512。
 - **`clear()`**: キャッシュと時間情報を消去する。
 - **`peaks(for:) -> [PeakPoint]`**: チャンネル指定時は該当列、指定なしでは合成列を返す。
-- **`appendLivePeak(min:max:)` / `appendLivePeaks(_:)`**: 録音中のピークを追加し、値を `-1...1` に制限する。
+- **`appendLivePeak(min:max:)` / `appendLivePeaks(_:)` / `appendLiveChannelPeaks(_:)`**: 録音中の合成またはチャンネル別ピークを追加し、値を `-1...1` に制限する。
 - **`loadPeaks(from:sampleRate:)`**: `Task.detached` で `AVAudioFile` を読み、一定サンプル区間ごとのチャンネル別 min/max を計算する。公開状態の更新は `MainActor` で行う。
 
 ### `Sources/Models/FXChannel.swift`
@@ -138,7 +140,7 @@ WAVを描画用の最小値・最大値列へ変換します。
 - **`ProjectDocument`**: バージョン、ズーム、選択、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、FX、プラグイン、プラグイン状態を保持する。`init(...)` は現行バージョン4で生成し、`init(from:)` は旧ファイルの欠落項目へ既定値を補う。
 - **`TrackDocument`**: トラックのID、名称、チャンネル、録音・ミュート・ソロ、音量、パン、高さ、色、クリップ、プラグイン、FX送信を保持する。`init(...)` と後方互換用 `init(from:)` を持つ。
 - **`FXChannelDocument`**: `init(channel:)` で `FXChannel` を永続化用データへ変換する。
-- **`ClipDocument`**: クリップID、タイムライン位置、ソース位置、長さ、元の長さ、ファイルパスを保持する。`init(...)` と旧形式を補完する `init(from:)` を持つ。
+- **`ClipDocument`**: クリップID、タイムライン位置、ソース位置、長さ、元の長さ、ゲイン、フェードイン／アウト長、ファイルパスを保持する。旧形式ではフェード値を0として読み込む。
 - **`ColorDocument`**: `red`、`green`、`blue`、`opacity` を保持する。`init(color:)` で SwiftUI `Color` をRGBへ変換し、`color` で復元する。
 
 ### `Sources/Models/ProjectState.swift`
@@ -208,14 +210,14 @@ Core Audio HALからデバイス、チャンネル数、サンプルレート、
 
 AVAudioEngineのグラフ、再生、録音、メトロノーム、メーター、Audio Unit、マスター書出しを管理します。`@MainActor` 上で公開操作を受け、入力タップとロックでリアルタイム処理と状態を分離します。
 
-- **公開状態**: `engine`、`isPlaying`、`isRecording`、`currentTime`、`bpm`、メトロノーム3項目、`hardwareSampleRate`、`sampleRate`、`masterVolume`、`masterPeak`、`recordingsDirectory`、入力チャンネル数、入力有効状態、入力バッファサイズ、推定/手動レイテンシー、選択中の入出力デバイスID。
+- **公開状態**: `engine`、`isPlaying`、`isRecording`、`currentTime`、`bpm`、メトロノーム3項目、`hardwareSampleRate`、`sampleRate`、`masterVolume`、`masterPeak`、`recordingsDirectory`、入力チャンネル数、入力有効状態、入力バッファサイズ、手動録音補正、選択中の入出力デバイスID。Core Audio遅延の診断値は内部状態として取得するが、設定ダイアログには表示しない。
 - **初期化/保存先**: `init()` は録音フォルダ解決、`setupEngine()`、メータータイマー開始を行う。`revealRecordingsFolder()` はFinderを開く。`chooseRecordingsDirectory() -> Bool` と `setRecordingsDirectory(_:) -> Bool` は録音先を変更して `UserDefaults` へ保存する。private `resolveRecordingsDirectory()` は保存済みパス、アプリ周辺、カレント、Musicフォルダの順で探索する。
 - **エンジン設定**: `applyInputBufferFrameSize(_:)`、`applyAudioDevices(inputDeviceID:outputDeviceID:) -> Bool` はハードウェア設定を適用する。`prepareForPluginGraphRestore()`、`setSavedPluginStates(_:)`、`capturePluginStates()` はAudio Unit状態の復元・保存を支える。`commitBPM(_:)` はBPMを20〜400へ制限する。
 - **グラフ同期**: `syncTracks(_:)`、`syncTracks(_:fxChannels:)`、`syncTracks(_:fxChannels:masterPlugins:)` はトラック、FX、マスターのノード構成を再構築・同期する。`syncMasterPlugins(_:)`、`updateMixerLevels(tracks:fxChannels:)`、`updateSendLevel(track:send:fxChannel:anySolo:)` はプラグインチェーンまたは再生中の音量・パン・ミュート・ソロ・送信を更新する。`openPluginUI(pluginID:)` はAudio UnitのUIを表示する。
 - **トランスポート**: `startPlayOrRecord(tracks:fxChannels:)` は再生中なら停止し、準備済みグラフから再生または録音を開始する。`stop(tracks:)` は停止してWAVを確定する。`rewind(tracks:)` は停止して0秒へ戻し、`seek(to:tracks:fxChannels:)` は指定位置へ移動する。
 - **書出し**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:) async throws` はマスター出力を24-bit WAVへ書き出す。
-- **privateな音声処理**: `setupEngine()`、`reconfigureEngine()`、`warmUpAudioRenderPath(format:)`、`processInputAudioBuffer(buffer:)`、`startMeterTimer()`、`startPlayback(tracks:)`、`scheduleClips(for:player:startSec:compensatePluginLatency:)`、`startRecording(armedTracks:playbackTracks:)`、`startPlayheadTimer()`、`stopPlayheadTimer()` が入力抽出、再生スケジュール、録音、プレイヘッドを分担する。
-- **privateなメトロノーム/プラグイン処理**: `makeClickBuffer(format:frequency:amplitude:)`、`makeSilentBuffer(format:duration:)`、`startMetronome()`、`scheduleMetronomeRepeats(interval:)`、`fireClick(buffer:node:)`、`stopMetronome()`、`installAudioUnits(...)`、`installFXAudioUnits(...)`、`installMasterAudioUnits(...)`、`isPluginGraphReady(...)`、UI表示補助群が担当する。
+- **privateな音声処理**: `setupEngine()`、`reconfigureEngine()`、`warmUpAudioRenderPath(format:)`、`processInputAudioBuffer(buffer:)`、`startMeterTimer()`、`startPlayback(tracks:)`、`scheduleClips(for:player:startSec:compensatePluginLatency:)`、`makeClipPlaybackBuffer(...)`、`startRecording(armedTracks:playbackTracks:)`、`startPlayheadTimer()`、`stopPlayheadTimer()` が入力抽出、再生スケジュール、ゲイン／フェード適用、録音、プレイヘッドを分担する。
+- **privateなメトロノーム/プラグイン処理**: `makeClickBuffer(format:frequency:amplitude:)`、`makeSilentBuffer(format:duration:)`、`startMetronome()`、`stopMetronome()`、`installMasterAudioUnits(...)`、`isPluginGraphReady(...)`、UI表示補助群が担当する。クリックは再生・録音中のUI切替を禁止する。
 - **並行性**: `NSLock` で録音設定、WAV writer、ピーク値を保護する。Timer、Task、DispatchQueue、Audio Unit UIウィンドウを使用するため、停止・キャンセル・確定処理が重要なライフサイクル境界となる。
 
 ## 5. SwiftUIビュー
