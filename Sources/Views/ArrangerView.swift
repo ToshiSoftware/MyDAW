@@ -99,6 +99,24 @@ public struct ArrangerView: View {
                                         }
                                     }
 
+                                    if let preview = projectState.clipDragPreview {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(preview.color.opacity(0.18))
+                                            .frame(width: preview.width, height: preview.height)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 3)
+                                                    .stroke(
+                                                        preview.color.opacity(0.95),
+                                                        style: StrokeStyle(lineWidth: 2, dash: [6, 3])
+                                                    )
+                                            )
+                                            .position(
+                                                x: CGFloat(preview.startTime) * projectState.pixelsPerSecond + preview.width / 2.0,
+                                                y: preview.topY + preview.height / 2.0
+                                            )
+                                            .allowsHitTesting(false)
+                                    }
+
                                     let playheadX = CGFloat(audioEngine.currentTime) * projectState.pixelsPerSecond
                                     let totalHeight = projectState.tracks.reduce(CGFloat.zero) { height, track in
                                         height + TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale

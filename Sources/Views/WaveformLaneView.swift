@@ -109,6 +109,8 @@ private struct AudioClipView: View {
     @ObservedObject var projectState: ProjectState
     @State private var dragStartTime: Double?
     @State private var dragStartLocationX: CGFloat?
+    @State private var dragGrabOffsetY: CGFloat?
+    @State private var dragTargetTrackId: UUID?
     @State private var resizeStartTime: Double?
     @State private var resizeSourceStartTime: Double?
     @State private var resizeDuration: Double?
@@ -117,7 +119,12 @@ private struct AudioClipView: View {
     @State private var fadeOutStartDuration: Double?
     let height: CGFloat
 
-    init(clip: AudioClip, track: AudioTrack, projectState: ProjectState, height: CGFloat) {
+    init(
+        clip: AudioClip,
+        track: AudioTrack,
+        projectState: ProjectState,
+        height: CGFloat
+    ) {
         self.clip = clip
         self.track = track
         self.projectState = projectState
@@ -206,29 +213,63 @@ private struct AudioClipView: View {
                     .gesture(fadeOutGesture)
             }
             .clipShape(RoundedRectangle(cornerRadius: 3))
+            .opacity(projectState.clipDragPreview?.clipID == clip.id ? 0 : 1)
             .contentShape(Rectangle())
             .gesture(
-                    DragGesture(coordinateSpace: .named("timeline"))
+                    DragGesture(coordinateSpace: .named("timelineScroll"))
                     .onChanged { value in
                             let pixelsPerSecond = projectState.pixelsPerSecond
                             if dragStartTime == nil {
                                 projectState.beginClipEdit()
                                 dragStartTime = clip.startTime
-                        dragStartLocationX = value.location.x
+                                dragStartLocationX = value.startLocation.x
+                                dragTargetTrackId = track.id
+                                dragGrabOffsetY = value.startLocation.y - trackTopY(for: track.id)
+                                projectState.beginClipDragPreview(
+                                    clipID: clip.id,
+                                    startTime: clip.startTime,
+                                    topY: trackTopY(for: track.id) + 2.0,
+                                    width: clipWidth,
+                                    height: max(20.0, height),
+                                    color: track.color
+                                )
                                 projectState.selectClip(trackId: track.id, clipId: clip.id)
                             }
                             let initialStartTime = dragStartTime ?? clip.startTime
-                        let initialLocationX = dragStartLocationX ?? value.location.x
-                        let horizontalDelta = value.location.x - initialLocationX
-                        let rawStartTime = initialStartTime + Double(horizontalDelta / pixelsPerSecond)
+                            let initialLocationX = dragStartLocationX ?? value.startLocation.x
+                            let horizontalDelta = value.location.x - initialLocationX
+                            let rawStartTime = initialStartTime + Double(horizontalDelta / pixelsPerSecond)
                             let newStartTime = projectState.snappedTimelineTime(rawStartTime)
                             track.moveClip(id: clip.id, to: newStartTime)
+                            dragTargetTrackId = trackID(atTimelineY: value.location.y)
+                            let grabOffsetY = dragGrabOffsetY ?? 0.0
+                            projectState.updateClipDragPreview(
+                                startTime: newStartTime,
+                                topY: value.location.y - grabOffsetY
+                            )
                     }
                     .onEnded { _ in
+                            let destinationTrackId = dragTargetTrackId
+                            let finalStartTime = clip.startTime
+                            if let destinationTrackId,
+                               destinationTrackId != track.id {
+                                _ = projectState.moveClip(
+                                    clipId: clip.id,
+                                    from: track.id,
+                                    to: destinationTrackId,
+                                    startTime: finalStartTime
+                                )
+                            }
                             dragStartTime = nil
-                        dragStartLocationX = nil
+                            dragStartLocationX = nil
+                            dragTargetTrackId = nil
+                            dragGrabOffsetY = nil
+                            projectState.endClipDragPreview()
                             projectState.endClipEdit()
-                            projectState.audioEngine.syncTracks(projectState.tracks)
+                            projectState.audioEngine.syncAfterClipEdit(
+                                projectState.tracks,
+                                fxChannels: projectState.fxChannels
+                            )
                     }
             )
             .onTapGesture {
@@ -263,6 +304,29 @@ private struct AudioClipView: View {
             }
             .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
         }
+    }
+
+    private func trackTopY(for trackID: UUID) -> CGFloat {
+        var currentY: CGFloat = 0.0
+        for candidate in projectState.tracks {
+            if candidate.id == trackID {
+                return currentY
+            }
+            currentY += TrackHeaderView.rowHeight(for: candidate) * projectState.trackHeightScale + 1.0
+        }
+        return currentY
+    }
+
+    private func trackID(atTimelineY y: CGFloat) -> UUID? {
+        var currentY: CGFloat = 0.0
+        for candidate in projectState.tracks {
+            let height = TrackHeaderView.rowHeight(for: candidate) * projectState.trackHeightScale
+            if y >= currentY && y < currentY + height {
+                return candidate.id
+            }
+            currentY += height + 1.0
+        }
+        return nil
     }
 
     private var trimHandle: some View {
@@ -311,7 +375,10 @@ private struct AudioClipView: View {
             .onEnded { _ in
                 gainStartDB = nil
                 projectState.endClipEdit()
-                projectState.audioEngine.syncTracks(projectState.tracks)
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
             }
     }
 
@@ -387,7 +454,10 @@ private struct AudioClipView: View {
             .onEnded { _ in
                 resetResizeState()
                 projectState.endClipEdit()
-                projectState.audioEngine.syncTracks(projectState.tracks)
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
             }
     }
 
@@ -417,7 +487,10 @@ private struct AudioClipView: View {
             .onEnded { _ in
                 resetResizeState()
                 projectState.endClipEdit()
-                projectState.audioEngine.syncTracks(projectState.tracks)
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
             }
     }
 

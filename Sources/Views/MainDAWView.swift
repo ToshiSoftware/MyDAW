@@ -91,6 +91,14 @@ public struct MainDAWView: View {
                 .opacity(projectState.isShowingStartupLog ? 1.0 : 0.0)
                 .allowsHitTesting(projectState.isShowingStartupLog)
         }
+        .overlay {
+            if !projectState.isProjectOpen {
+                ProjectSelectionView(
+                    onCreate: { _ = projectState.createNewProject() },
+                    onOpen: { projectState.loadProject() }
+                )
+            }
+        }
         .background(
             SpacebarHandler {
                 guard !projectState.isShowingMasterExportDialog else { return }
@@ -307,6 +315,7 @@ private struct SpacebarHandler: NSViewRepresentable {
         var undo: () -> Void
         var redo: () -> Void
         private var monitor: Any?
+        private var mouseMonitor: Any?
 
         init(
             action: @escaping () -> Void,
@@ -323,12 +332,18 @@ private struct SpacebarHandler: NSViewRepresentable {
         }
 
         func startMonitoring() {
+            guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                    guard let self else { return event }
-                    let modifiers = event.modifierFlags
+                guard let self else { return event }
+                let modifiers = event.modifierFlags
                 let hasCommand = modifiers.contains(.command)
                 let hasShift = modifiers.contains(.shift)
                 let hasOtherModifier = modifiers.intersection([.control, .option]).isEmpty == false
+
+                if let firstResponder = event.window?.firstResponder,
+                   firstResponder is NSTextView || firstResponder is NSTextField {
+                    return event
+                }
 
                 if hasCommand && !hasOtherModifier {
                     if event.keyCode == 6 {
@@ -349,18 +364,27 @@ private struct SpacebarHandler: NSViewRepresentable {
                     return event
                 }
                 switch event.keyCode {
-                case 49:
-                    self.action()
-                    return nil
                 case 123:
                     self.rewind()
-                    return nil
-                case 15:
-                    self.record()
                     return nil
                 default:
                     return event
                 }
+            }
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                guard let window = event.window,
+                      let firstResponder = window.firstResponder as? NSView,
+                                            let contentView = window.contentView else {
+                                        return event
+                                }
+                                let contentPoint = contentView.convert(event.locationInWindow, from: nil)
+                                guard let hitView = contentView.hitTest(contentPoint),
+                      hitView !== firstResponder,
+                      !hitView.isDescendant(of: firstResponder) else {
+                    return event
+                }
+                window.makeFirstResponder(nil)
+                return event
             }
         }
 
@@ -368,6 +392,10 @@ private struct SpacebarHandler: NSViewRepresentable {
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
+            }
+            if let mouseMonitor {
+                NSEvent.removeMonitor(mouseMonitor)
+                self.mouseMonitor = nil
             }
         }
     }

@@ -5,6 +5,31 @@ import AppKit
 import UniformTypeIdentifiers
 import AVFoundation
 
+public struct ClipDragPreview {
+    public let clipID: UUID
+    public let startTime: Double
+    public let topY: CGFloat
+    public let width: CGFloat
+    public let height: CGFloat
+    public let color: Color
+
+    public init(
+        clipID: UUID,
+        startTime: Double,
+        topY: CGFloat,
+        width: CGFloat,
+        height: CGFloat,
+        color: Color
+    ) {
+        self.clipID = clipID
+        self.startTime = startTime
+        self.topY = topY
+        self.width = width
+        self.height = height
+        self.color = color
+    }
+}
+
 @MainActor
 public final class ProjectState: ObservableObject {
     private struct ClipSnapshot {
@@ -28,6 +53,7 @@ public final class ProjectState: ObservableObject {
     @Published public var fxChannels: [FXChannel] = []
     @Published public var masterPlugins: [TrackPluginDescriptor] = []
     @Published public var selectedTrackId: UUID?
+    @Published public var clipDragPreview: ClipDragPreview?
     @Published public var pixelsPerSecond: CGFloat = 80.0 // Horizontal zoom factor
     @Published public var timelineScrollTime: Double = 0.0
     @Published public private(set) var zoomRevision: Int = 0
@@ -46,6 +72,7 @@ public final class ProjectState: ObservableObject {
     @Published public var isExportingMasterMix = false
     @Published public var masterExportCompleted = false
     @Published public var masterExportError: String?
+    @Published public private(set) var isProjectOpen = false
     public var masterExportURL: URL?
     private var masterExportTask: Task<Void, Never>?
     @Published public private(set) var canUndo = false
@@ -68,6 +95,7 @@ public final class ProjectState: ObservableObject {
     }
 
     public var currentProjectURL: URL?
+    public private(set) var projectFolderURL: URL?
 
     public var audioContentEndTime: Double {
         tracks
@@ -498,6 +526,60 @@ public final class ProjectState: ObservableObject {
         selectedTrackId = trackId
     }
 
+    public func beginClipDragPreview(
+        clipID: UUID,
+        startTime: Double,
+        topY: CGFloat,
+        width: CGFloat,
+        height: CGFloat,
+        color: Color
+    ) {
+        clipDragPreview = ClipDragPreview(
+            clipID: clipID,
+            startTime: startTime,
+            topY: topY,
+            width: width,
+            height: height,
+            color: color
+        )
+    }
+
+    public func updateClipDragPreview(startTime: Double, topY: CGFloat) {
+        guard let preview = clipDragPreview else { return }
+        clipDragPreview = ClipDragPreview(
+            clipID: preview.clipID,
+            startTime: startTime,
+            topY: topY,
+            width: preview.width,
+            height: preview.height,
+            color: preview.color
+        )
+    }
+
+    public func endClipDragPreview() {
+        clipDragPreview = nil
+    }
+
+    @discardableResult
+    public func moveClip(
+        clipId: UUID,
+        from sourceTrackId: UUID,
+        to destinationTrackId: UUID,
+        startTime: Double
+    ) -> Bool {
+        guard sourceTrackId != destinationTrackId,
+              let sourceTrack = tracks.first(where: { $0.id == sourceTrackId }),
+              let destinationTrack = tracks.first(where: { $0.id == destinationTrackId }),
+              let clip = sourceTrack.removeClipForTransfer(id: clipId) else {
+            return false
+        }
+
+        clip.startTime = max(0.0, startTime)
+        destinationTrack.restoreClip(clip)
+        selectClip(trackId: destinationTrackId, clipId: clipId)
+        return true
+    }
+
     public func deleteSelectedClip() {
         guard !audioEngine.isRecording,
               let track = tracks.first(where: { $0.selectedClipId != nil }),
@@ -546,15 +628,19 @@ public final class ProjectState: ObservableObject {
     @discardableResult
     public func saveProject() -> Bool {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
-        let panel = NSSavePanel()
-        panel.title = "Save MyDAW Project"
-        let defaultName = currentProjectURL?.deletingPathExtension().lastPathComponent ?? "MyDAW Project"
-        panel.nameFieldStringValue = defaultName
-        panel.directoryURL = currentProjectURL?.deletingLastPathComponent()
-        panel.allowedContentTypes = [UTType(filenameExtension: "mydaw") ?? .data]
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        guard let projectURL = currentProjectURL,
+              let projectFolderURL else {
+            return createNewProject()
+        }
 
-        currentProjectURL = url
+        let recordingsURL = projectFolderURL.appendingPathComponent("Recordings", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+            audioEngine.recordingsDirectory = recordingsURL.standardizedFileURL
+        } catch {
+            presentProjectError("Could not prepare project folder: \(error.localizedDescription)")
+            return false
+        }
 
         let document = ProjectDocument(
             pixelsPerSecond: Double(pixelsPerSecond),
@@ -594,7 +680,7 @@ public final class ProjectState: ObservableObject {
                             gainDB: clip.gainDB,
                             fadeInDuration: clip.fadeInDuration,
                             fadeOutDuration: clip.fadeOutDuration,
-                            filePath: clip.fileURL.path
+                            filePath: relativePath(for: clip.fileURL, to: projectFolderURL)
                         )
                     },
                     plugins: track.plugins,
@@ -609,7 +695,7 @@ public final class ProjectState: ObservableObject {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(document).write(to: url, options: .atomic)
+            try encoder.encode(document).write(to: projectURL, options: .atomic)
             return true
         } catch {
             presentProjectError("Could not save project: \(error.localizedDescription)")
@@ -621,11 +707,56 @@ public final class ProjectState: ObservableObject {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSOpenPanel()
         panel.title = "Open MyDAW Project"
-        panel.allowedContentTypes = [UTType(filenameExtension: "mydaw") ?? .data]
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
 
+        let projectFiles = (try? FileManager.default.contentsOfDirectory(
+            at: folderURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { $0.pathExtension.lowercased() == "mydaw" } ?? []
+        guard let url = projectFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).first else {
+            presentProjectError("このフォルダーに .mydaw プロジェクトファイルがありません。")
+            return
+        }
+
+        loadProject(from: url, projectFolderURL: folderURL)
+    }
+
+    public func createNewProject() -> Bool {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
+        let panel = NSOpenPanel()
+        panel.title = "Choose New MyDAW Project Folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let folderURL = panel.url else { return false }
+
+        let projectName = folderURL.lastPathComponent.isEmpty ? "MyDAW Project" : folderURL.lastPathComponent
+        let projectURL = folderURL.appendingPathComponent("\(projectName).mydaw")
         do {
+            let recordingsURL = folderURL.appendingPathComponent("Recordings", isDirectory: true)
+            try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+            currentProjectURL = projectURL
+            projectFolderURL = folderURL.standardizedFileURL
+            audioEngine.recordingsDirectory = recordingsURL.standardizedFileURL
+            isProjectOpen = true
+            return saveProject()
+        } catch {
+            presentProjectError("Could not create project folder: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func loadProject(from url: URL, projectFolderURL: URL) {
+        do {
+            let projectFolderURL = projectFolderURL.standardizedFileURL
+            let recordingsURL = projectFolderURL.appendingPathComponent("Recordings", isDirectory: true)
+            try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+
             let document = try JSONDecoder().decode(ProjectDocument.self, from: Data(contentsOf: url))
             var restoredPluginIDs = Set<UUID>()
             func uniquePluginInstances(_ plugins: [TrackPluginDescriptor]) -> [TrackPluginDescriptor] {
@@ -654,7 +785,7 @@ public final class ProjectState: ObservableObject {
                     fxSends: trackDocument.fxSends
                 )
                 for clipDocument in trackDocument.clips {
-                    let clipURL = URL(fileURLWithPath: clipDocument.filePath)
+                    let clipURL = resolveClipURL(clipDocument.filePath, relativeTo: projectFolderURL)
                     let clip = AudioClip(id: clipDocument.id, startTime: clipDocument.startTime, fileURL: clipURL)
                     track.restoreClip(clip)
                     clip.setTrim(
@@ -711,6 +842,9 @@ public final class ProjectState: ObservableObject {
             waveformVerticalScale = CGFloat(min(32.0, max(1.0, document.waveformVerticalScale)))
             trackHeightScale = CGFloat(min(3.0, max(0.5, document.trackHeightScale)))
             currentProjectURL = url
+            self.projectFolderURL = projectFolderURL
+            audioEngine.recordingsDirectory = recordingsURL
+            isProjectOpen = true
 
             audioEngine.prepareForPluginGraphRestore()
 
@@ -726,6 +860,24 @@ public final class ProjectState: ObservableObject {
         } catch {
             presentProjectError("Could not open project: \(error.localizedDescription)")
         }
+    }
+
+    private func relativePath(for fileURL: URL, to projectFolderURL: URL) -> String {
+        let standardizedFilePath = fileURL.standardizedFileURL.path
+        let standardizedFolderPath = projectFolderURL.standardizedFileURL.path.hasSuffix("/")
+            ? projectFolderURL.standardizedFileURL.path
+            : projectFolderURL.standardizedFileURL.path + "/"
+        if standardizedFilePath.hasPrefix(standardizedFolderPath) {
+            return String(standardizedFilePath.dropFirst(standardizedFolderPath.count))
+        }
+        return standardizedFilePath
+    }
+
+    private func resolveClipURL(_ path: String, relativeTo projectFolderURL: URL) -> URL {
+        if path.hasPrefix("/") {
+            return URL(fileURLWithPath: path).standardizedFileURL
+        }
+        return projectFolderURL.appendingPathComponent(path).standardizedFileURL
     }
 
     private func presentProjectError(_ message: String) {

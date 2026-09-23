@@ -6,6 +6,11 @@ public struct TransportBarView: View {
     @ObservedObject public var projectState: ProjectState
     @State private var showingBufferSettings = false
     @State private var bpmText = "120"
+    @FocusState private var focusedField: FocusedField?
+
+    private enum FocusedField {
+        case bpm
+    }
 
     public init(audioEngine: AudioEngineManager, projectState: ProjectState) {
         self.audioEngine = audioEngine
@@ -225,6 +230,7 @@ public struct TransportBarView: View {
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .frame(width: 38)
                             .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .bpm)
                             .onAppear {
                                 bpmText = String(format: "%.0f", audioEngine.bpm)
                             }
@@ -244,6 +250,11 @@ public struct TransportBarView: View {
                             }
                             .onSubmit {
                                 commitBPMText()
+                            }
+                            .onChange(of: focusedField) { newValue in
+                                if newValue == nil {
+                                    commitBPMText()
+                                }
                             }
                         Text("BPM")
                             .font(.system(size: 9, weight: .semibold))
@@ -480,9 +491,6 @@ private struct BufferSettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Choose…") {
-                        _ = audioEngine.chooseRecordingsDirectory()
-                    }
                 }
             }
 

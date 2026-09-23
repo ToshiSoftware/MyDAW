@@ -166,9 +166,7 @@ public final class PluginManager: ObservableObject {
             let audioUnits = self.discoverAUComponents()
             log("Audio Unit: \(audioUnits.count)件")
 
-            log("VST3プラグインを検出中...")
-            let vst3Plugins = self.discoverVST3Bundles(onLog: log)
-            let discovered = audioUnits + vst3Plugins
+            let discovered = audioUnits
             let unique = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
             let sorted = Array(unique.values).sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending

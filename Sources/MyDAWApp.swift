@@ -27,14 +27,22 @@ struct MyDAWApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About MyDAW") {
+                    let version = Bundle.main.object(
+                        forInfoDictionaryKey: "CFBundleShortVersionString"
+                    ) as? String ?? "1.1"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationVersion: "1.2"
+                        .applicationVersion: version
                     ])
                 }
             }
 
             SidebarCommands()
             CommandGroup(replacing: .newItem) {
+                Button("New Project…") {
+                    _ = projectState.createNewProject()
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+
                 Button("Open Project…") {
                     projectState.loadProject()
                 }

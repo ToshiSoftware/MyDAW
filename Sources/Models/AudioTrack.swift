@@ -97,6 +97,15 @@ public final class AudioTrack: Identifiable, ObservableObject {
         clips.first(where: { $0.id == id })?.startTime = max(0.0, startTime)
     }
 
+    @discardableResult
+    public func removeClipForTransfer(id: UUID) -> AudioClip? {
+        guard let index = clips.firstIndex(where: { $0.id == id }) else { return nil }
+        let clip = clips.remove(at: index)
+        selectedClipId = nil
+        audioFileURL = clips.last?.fileURL
+        return clip
+    }
+
     public func deleteClip(id: UUID, removeFile: Bool = true) {
         guard let index = clips.firstIndex(where: { $0.id == id }) else { return }
         let clip = clips.remove(at: index)

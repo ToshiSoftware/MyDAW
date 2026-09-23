@@ -108,7 +108,10 @@ public final class VST3NativeInstance {
         var width: Int32 = 0
         var height: Int32 = 0
         let result = myDAWVST3AttachEditor(handle, Unmanaged.passUnretained(parentView).toOpaque(), &width, &height)
-        guard result == 0 else { return nil }
+        guard result == 0 else {
+            print("VST3 editor attach failed with code \(result)")
+            return nil
+        }
         return NSSize(width: Int(width), height: Int(height))
     }
 

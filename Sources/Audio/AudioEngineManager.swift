@@ -3,6 +3,173 @@ import AVFoundation
 import AppKit
 import CoreAudioKit
 
+private final class VST3BusProcessor {
+    private let instances: [VST3NativeInstance]
+    private let maxFrames: Int
+    private let outputFormat: AVAudioFormat
+    private let queueCapacity: Int
+    private var queue: [Float]
+    private var inputQueue: [Float]
+    private var readFrame = 0
+    private var writeFrame = 0
+    private var queuedFrames = 0
+    private var inputReadFrame = 0
+    private var inputWriteFrame = 0
+    private var inputQueuedFrames = 0
+    private let lock = NSLock()
+    private var inputBuffer: [Float]
+    private var outputBuffer: [Float]
+    private let processingQueue = DispatchQueue(label: "MyDAW.vst3-bus-processing", qos: .userInitiated)
+    private let processingSignal = DispatchSemaphore(value: 0)
+    private var isStopped = false
+
+    lazy var inputNode: AVAudioSinkNode = AVAudioSinkNode { [weak self] _, frameCount, audioBufferList in
+        guard let self else { return noErr }
+        self.receive(frameCount: Int(frameCount), audioBufferList: audioBufferList)
+        return noErr
+    }
+
+    lazy var outputNode: AVAudioSourceNode = AVAudioSourceNode(format: outputFormat) { [weak self] _, _, frameCount, audioBufferList in
+        guard let self else { return noErr }
+        self.provide(frameCount: Int(frameCount), audioBufferList: audioBufferList)
+        return noErr
+    }
+
+    init?(instances: [VST3NativeInstance], format: AVAudioFormat, maxFrames: Int) {
+        guard !instances.isEmpty, format.channelCount == 2, maxFrames > 0 else { return nil }
+        self.instances = instances
+        self.maxFrames = maxFrames
+        self.outputFormat = format
+        self.queueCapacity = maxFrames * 32
+        self.queue = Array(repeating: 0.0, count: maxFrames * 32 * 2)
+        self.inputQueue = Array(repeating: 0.0, count: maxFrames * 32 * 2)
+        self.inputBuffer = Array(repeating: 0.0, count: maxFrames * 2)
+        self.outputBuffer = Array(repeating: 0.0, count: maxFrames * 2)
+        processingQueue.async { [weak self] in
+            self?.processLoop()
+        }
+    }
+
+    deinit {
+        lock.lock()
+        isStopped = true
+        lock.unlock()
+        processingSignal.signal()
+    }
+
+    private func receive(frameCount: Int, audioBufferList: UnsafePointer<AudioBufferList>) {
+        guard frameCount > 0 else { return }
+        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: audioBufferList))
+        guard buffers.count >= 2,
+              let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
+              let right = buffers[1].mData?.assumingMemoryBound(to: Float.self) else { return }
+
+        lock.lock()
+        guard !isStopped else {
+            lock.unlock()
+            return
+        }
+        let shouldSignal = inputQueuedFrames == 0
+        for frame in 0..<frameCount {
+            if inputQueuedFrames == queueCapacity {
+                inputReadFrame = (inputReadFrame + 1) % queueCapacity
+                inputQueuedFrames -= 1
+            }
+            let queueIndex = inputWriteFrame * 2
+            inputQueue[queueIndex] = left[frame]
+            inputQueue[queueIndex + 1] = right[frame]
+            inputWriteFrame = (inputWriteFrame + 1) % queueCapacity
+            inputQueuedFrames += 1
+        }
+        lock.unlock()
+        if shouldSignal {
+            processingSignal.signal()
+        }
+    }
+
+    private func processLoop() {
+        while true {
+            processingSignal.wait()
+            lock.lock()
+            if isStopped {
+                lock.unlock()
+                return
+            }
+            let frames = min(maxFrames, inputQueuedFrames)
+            for frame in 0..<frames {
+                let queueIndex = inputReadFrame * 2
+                inputBuffer[frame * 2] = inputQueue[queueIndex]
+                inputBuffer[frame * 2 + 1] = inputQueue[queueIndex + 1]
+                inputReadFrame = (inputReadFrame + 1) % queueCapacity
+            }
+            inputQueuedFrames -= frames
+            lock.unlock()
+
+            guard frames > 0 else { continue }
+            var processed = true
+            for instance in instances {
+                let result = inputBuffer.withUnsafeBufferPointer { input in
+                    outputBuffer.withUnsafeMutableBufferPointer { output in
+                        guard let inputBase = input.baseAddress,
+                              let outputBase = output.baseAddress else { return false }
+                        return instance.processInterleaved(
+                            inputBase,
+                            output: outputBase,
+                            frames: frames
+                        )
+                    }
+                }
+                guard result else {
+                    processed = false
+                    break
+                }
+                inputBuffer.replaceSubrange(0..<(frames * 2), with: outputBuffer[0..<(frames * 2)])
+            }
+            guard processed else { continue }
+
+            lock.lock()
+            for frame in 0..<frames {
+                if queuedFrames == queueCapacity {
+                    readFrame = (readFrame + 1) % queueCapacity
+                    queuedFrames -= 1
+                }
+                let queueIndex = writeFrame * 2
+                queue[queueIndex] = inputBuffer[frame * 2]
+                queue[queueIndex + 1] = inputBuffer[frame * 2 + 1]
+                writeFrame = (writeFrame + 1) % queueCapacity
+                queuedFrames += 1
+            }
+            let hasPendingInput = inputQueuedFrames > 0
+            lock.unlock()
+            if hasPendingInput {
+                processingSignal.signal()
+            }
+        }
+    }
+
+    private func provide(frameCount: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        guard buffers.count >= 2,
+              let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
+              let right = buffers[1].mData?.assumingMemoryBound(to: Float.self) else { return }
+
+        lock.lock()
+        for frame in 0..<frameCount {
+            if queuedFrames > 0 {
+                let queueIndex = readFrame * 2
+                left[frame] = queue[queueIndex]
+                right[frame] = queue[queueIndex + 1]
+                readFrame = (readFrame + 1) % queueCapacity
+                queuedFrames -= 1
+            } else {
+                left[frame] = 0.0
+                right[frame] = 0.0
+            }
+        }
+        lock.unlock()
+    }
+}
+
 private final class VST3StreamingClip {
     private let player: AVAudioPlayerNode
     private let file: AVAudioFile
@@ -262,18 +429,29 @@ public final class AudioEngineManager: ObservableObject {
     private var trackPluginLatencies: [UUID: Double] = [:]
     private var fxInputNodes: [UUID: AVAudioMixerNode] = [:]
     private var fxPluginNodes: [UUID: [AVAudioNode]] = [:]
+    private var fxVSTProcessors: [UUID: VST3BusProcessor] = [:]
     private var fxGraphSignatures: [UUID: [UUID]] = [:]
     private var sendGainNodes: [UUID: AVAudioMixerNode] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
     private var vst3Instances: [UUID: VST3NativeInstance] = [:]
+    private var vst3UIInstances: [UUID: VST3NativeInstance] = [:]
     private var vst3StreamingClips: [UUID: VST3StreamingClip] = [:]
+    private var fxVSTStreamingClips: [String: VST3StreamingClip] = [:]
+    private var fxVSTPluginsByChannelID: [UUID: [TrackPluginDescriptor]] = [:]
     private var pluginWindows: [UUID: NSWindow] = [:]
     private let masterChannelID = UUID()
     private var masterOutputNode: AVAudioMixerNode?
     private var masterPluginNodes: [AVAudioNode] = []
+    private var masterVSTProcessor: VST3BusProcessor?
     private var masterPluginSignature: [UUID] = []
     private var masterPluginGraphGeneration = 0
     private var configuredMasterPlugins: [TrackPluginDescriptor] = []
+
+    private func supportsRealtimeVST3(_ descriptor: TrackPluginDescriptor) -> Bool {
+        // VST3 bus processing is not used. VST3 effects are rendered per
+        // scheduled clip, matching the stable track-plugin path.
+        return false
+    }
     private var masterPluginIDs: Set<UUID> = []
     private var pluginDescriptors: [UUID: TrackPluginDescriptor] = [:]
     private var savedPluginStates: [UUID: Data] = [:]
@@ -1105,6 +1283,7 @@ public final class AudioEngineManager: ObservableObject {
             .reduce(into: [:]) { descriptors, plugin in
                 descriptors[plugin.id] = plugin
             }
+        syncVST3Instances(for: allPlugins)
         syncMasterPlugins(configuredMasterPlugins)
         syncFXChannels(fxChannels)
         for input in fxInputNodes.values {
@@ -1121,6 +1300,9 @@ public final class AudioEngineManager: ObservableObject {
             engine.disconnectNodeOutput(player)
             engine.detach(player)
             sendPlayerNodes.removeValue(forKey: sendID)
+            for key in fxVSTStreamingClips.keys where key.hasPrefix("fx:\(sendID.uuidString):") {
+                fxVSTStreamingClips.removeValue(forKey: key)?.stop()
+            }
         }
         let currentTrackIDs = Set(tracks.map { $0.id })
         let currentClipIDs = Set(tracks.flatMap { $0.clips.map(\.id) })
@@ -1133,6 +1315,9 @@ public final class AudioEngineManager: ObservableObject {
         for (id, node) in clipPlayerNodes where !currentClipIDs.contains(id) {
             node.stop()
             vst3StreamingClips.removeValue(forKey: id)?.stop()
+            for key in fxVSTStreamingClips.keys where key.hasSuffix(":\(id.uuidString)") {
+                fxVSTStreamingClips.removeValue(forKey: key)?.stop()
+            }
             engine.disconnectNodeOutput(node)
             engine.detach(node)
             clipPlayerNodes.removeValue(forKey: id)
@@ -1356,9 +1541,15 @@ public final class AudioEngineManager: ObservableObject {
             self.captureConfigs = newConfigs
         }
 
-        // Start AU instantiation before loading VST3 modules. Some plug-ins
-        // share process-global resources between their AU and VST3 formats.
-        syncVST3Instances(for: allPlugins)
+    }
+
+    public func syncAfterClipEdit(_ tracks: [AudioTrack], fxChannels: [FXChannel] = []) {
+        if isPlaying && !isRecording {
+            syncTracks(tracks, fxChannels: fxChannels)
+            reschedulePlayback(tracks: tracks)
+        } else {
+            syncTracks(tracks, fxChannels: fxChannels)
+        }
     }
 
     public func updateMixerLevels(
@@ -1439,7 +1630,8 @@ public final class AudioEngineManager: ObservableObject {
                     player: sendPlayer,
                     startSec: currentTime,
                     sharedStartTime: sharedStartTime,
-                    sendID: send.id
+                    sendID: send.id,
+                    fxChannelID: send.fxChannelID
                 )
             }
         }
@@ -1463,14 +1655,16 @@ public final class AudioEngineManager: ObservableObject {
         }
         guard let masterOutputNode,
               let format = AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2) else { return }
-        let auPlugins = plugins.filter { $0.enabled && $0.kind == .au }
-        let signature = auPlugins.map(\.id)
+        let enabledPlugins = plugins.filter(\.enabled)
+        let auPlugins = enabledPlugins.filter { $0.kind == .au }
+        let vstPlugins = enabledPlugins.filter { supportsRealtimeVST3($0) }
+        let signature = enabledPlugins.map(\.id)
         guard signature != masterPluginSignature else { return }
         let removedPluginIDs = Set(masterPluginSignature).subtracting(signature)
         for pluginID in removedPluginIDs {
             pluginUIRequests.remove(pluginID)
             pendingPluginUIRequests.remove(pluginID)
-            vst3Instances[pluginID]?.removeEditor()
+            vst3UIInstances.removeValue(forKey: pluginID)?.removeEditor()
             pluginWindows[pluginID]?.close()
             pluginWindows.removeValue(forKey: pluginID)
         }
@@ -1488,10 +1682,28 @@ public final class AudioEngineManager: ObservableObject {
             engine.detach(node)
         }
         masterPluginNodes.removeAll()
+        if let processor = masterVSTProcessor {
+            engine.disconnectNodeOutput(processor.inputNode)
+            engine.disconnectNodeOutput(processor.outputNode)
+            engine.detach(processor.inputNode)
+            engine.detach(processor.outputNode)
+            masterVSTProcessor = nil
+        }
+        if let processor = VST3BusProcessor(
+            instances: vstPlugins.compactMap { vst3Instances[$0.id] },
+            format: format,
+            maxFrames: inputBufferFrameSize
+        ) {
+            masterVSTProcessor = processor
+            engine.attach(processor.inputNode)
+            engine.attach(processor.outputNode)
+        }
         engine.disconnectNodeOutput(engine.mainMixerNode)
         engine.disconnectNodeOutput(masterOutputNode)
         engine.connect(engine.mainMixerNode, to: masterOutputNode, format: format)
-        engine.connect(masterOutputNode, to: engine.outputNode, format: format)
+        if masterVSTProcessor == nil {
+            engine.connect(masterOutputNode, to: engine.outputNode, format: format)
+        }
         if wasEngineRunning {
             try? engine.start()
         }
@@ -1502,6 +1714,21 @@ public final class AudioEngineManager: ObservableObject {
             index: 0,
             generation: graphGeneration
         )
+        if auPlugins.isEmpty {
+            connectMasterOutput(from: masterOutputNode, format: format)
+        }
+    }
+
+    private func connectMasterOutput(from node: AVAudioNode, format: AVAudioFormat) {
+        guard let processor = masterVSTProcessor else {
+            engine.disconnectNodeOutput(node)
+            engine.connect(node, to: engine.outputNode, format: format)
+            return
+        }
+        engine.disconnectNodeOutput(node)
+        engine.connect(node, to: processor.inputNode, format: format)
+        engine.disconnectNodeOutput(processor.outputNode)
+        engine.connect(processor.outputNode, to: engine.outputNode, format: format)
     }
 
     private func installMasterAudioUnits(
@@ -1527,8 +1754,8 @@ public final class AudioEngineManager: ObservableObject {
                 return
             }
             DispatchQueue.main.async {
-                guard self.masterPluginGraphGeneration == generation,
-                      self.masterPluginSignature == plugins.map(\.id) else {
+                    guard self.masterPluginGraphGeneration == generation,
+                        self.masterPluginSignature == self.configuredMasterPlugins.filter(\.enabled).map(\.id) else {
                     return
                 }
                 let wasEngineRunning = self.engine.isRunning
@@ -1551,7 +1778,7 @@ public final class AudioEngineManager: ObservableObject {
                     generation: generation
                 )
                 if index + 1 == plugins.count {
-                    self.engine.connect(audioUnit, to: self.engine.outputNode, format: format)
+                    self.connectMasterOutput(from: audioUnit, format: format)
                 }
                 if wasEngineRunning {
                     try? self.engine.start()
@@ -1571,6 +1798,10 @@ public final class AudioEngineManager: ObservableObject {
         "\(sendID.uuidString):\(clipID.uuidString)"
     }
 
+    private func fxStreamKey(sendID: UUID, clipID: UUID) -> String {
+        "fx:\(sendID.uuidString):\(clipID.uuidString)"
+    }
+
     private func syncFXChannels(_ fxChannels: [FXChannel]) {
         let currentIDs = Set(fxChannels.map(\.id))
         for (id, node) in fxInputNodes where !currentIDs.contains(id) {
@@ -1579,6 +1810,13 @@ public final class AudioEngineManager: ObservableObject {
             engine.detach(node)
             fxInputNodes.removeValue(forKey: id)
             fxPluginNodes.removeValue(forKey: id)
+            fxVSTPluginsByChannelID.removeValue(forKey: id)
+            if let processor = fxVSTProcessors.removeValue(forKey: id) {
+                engine.disconnectNodeOutput(processor.inputNode)
+                engine.disconnectNodeOutput(processor.outputNode)
+                engine.detach(processor.inputNode)
+                engine.detach(processor.outputNode)
+            }
             fxGraphSignatures.removeValue(forKey: id)
             fxPluginGraphGenerations.removeValue(forKey: id)
         }
@@ -1600,8 +1838,11 @@ public final class AudioEngineManager: ObservableObject {
 
             input.outputVolume = channel.volume
             input.pan = channel.pan
-            let plugins = channel.plugins.filter { $0.enabled && $0.kind == .au }
-            let signature = plugins.map(\.id)
+            let enabledPlugins = channel.plugins.filter(\.enabled)
+            let plugins = enabledPlugins.filter { $0.kind == .au }
+            fxVSTPluginsByChannelID[channel.id] = enabledPlugins.filter { $0.kind == .vst3 }
+            let vstPlugins: [TrackPluginDescriptor] = []
+            let signature = enabledPlugins.map(\.id)
             guard fxGraphSignatures[channel.id] != signature else { continue }
             fxPluginGraphGenerations[channel.id, default: 0] += 1
             let generation = fxPluginGraphGenerations[channel.id] ?? 0
@@ -1612,8 +1853,26 @@ public final class AudioEngineManager: ObservableObject {
             fxPluginNodes[channel.id] = []
             fxGraphSignatures[channel.id] = signature
 
+            if let processor = fxVSTProcessors.removeValue(forKey: channel.id) {
+                engine.disconnectNodeOutput(processor.inputNode)
+                engine.disconnectNodeOutput(processor.outputNode)
+                engine.detach(processor.inputNode)
+                engine.detach(processor.outputNode)
+            }
+            if let processor = VST3BusProcessor(
+                instances: vstPlugins.compactMap { vst3Instances[$0.id] },
+                format: format,
+                maxFrames: inputBufferFrameSize
+            ) {
+                fxVSTProcessors[channel.id] = processor
+                engine.attach(processor.inputNode)
+                engine.attach(processor.outputNode)
+            }
+
             engine.disconnectNodeOutput(input)
-            engine.connect(input, to: engine.mainMixerNode, format: format)
+            if plugins.isEmpty && fxVSTProcessors[channel.id] == nil {
+                engine.connect(input, to: engine.mainMixerNode, format: format)
+            }
             installFXAudioUnits(
                 plugins,
                 channelID: channel.id,
@@ -1625,6 +1884,21 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
+    private func connectFXOutput(
+        channelID: UUID,
+        from node: AVAudioNode,
+        format: AVAudioFormat
+    ) {
+        engine.disconnectNodeOutput(node)
+        if let processor = fxVSTProcessors[channelID] {
+            engine.connect(node, to: processor.inputNode, format: format)
+            engine.disconnectNodeOutput(processor.outputNode)
+            engine.connect(processor.outputNode, to: engine.mainMixerNode, format: format)
+        } else {
+            engine.connect(node, to: engine.mainMixerNode, format: format)
+        }
+    }
+
     private func installFXAudioUnits(
         _ plugins: [TrackPluginDescriptor],
         channelID: UUID,
@@ -1633,7 +1907,10 @@ public final class AudioEngineManager: ObservableObject {
         index: Int,
         generation: Int
     ) {
-        guard index < plugins.count else { return }
+        guard index < plugins.count else {
+            connectFXOutput(channelID: channelID, from: previousNode, format: format)
+            return
+        }
         let plugin = plugins[index]
         AVAudioUnit.instantiate(
             with: plugin.audioComponentDescription,
@@ -1655,8 +1932,7 @@ public final class AudioEngineManager: ObservableObject {
                     return
                 }
                 DispatchQueue.main.async {
-                    guard self.fxGraphSignatures[channelID] == plugins.map(\.id),
-                          self.fxPluginGraphGenerations[channelID] == generation else {
+                                        guard self.fxPluginGraphGenerations[channelID] == generation else {
                         return
                     }
                     self.engine.disconnectNodeOutput(previousNode)
@@ -1676,7 +1952,7 @@ public final class AudioEngineManager: ObservableObject {
                         generation: generation
                     )
                     if index + 1 == plugins.count {
-                        self.engine.connect(audioUnit, to: self.engine.mainMixerNode, format: format)
+                        self.connectFXOutput(channelID: channelID, from: audioUnit, format: format)
                     }
                 }
             }
@@ -1715,6 +1991,27 @@ public final class AudioEngineManager: ObservableObject {
             guard (fxPluginNodes[channel.id]?.count ?? 0) == availablePluginCount else {
                 return false
             }
+            let vstIDs = channel.plugins
+                .filter { $0.enabled && supportsRealtimeVST3($0) }
+                .map(\.id)
+            guard vstIDs.allSatisfy({ vst3Instances[$0] != nil || unavailablePluginIDs.contains($0) }) else {
+                return false
+            }
+            if vstIDs.contains(where: { !unavailablePluginIDs.contains($0) }),
+               fxVSTProcessors[channel.id] == nil {
+                return false
+            }
+        }
+
+        let masterVSTIDs = configuredMasterPlugins
+            .filter { $0.enabled && supportsRealtimeVST3($0) }
+            .map(\.id)
+        guard masterVSTIDs.allSatisfy({ vst3Instances[$0] != nil || unavailablePluginIDs.contains($0) }) else {
+            return false
+        }
+        if masterVSTIDs.contains(where: { !unavailablePluginIDs.contains($0) }),
+           masterVSTProcessor == nil {
+            return false
         }
 
         // The master path remains connected directly to the output while its
@@ -1827,6 +2124,7 @@ public final class AudioEngineManager: ObservableObject {
         }
 
         if let window = pluginWindows[pluginID] {
+            configurePluginWindow(window)
             window.makeKeyAndOrderFront(nil)
             return
         }
@@ -1906,11 +2204,34 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     private func openVST3PluginUI(pluginID: UUID) {
-        guard let instance = vst3Instances[pluginID] else {
+        guard let descriptor = pluginDescriptors[pluginID],
+              descriptor.kind == .vst3 else {
+            print("VST3 descriptor is not ready: \(pluginID)")
+            return
+        }
+        let instance: VST3NativeInstance
+        if let existing = vst3UIInstances[pluginID] {
+            instance = existing
+        } else if let created = VST3NativeInstance(
+            descriptor: descriptor,
+            sampleRate: hardwareSampleRate,
+            maxFrames: inputBufferFrameSize
+        ) {
+            vst3UIInstances[pluginID] = created
+            instance = created
+        } else {
             print("VST3 plugin instance is not ready: \(pluginID)")
+            pendingPluginUIRequests.insert(pluginID)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self,
+                      self.pendingPluginUIRequests.remove(pluginID) != nil else { return }
+                self.openPluginUI(pluginID: pluginID)
+            }
             return
         }
         if let window = pluginWindows[pluginID] {
+            configurePluginWindow(window)
             window.makeKeyAndOrderFront(nil)
             return
         }
@@ -1926,6 +2247,7 @@ public final class AudioEngineManager: ObservableObject {
         window.title = pluginDescriptors[pluginID]?.name ?? "VST3"
         window.center()
         window.isReleasedWhenClosed = false
+        configurePluginWindow(window)
         window.makeKeyAndOrderFront(nil)
 
         guard let contentSize = instance.attachEditor(to: hostView) else {
@@ -1941,7 +2263,7 @@ public final class AudioEngineManager: ObservableObject {
 
     private func closePluginWindow(pluginID: UUID) {
         if pluginDescriptors[pluginID]?.kind == .vst3 {
-            vst3Instances[pluginID]?.removeEditor()
+            vst3UIInstances.removeValue(forKey: pluginID)?.removeEditor()
         }
         guard let window = pluginWindows.removeValue(forKey: pluginID) else { return }
         window.contentViewController = nil
@@ -2038,8 +2360,22 @@ public final class AudioEngineManager: ObservableObject {
         window.setContentSize(contentSize)
         window.center()
         window.isReleasedWhenClosed = false
+        configurePluginWindow(window)
         window.makeKeyAndOrderFront(nil)
         pluginWindows[pluginID] = window
+    }
+
+    private func configurePluginWindow(_ window: NSWindow) {
+        window.level = .normal
+        window.hidesOnDeactivate = true
+        window.collectionBehavior.insert(.moveToActiveSpace)
+
+        guard let mainWindow = NSApp.windows.first(where: {
+            $0 !== window && $0.isMainWindow
+        }) else { return }
+        if !(mainWindow.childWindows ?? []).contains(where: { $0 === window }) {
+            mainWindow.addChildWindow(window, ordered: .above)
+        }
     }
 
     private func presentGenericPluginView(
@@ -2203,10 +2539,23 @@ public final class AudioEngineManager: ObservableObject {
                     startSec: startSec,
                     compensatePluginLatency: false,
                     sharedStartTime: transportStartTime,
-                    sendID: send.id
+                    sendID: send.id,
+                    fxChannelID: send.fxChannelID
                 )
             }
         }
+    }
+
+    private func reschedulePlayback(tracks: [AudioTrack]) {
+        if !engine.isRunning {
+            try? engine.start()
+            if !engine.isRunning { return }
+        }
+
+        let sharedStartTime = AVAudioTime(
+            hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
+        )
+        startPlayback(tracks: tracks, sharedStartTime: sharedStartTime)
     }
 
     private func scheduleClips(
@@ -2215,7 +2564,8 @@ public final class AudioEngineManager: ObservableObject {
         startSec: Double,
         compensatePluginLatency: Bool = true,
         sharedStartTime: AVAudioTime,
-        sendID: UUID? = nil
+        sendID: UUID? = nil,
+        fxChannelID: UUID? = nil
     ) {
         guard let clips = audioFiles[track.id] else { return }
         let isSendPlayback = sendID != nil
@@ -2229,6 +2579,9 @@ public final class AudioEngineManager: ObservableObject {
         } else if let sendID {
             for item in clips {
                 sendClipPlayerNodes[sendClipKey(sendID: sendID, clipID: item.clip.id)]?.stop()
+                fxVSTStreamingClips.removeValue(
+                    forKey: fxStreamKey(sendID: sendID, clipID: item.clip.id)
+                )?.stop()
             }
         }
         let pluginLatency = compensatePluginLatency ? (trackPluginLatencies[track.id] ?? 0.0) : 0.0
@@ -2264,7 +2617,7 @@ public final class AudioEngineManager: ObservableObject {
             targetPlayer.volume = isMainTrackPlayer ? 1.0 : player.volume
             let vst3Plugins = isMainTrackPlayer
                 ? track.plugins.filter { $0.enabled && $0.kind == .vst3 }
-                : []
+                : (fxChannelID.flatMap { fxVSTPluginsByChannelID[$0] } ?? [])
             if !vst3Plugins.isEmpty,
                let outputFormat = AVAudioFormat(
                    standardFormatWithSampleRate: hardwareSampleRate,
@@ -2284,8 +2637,14 @@ public final class AudioEngineManager: ObservableObject {
                        fadeInDuration: item.clip.fadeInDuration,
                        fadeOutDuration: item.clip.fadeOutDuration
                    ) {
-                    vst3StreamingClips[item.clip.id]?.stop()
-                    vst3StreamingClips[item.clip.id] = streamingClip
+                    if let sendID {
+                        let key = fxStreamKey(sendID: sendID, clipID: item.clip.id)
+                        fxVSTStreamingClips[key]?.stop()
+                        fxVSTStreamingClips[key] = streamingClip
+                    } else {
+                        vst3StreamingClips[item.clip.id]?.stop()
+                        vst3StreamingClips[item.clip.id] = streamingClip
+                    }
                     streamingClip.start(at: startTime)
                     continue
                 }
@@ -2309,7 +2668,13 @@ public final class AudioEngineManager: ObservableObject {
         }
         if isMainTrackPlayer {
             for item in clips {
-                if vst3StreamingClips[item.clip.id] == nil {
+                let hasStreamingClip: Bool
+                if let sendID {
+                    hasStreamingClip = fxVSTStreamingClips[fxStreamKey(sendID: sendID, clipID: item.clip.id)] != nil
+                } else {
+                    hasStreamingClip = vst3StreamingClips[item.clip.id] != nil
+                }
+                if !hasStreamingClip {
                     clipPlayerNodes[item.clip.id]?.play(at: sharedStartTime)
                 }
             }
@@ -2473,6 +2838,10 @@ public final class AudioEngineManager: ObservableObject {
             stream.stop()
         }
         vst3StreamingClips.removeAll()
+        for stream in fxVSTStreamingClips.values {
+            stream.stop()
+        }
+        fxVSTStreamingClips.removeAll()
         for player in sendClipPlayerNodes.values {
             player.stop()
         }
@@ -2523,7 +2892,7 @@ public final class AudioEngineManager: ObservableObject {
         guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
             throw NSError(domain: "MyDAW.Export", code: 2, userInfo: [NSLocalizedDescriptionKey: "Audio plug-ins are still loading. Try again in a moment."])
         }
-        guard let captureNode = masterPluginNodes.last ?? masterOutputNode,
+        guard let captureNode = masterVSTProcessor?.outputNode ?? masterPluginNodes.last ?? masterOutputNode,
               let format = AVAudioFormat(
                   standardFormatWithSampleRate: hardwareSampleRate,
                   channels: 2

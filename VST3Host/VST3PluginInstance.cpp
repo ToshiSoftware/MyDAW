@@ -5,6 +5,7 @@
 #include "public.sdk/source/vst/hosting/plugprovider.h"
 #include "public.sdk/source/common/memorystream.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/vstspeaker.h"
@@ -71,6 +72,8 @@ struct MyDAWVST3Instance {
     std::vector<float> outputRight;
     float* inputChannels[2] = {nullptr, nullptr};
     float* outputChannels[2] = {nullptr, nullptr};
+    Steinberg::Vst::ProcessContext processContext{};
+    double sampleRate = 44100.0;
     std::mutex processMutex;
 };
 
@@ -162,6 +165,9 @@ MyDAWVST3Instance* MyDAWVST3Create(
     }
 
     instance->maxFrames = maxFrames;
+    instance->sampleRate = sampleRate;
+    instance->processContext.sampleRate = sampleRate;
+    instance->processContext.state = Steinberg::Vst::ProcessContext::kPlaying;
     instance->inputLeft.resize(maxFrames);
     instance->inputRight.resize(maxFrames);
     instance->outputLeft.resize(maxFrames);
@@ -244,20 +250,21 @@ int MyDAWVST3ProcessInterleaved(
     instance->outputChannels[0] = instance->outputLeft.data();
     instance->outputChannels[1] = instance->outputRight.data();
 
-    Steinberg::Vst::AudioBusBuffers inputs[1];
+    Steinberg::Vst::AudioBusBuffers inputs[1]{};
     inputs[0].numChannels = 2;
     inputs[0].channelBuffers32 = instance->inputChannels;
-    Steinberg::Vst::AudioBusBuffers outputs[1];
+    Steinberg::Vst::AudioBusBuffers outputs[1]{};
     outputs[0].numChannels = 2;
     outputs[0].channelBuffers32 = instance->outputChannels;
 
-    Steinberg::Vst::ProcessData data;
+    Steinberg::Vst::ProcessData data{};
     data.symbolicSampleSize = Steinberg::Vst::kSample32;
     data.numSamples = frames;
     data.numInputs = 1;
     data.numOutputs = 1;
     data.inputs = inputs;
     data.outputs = outputs;
+    data.processContext = &instance->processContext;
 
     if (instance->processor->process(data) != Steinberg::kResultOk) {
         return -2;
