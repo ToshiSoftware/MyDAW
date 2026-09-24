@@ -335,6 +335,42 @@ public final class ProjectState: ObservableObject {
         }
     }
 
+    public func locateClipFile(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+              let track = tracks.first(where: { $0.id == trackId }),
+              let clip = track.clips.first(where: { $0.id == clipId }) else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "Choose Recording File"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.wav]
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+
+        do {
+            let file = try AVAudioFile(forReading: sourceURL)
+            let sampleRate = file.fileFormat.sampleRate
+            let expectedSampleRate = audioEngine.hardwareSampleRate
+            guard abs(sampleRate - expectedSampleRate) <= 0.5 else {
+                presentProjectError("録音ファイルを指定できません。\n\nサンプルレート: \(Int(sampleRate)) Hz（必要: \(Int(expectedSampleRate)) Hz）")
+                return
+            }
+
+            let managedURL = try managedRecordingURL(for: sourceURL)
+            let originalFileName = clip.fileURL.lastPathComponent
+            for candidateTrack in tracks {
+                for candidateClip in candidateTrack.clips
+                    where candidateClip.fileURL.lastPathComponent == originalFileName {
+                    candidateClip.replaceFile(with: managedURL)
+                }
+            }
+            audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+        } catch {
+            presentProjectError("録音ファイルを読み込めませんでした。\n\n\(error.localizedDescription)")
+        }
+    }
+
     public func beginMasterExportDialog() {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSSavePanel()

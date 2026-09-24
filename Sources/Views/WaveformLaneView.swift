@@ -141,7 +141,25 @@ private struct AudioClipView: View {
         let isSelected = track.selectedClipId == clip.id
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
 
-        if !clip.waveformCache.peaks.isEmpty || isActiveClip {
+        if clip.isFileMissing {
+            missingFileView
+                .frame(width: clipWidth, height: max(20.0, height))
+                .background(Color.red.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(Color.red.opacity(0.85), lineWidth: isSelected ? 2 : 1)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                }
+                .contextMenu {
+                            locateFileButton
+                    Divider()
+                    deleteButton
+                }
+                .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
+        } else if !clip.waveformCache.peaks.isEmpty || isActiveClip {
             Group {
                 if track.channelMode == .stereo {
                     VStack(spacing: 1) {
@@ -276,6 +294,9 @@ private struct AudioClipView: View {
                 projectState.selectClip(trackId: track.id, clipId: clip.id)
             }
             .contextMenu {
+                locateFileButton
+                Divider()
+
                 Button {
                     projectState.selectClip(trackId: track.id, clipId: clip.id)
                     projectState.duplicateClip(trackId: track.id, clipId: clip.id)
@@ -304,6 +325,43 @@ private struct AudioClipView: View {
             }
             .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
         }
+    }
+
+    private var missingFileView: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red.opacity(0.9))
+            Text("The recording file cannot be found.")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.9))
+            Text(clip.fileURL.lastPathComponent)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.white.opacity(0.7))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var locateFileButton: some View {
+        Button {
+            projectState.selectClip(trackId: track.id, clipId: clip.id)
+            projectState.locateClipFile(trackId: track.id, clipId: clip.id)
+        } label: {
+            Label("Choose Recording File…", systemImage: "folder")
+        }
+        .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
+    }
+
+    private var deleteButton: some View {
+        Button(role: .destructive) {
+            projectState.selectClip(trackId: track.id, clipId: clip.id)
+            projectState.deleteClip(trackId: track.id, clipId: clip.id)
+        } label: {
+            Label("Delete Recording", systemImage: "trash")
+        }
+        .disabled(projectState.audioEngine.isRecording)
     }
 
     private func trackTopY(for trackID: UUID) -> CGFloat {

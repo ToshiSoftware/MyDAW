@@ -1,4 +1,4 @@
-# MyDAW - Logic Pro-Style Audio Recording & Playback DAW Prototype (Mac / Apple Silicon)
+# MyDAW - Audio Recording & Playback DAW Prototype (Mac / Apple Silicon)
 
 A prototype of a Logic Pro-style multitrack audio recording and playback DAW (Digital Audio Workstation) with native support for Apple Silicon (Mac).
 

@@ -1,4 +1,4 @@
-# MyDAW - Logic Pro スタイル オーディオ録音・再生 DAW プロトタイプ (Mac / Apple Silicon)
+# MyDAW - オーディオ録音・再生 DAW プロトタイプ (Mac / Apple Silicon)
 
 Apple Silicon (Mac) にネイティブ対応した、Logic Pro スタイルのマルチトラック・オーディオ録音・再生 DAW（Digital Audio Workstation）のプロトタイプです。
 

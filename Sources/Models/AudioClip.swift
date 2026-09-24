@@ -11,7 +11,7 @@ public final class AudioClip: Identifiable, ObservableObject {
     @Published public private(set) var fadeInDuration: Double
     @Published public private(set) var fadeOutDuration: Double
     @Published public private(set) var sampleRate: Double = 48000.0
-    public let fileURL: URL
+    @Published public private(set) var fileURL: URL
     @Published public private(set) var duration: Double
     public private(set) var originalDuration: Double = 0.0
     public let waveformCache: WaveformCache
@@ -44,6 +44,16 @@ public final class AudioClip: Identifiable, ObservableObject {
         } catch {
             print("Failed to load audio clip \(fileURL.lastPathComponent): \(error)")
         }
+    }
+
+    public var isFileMissing: Bool {
+        !FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
+    public func replaceFile(with url: URL) {
+        fileURL = url
+        waveformCache.clear()
+        loadMetadata()
     }
 
     public func appendLivePeaks(_ points: [(min: Float, max: Float)]) {
