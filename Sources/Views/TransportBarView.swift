@@ -465,10 +465,12 @@ private struct BufferSettingsView: View {
     @State private var selectedBufferSize: Int
     @State private var selectedInputDeviceID: AudioDeviceID
     @State private var selectedOutputDeviceID: AudioDeviceID
+    @State private var selectedSampleRate: Double
     @State private var recordingCompensationText: String
     @State private var clickTimingOffsetText: String
 
     private let bufferSizes = [128, 256, 512, 1024, 2048, 4096]
+    private let sampleRates = [44100.0, 48000.0, 88200.0, 96000.0]
 
     init(deviceManager: AudioDeviceManager, audioEngine: AudioEngineManager) {
         self.deviceManager = deviceManager
@@ -476,6 +478,7 @@ private struct BufferSettingsView: View {
         _selectedBufferSize = State(initialValue: deviceManager.bufferFrameSize)
         _selectedInputDeviceID = State(initialValue: deviceManager.selectedInputDeviceID)
         _selectedOutputDeviceID = State(initialValue: deviceManager.selectedOutputDeviceID)
+        _selectedSampleRate = State(initialValue: audioEngine.hardwareSampleRate)
         _recordingCompensationText = State(
             initialValue: String(format: "%.1f", audioEngine.manualRecordingCompensationMs)
         )
@@ -537,6 +540,13 @@ private struct BufferSettingsView: View {
             }
             .pickerStyle(.menu)
 
+            Picker("Sample rate", selection: $selectedSampleRate) {
+                ForEach(sampleRates, id: \.self) { rate in
+                    Text("\(Int(rate / 1000.0)) kHz").tag(rate)
+                }
+            }
+            .pickerStyle(.menu)
+
             HStack {
                 Text("Additional recording compensation")
                 TextField("0", text: $recordingCompensationText)
@@ -594,12 +604,14 @@ private struct BufferSettingsView: View {
                     commitClickTimingOffset()
                     let devicesChanged = selectedInputDeviceID != deviceManager.selectedInputDeviceID ||
                         selectedOutputDeviceID != deviceManager.selectedOutputDeviceID
+                    let sampleRateChanged = abs(selectedSampleRate - audioEngine.hardwareSampleRate) > 0.5
                     let bufferChanged = selectedBufferSize != deviceManager.bufferFrameSize
 
-                    if devicesChanged {
+                    if devicesChanged || sampleRateChanged {
                         let applied = audioEngine.applyAudioDevices(
                             inputDeviceID: selectedInputDeviceID,
-                            outputDeviceID: selectedOutputDeviceID
+                            outputDeviceID: selectedOutputDeviceID,
+                            sampleRate: selectedSampleRate
                         )
                         if applied {
                             deviceManager.setSelectedDeviceIDs(

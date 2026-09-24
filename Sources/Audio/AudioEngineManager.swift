@@ -175,6 +175,7 @@ private final class VST3StreamingClip {
     private let file: AVAudioFile
     private let instances: [VST3NativeInstance]
     private let outputFormat: AVAudioFormat
+    private let converter: AVAudioConverter?
     private let gain: Float
     private let clipDuration: Double
     private let fadeInDuration: Double
@@ -204,6 +205,7 @@ private final class VST3StreamingClip {
         self.file = file
         self.instances = instances
         self.outputFormat = outputFormat
+        self.converter = AVAudioConverter(from: file.processingFormat, to: outputFormat)
         self.gain = Float(pow(10.0, gainDB / 20.0))
         self.clipDuration = clipDuration
         self.fadeInDuration = fadeInDuration
@@ -260,18 +262,34 @@ private final class VST3StreamingClip {
             stateLock.withLock { isFinished = true }
             return false
         }
-        guard let inputChannels = inputBuffer.floatChannelData,
+        guard let converter,
               let outputBuffer = AVAudioPCMBuffer(
                   pcmFormat: outputFormat,
-                  frameCapacity: AVAudioFrameCount(inputBuffer.frameLength)
-              ),
-              let outputChannels = outputBuffer.floatChannelData else {
+                  frameCapacity: AVAudioFrameCount(chunkFrames)
+              ) else {
                         stateLock.withLock { isFinished = true }
                         return false
         }
 
-        let frames = Int(inputBuffer.frameLength)
-        outputBuffer.frameLength = inputBuffer.frameLength
+        var suppliedInput = false
+        var conversionError: NSError?
+        let conversionStatus = converter.convert(to: outputBuffer, error: &conversionError) { _, status in
+            if suppliedInput {
+                status.pointee = .endOfStream
+                return nil
+            }
+            suppliedInput = true
+            status.pointee = .haveData
+            return inputBuffer
+        }
+        guard conversionStatus != .error,
+              outputBuffer.frameLength > 0,
+              let outputChannels = outputBuffer.floatChannelData else {
+            stateLock.withLock { isFinished = true }
+            return false
+        }
+
+        let frames = Int(outputBuffer.frameLength)
         var interleavedInput = [Float](repeating: 0.0, count: frames * 2)
         var interleavedOutput = [Float](repeating: 0.0, count: frames * 2)
         for frame in 0..<frames {
@@ -279,8 +297,8 @@ private final class VST3StreamingClip {
             let fadeInGain = fadeInDuration > 0.0 ? min(1.0, max(0.0, position / fadeInDuration)) : 1.0
             let fadeOutGain = fadeOutDuration > 0.0 ? min(1.0, max(0.0, (clipDuration - position) / fadeOutDuration)) : 1.0
             let frameGain = gain * Float(min(fadeInGain, fadeOutGain))
-            interleavedInput[frame * 2] = inputChannels[0][frame] * frameGain
-            interleavedInput[frame * 2 + 1] = (inputBuffer.format.channelCount > 1 ? inputChannels[1][frame] : inputChannels[0][frame]) * frameGain
+            interleavedInput[frame * 2] = outputChannels[0][frame] * frameGain
+            interleavedInput[frame * 2 + 1] = outputChannels[1][frame] * frameGain
         }
         var processed = true
         for instance in instances {
@@ -304,7 +322,7 @@ private final class VST3StreamingClip {
             outputChannels[1][frame] = interleavedOutput[frame * 2 + 1]
         }
 
-        sourceFrame += AVAudioFramePosition(frames)
+        sourceFrame += sourceFrames
         timelineOffset += Double(frames) / outputFormat.sampleRate
         player.scheduleBuffer(outputBuffer, at: startTime, options: []) { [weak self] in
             guard let self else { return }
@@ -444,6 +462,7 @@ public final class AudioEngineManager: ObservableObject {
     private var fxVSTPluginsByChannelID: [UUID: [TrackPluginDescriptor]] = [:]
     private var syncedFXChannels: [FXChannel] = []
     private var pluginWindows: [UUID: NSWindow] = [:]
+    private var parameterObservers: [UUID: (tree: AUParameterTree, token: AUParameterObserverToken)] = [:]
     private let masterChannelID = UUID()
     private var masterOutputNode: AVAudioMixerNode?
     private var masterPluginNodes: [AVAudioNode] = []
@@ -872,6 +891,39 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
+    private func replacePluginAudioUnit(_ audioUnit: AVAudioUnit, for pluginID: UUID) {
+        let hadPluginWindow = pluginWindows[pluginID] != nil
+        if hadPluginWindow {
+            closePluginWindow(pluginID: pluginID)
+        }
+        removeParameterObserver(for: pluginID)
+        pluginAudioUnits[pluginID] = audioUnit
+        observeParameters(for: audioUnit, pluginID: pluginID)
+        if hadPluginWindow {
+            openPluginUI(pluginID: pluginID)
+        }
+    }
+
+    private func observeParameters(for audioUnit: AVAudioUnit, pluginID: UUID) {
+        guard let tree = audioUnit.auAudioUnit.parameterTree else { return }
+        let token = tree.token(byAddingParameterObserver: { [weak self, weak audioUnit] _, _ in
+            Task { @MainActor [weak self, weak audioUnit] in
+                guard let self,
+                      let audioUnit,
+                      self.pluginAudioUnits[pluginID] === audioUnit else { return }
+                self.pluginWindows[pluginID]?.contentView?.needsLayout = true
+                self.pluginWindows[pluginID]?.contentView?.layoutSubtreeIfNeeded()
+                self.pluginWindows[pluginID]?.contentView?.displayIfNeeded()
+            }
+        })
+        parameterObservers[pluginID] = (tree, token)
+    }
+
+    private func removeParameterObserver(for pluginID: UUID) {
+        guard let registration = parameterObservers.removeValue(forKey: pluginID) else { return }
+        registration.tree.removeParameterObserver(registration.token)
+    }
+
     private func retryPendingPluginUIRequest(for pluginID: UUID) {
         guard pendingPluginUIRequests.contains(pluginID) else { return }
 
@@ -889,7 +941,11 @@ public final class AudioEngineManager: ObservableObject {
         bpm = max(20.0, min(400.0, value))
     }
 
-    public func applyAudioDevices(inputDeviceID: AudioDeviceID, outputDeviceID: AudioDeviceID) -> Bool {
+    public func applyAudioDevices(
+        inputDeviceID: AudioDeviceID,
+        outputDeviceID: AudioDeviceID,
+        sampleRate: Double? = nil
+    ) -> Bool {
         guard !isPlaying && !isRecording else { return false }
         engine.stop()
 
@@ -917,6 +973,28 @@ public final class AudioEngineManager: ObservableObject {
                 UInt32(MemoryLayout<AudioDeviceID>.size)
             )
             applied = applied && status == noErr
+        }
+        if let sampleRate,
+           sampleRate.isFinite,
+           sampleRate > 0.0 {
+            let deviceIDs = Set([inputDeviceID, outputDeviceID]).filter { $0 != 0 }
+            for deviceID in deviceIDs {
+                var value = Float64(sampleRate)
+                var address = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyNominalSampleRate,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                let status = AudioObjectSetPropertyData(
+                    deviceID,
+                    &address,
+                    0,
+                    nil,
+                    UInt32(MemoryLayout<Float64>.size),
+                    &value
+                )
+                applied = applied && status == noErr
+            }
         }
         guard applied else { return false }
         selectedInputDeviceID = inputDeviceID
@@ -1847,7 +1925,7 @@ public final class AudioEngineManager: ObservableObject {
                 audioUnit.auAudioUnit.shouldBypassEffect = !(self.pluginDescriptors[plugin.id]?.enabled ?? true)
                 self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                 self.masterPluginNodes.append(audioUnit)
-                self.pluginAudioUnits[plugin.id] = audioUnit
+                self.replacePluginAudioUnit(audioUnit, for: plugin.id)
                 self.retryPendingPluginUIRequest(for: plugin.id)
                 self.installMasterAudioUnits(
                     plugins,
@@ -2020,7 +2098,7 @@ public final class AudioEngineManager: ObservableObject {
                     self.engine.connect(previousNode, to: audioUnit, format: format)
                     self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                     self.fxPluginNodes[channelID, default: []].append(audioUnit)
-                    self.pluginAudioUnits[plugin.id] = audioUnit
+                    self.replacePluginAudioUnit(audioUnit, for: plugin.id)
                     self.retryPendingPluginUIRequest(for: plugin.id)
                     self.installFXAudioUnits(
                         plugins,
@@ -2183,7 +2261,7 @@ public final class AudioEngineManager: ObservableObject {
                         audioUnit.auAudioUnit.shouldBypassEffect = !(self.pluginDescriptors[pluginID]?.enabled ?? true)
                         self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
                         self.trackPluginNodes[trackID, default: []].append(audioUnit)
-                        self.pluginAudioUnits[pluginID] = audioUnit
+                        self.replacePluginAudioUnit(audioUnit, for: pluginID)
                         self.trackPluginLatencies[trackID] = self.trackPluginNodes[trackID, default: []]
                             .compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }
                             .filter { $0.isFinite && $0 >= 0.0 }
@@ -2357,6 +2435,7 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     private func closePluginWindow(pluginID: UUID) {
+        removeParameterObserver(for: pluginID)
         if pluginDescriptors[pluginID]?.kind == .vst3 {
             vst3UIInstances.removeValue(forKey: pluginID)?.removeEditor()
         }
@@ -2478,27 +2557,30 @@ public final class AudioEngineManager: ObservableObject {
         pluginID: UUID,
         title: String
     ) {
-        let view = AUGenericView(
-            audioUnit: audioUnit.audioUnit,
-            displayFlags: AUGenericViewDisplayFlags(rawValue: (1 << 0) | (1 << 2))
-        )
+        guard let parameterTree = audioUnit.auAudioUnit.parameterTree else {
+            print("AU has no parameter tree for Generic UI: \(title)")
+            return
+        }
+        let view = GenericAUParameterView(parameterTree: parameterTree)
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.documentView = view
 
         let documentSize = view.fittingSize
+        let maximumWidth = NSScreen.main?.visibleFrame.width ?? 1200
+        let documentWidth = max(documentSize.width + 24, 480)
         let visibleSize = NSSize(
-            width: min(max(documentSize.width, 480), 900),
+            width: min(documentWidth + 18, maximumWidth),
             height: min(max(documentSize.height, 360), 640)
         )
+        scrollView.hasHorizontalScroller = documentWidth > visibleSize.width
         view.frame = NSRect(
             origin: .zero,
             size: NSSize(
-                width: max(documentSize.width, visibleSize.width),
+                width: documentWidth,
                 height: max(documentSize.height, visibleSize.height)
             )
         )
@@ -2898,24 +2980,38 @@ public final class AudioEngineManager: ObservableObject {
         } catch {
             return nil
         }
-        guard let sourceChannelData = buffer.floatChannelData else { return buffer }
         let linearGain = Float(pow(10.0, gainDB / 20.0))
-        let frames = Int(buffer.frameLength)
         guard let outputFormat = AVAudioFormat(
             standardFormatWithSampleRate: hardwareSampleRate,
             channels: 2
         ),
+        let converter = AVAudioConverter(from: buffer.format, to: outputFormat),
         let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: outputFormat,
-            frameCapacity: AVAudioFrameCount(frames)
+            frameCapacity: AVAudioFrameCount(
+                ceil(Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate)
+            )
         ),
         let outputChannelData = outputBuffer.floatChannelData else {
             return nil
         }
-        outputBuffer.frameLength = AVAudioFrameCount(frames)
+
+        var suppliedInput = false
+        var conversionError: NSError?
+        let conversionStatus = converter.convert(to: outputBuffer, error: &conversionError) { _, status in
+            if suppliedInput {
+                status.pointee = .endOfStream
+                return nil
+            }
+            suppliedInput = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard conversionStatus != .error, outputBuffer.frameLength > 0 else { return nil }
+        let frames = Int(outputBuffer.frameLength)
 
         for frame in 0..<frames {
-            let position = clipOffset + Double(frame) / buffer.format.sampleRate
+            let position = clipOffset + Double(frame) / outputFormat.sampleRate
             let fadeInGain = fadeInDuration > 0.0
                 ? min(1.0, max(0.0, position / fadeInDuration))
                 : 1.0
@@ -2924,12 +3020,8 @@ public final class AudioEngineManager: ObservableObject {
                 ? min(1.0, max(0.0, remaining / fadeOutDuration))
                 : 1.0
             let gain = linearGain * Float(min(fadeInGain, fadeOutGain))
-            let left = sourceChannelData[0][frame] * gain
-            let right = buffer.format.channelCount > 1
-                ? sourceChannelData[1][frame] * gain
-                : left
-            outputChannelData[0][frame] = left
-            outputChannelData[1][frame] = right
+            outputChannelData[0][frame] *= gain
+            outputChannelData[1][frame] *= gain
         }
         return outputBuffer
     }
@@ -3051,12 +3143,6 @@ public final class AudioEngineManager: ObservableObject {
         activeWriters.removeAll()
 
         // 2. Stop player nodes
-        for (_, player) in playerNodes {
-            player.stop()
-        }
-        for player in clipPlayerNodes.values {
-            player.stop()
-        }
         for stream in vst3StreamingClips.values {
             stream.stop()
         }
@@ -3066,10 +3152,16 @@ public final class AudioEngineManager: ObservableObject {
         }
         fxVSTStreamingClips.removeAll()
         pendingVST3StartTimes.removeAll()
+        for player in playerNodes.values {
+            player.stop()
+        }
+        for player in clipPlayerNodes.values {
+            player.stop()
+        }
         for player in sendClipPlayerNodes.values {
             player.stop()
         }
-        for (_, player) in sendPlayerNodes {
+        for player in sendPlayerNodes.values {
             player.stop()
         }
         // Punch recording temporarily mutes the armed tracks' main output.
