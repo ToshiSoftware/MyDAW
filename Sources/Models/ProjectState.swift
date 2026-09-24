@@ -497,7 +497,11 @@ public final class ProjectState: ObservableObject {
         guard let track = tracks.first(where: { $0.id == trackID }),
               let index = track.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
         track.plugins[index].enabled.toggle()
-          audioEngine.setPluginEnabled(pluginID, enabled: track.plugins[index].enabled)
+        if audioEngine.isPlaying || audioEngine.isRecording {
+            audioEngine.setPluginEnabled(pluginID, enabled: track.plugins[index].enabled)
+        } else {
+            audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+        }
     }
 
     public func addFXChannel() {
@@ -553,7 +557,11 @@ public final class ProjectState: ObservableObject {
         guard let channel = fxChannels.first(where: { $0.id == fxChannelID }),
               let index = channel.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
         channel.plugins[index].enabled.toggle()
-          audioEngine.setPluginEnabled(pluginID, enabled: channel.plugins[index].enabled)
+        if audioEngine.isPlaying || audioEngine.isRecording {
+            audioEngine.setPluginEnabled(pluginID, enabled: channel.plugins[index].enabled)
+        } else {
+            audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+        }
     }
 
     public func insertMasterPlugin(_ descriptor: TrackPluginDescriptor) {
@@ -569,7 +577,11 @@ public final class ProjectState: ObservableObject {
     public func toggleMasterPlugin(_ pluginID: UUID) {
         guard let index = masterPlugins.firstIndex(where: { $0.id == pluginID }) else { return }
         masterPlugins[index].enabled.toggle()
-        audioEngine.setPluginEnabled(pluginID, enabled: masterPlugins[index].enabled)
+        if audioEngine.isPlaying || audioEngine.isRecording {
+            audioEngine.setPluginEnabled(pluginID, enabled: masterPlugins[index].enabled)
+        } else {
+            audioEngine.syncMasterPlugins(masterPlugins)
+        }
     }
 
     public func openPluginUI(_ pluginID: UUID, on trackID: UUID) {
