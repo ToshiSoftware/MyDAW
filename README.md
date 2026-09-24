@@ -88,8 +88,13 @@ MyDAW/
 ├── scripts/
 │   ├── build.sh              # One-click build script from the command line
 │   └── run.sh                # Build & launch script
-└── Recordings/               # Folder where recorded 24-bit WAV files are stored
 ```
+
+The repository root does not require a `Recordings/` directory. MyDAW manages recordings inside the folder of the currently opened project. Any `Recordings/` directory left at the repository root is legacy recording data and is not part of the current project structure.
+
+### Project folders
+
+Each project is managed as a folder containing its `.mydaw` project file and its recording data. MyDAW creates and uses the recording folder for the project when a project is created or opened. To move a project to another Mac or environment, copy or ZIP the complete project folder so that the project file and its recordings stay together. Install required AU/VST3 plug-ins separately on the destination system.
 
 ---
 
