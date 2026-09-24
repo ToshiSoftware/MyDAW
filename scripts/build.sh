@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="1.1"
+BASE_VERSION="1.2"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
