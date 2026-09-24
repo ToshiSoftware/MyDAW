@@ -333,6 +333,8 @@ public final class AudioEngineManager: ObservableObject {
 
     @Published public var isPlaying: Bool = false
     @Published public var isRecording: Bool = false
+    @Published public private(set) var isPunchRecording: Bool = false
+    @Published public private(set) var isStartingPlayback: Bool = false
     @Published public var currentTime: Double = 0.0 // Playhead in seconds
     @Published public var bpm: Double = 120.0 {
         didSet {
@@ -422,6 +424,7 @@ public final class AudioEngineManager: ObservableObject {
     private var clipPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
     private var sendPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
     private var sendClipPlayerNodes: [String: AVAudioPlayerNode] = [:]
+    private var mutedClipVolumes: [String: Float] = [:]
     private var trackMeterTaps: Set<UUID> = []
     private var trackOutputNodes: [UUID: AVAudioMixerNode] = [:]
     private var audioFiles: [UUID: [(clip: AudioClip, file: AVAudioFile)]] = [:]
@@ -437,7 +440,9 @@ public final class AudioEngineManager: ObservableObject {
     private var vst3UIInstances: [UUID: VST3NativeInstance] = [:]
     private var vst3StreamingClips: [UUID: VST3StreamingClip] = [:]
     private var fxVSTStreamingClips: [String: VST3StreamingClip] = [:]
+    private var pendingVST3StartTimes: [String: AVAudioTime] = [:]
     private var fxVSTPluginsByChannelID: [UUID: [TrackPluginDescriptor]] = [:]
+    private var syncedFXChannels: [FXChannel] = []
     private var pluginWindows: [UUID: NSWindow] = [:]
     private let masterChannelID = UUID()
     private var masterOutputNode: AVAudioMixerNode?
@@ -491,6 +496,10 @@ public final class AudioEngineManager: ObservableObject {
     private let recordingTimingLock = NSLock()
     private var recordingTimelineStart: Double = 0.0
     private var recordingTransportStartHostTime: UInt64?
+    private var punchInTime: Double?
+    private var punchOutTime: Double?
+    private var punchArmedTrackIDs: Set<UUID> = []
+    private var punchPlaybackState: Int = 0
     private var pendingRecordingClipStartTime: Double?
     private var hasLoggedFirstRecordingInput = false
 
@@ -519,6 +528,7 @@ public final class AudioEngineManager: ObservableObject {
     private var metronomeIntervalFrames: AVAudioFramePosition = 0
     private var metronomeGeneration = 0
     private var playbackRetryTask: Task<Void, Never>?
+    private var startPlaybackTask: Task<Void, Never>?
     private var recordingFinalizationTask: Task<Void, Never>?
 
     private var masterPluginLatency: Double {
@@ -733,6 +743,11 @@ public final class AudioEngineManager: ObservableObject {
         guard engine.isRunning else { return }
         engine.stop()
         setupEngine()
+    }
+
+    public func setPunchRange(startTime: Double?, endTime: Double?, enabled: Bool) {
+        punchInTime = enabled ? startTime : nil
+        punchOutTime = enabled ? endTime : nil
     }
 
     /// Primes the hardware render path before restoring an asynchronous AU graph.
@@ -1103,6 +1118,25 @@ public final class AudioEngineManager: ObservableObject {
 
         guard isRec, !configs.isEmpty else { return }
 
+        let punchPosition: Double? = recordingTimingLock.withLock {
+            guard let transportHostTime = recordingTransportStartHostTime,
+                  time.isHostTimeValid else { return nil }
+            let elapsed = Double(
+                AudioConvertHostTimeToNanos(
+                    time.hostTime >= transportHostTime
+                        ? time.hostTime - transportHostTime
+                        : 0
+                )
+            ) / 1_000_000_000.0
+            return recordingTimelineStart + elapsed
+        }
+        if let punchPosition {
+            if let punchInTime, punchPosition < punchInTime { return }
+            if let punchOutTime, punchPosition >= punchOutTime {
+                return
+            }
+        }
+
         var firstInputLog: String?
         recordingTimingLock.lock()
         if !hasLoggedFirstRecordingInput {
@@ -1208,6 +1242,8 @@ public final class AudioEngineManager: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
 
+                self.updatePunchRecordingState()
+
                 let (peaks, livePeaks): ([Float], [UUID: [[(min: Float, max: Float)]]]) = self.peakLock.withLock {
                     let p = self.rawChannelPeaks
                     self.rawChannelPeaks = [Float](repeating: 0.0, count: self.rawChannelPeaks.count)
@@ -1270,6 +1306,7 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     public func syncTracks(_ tracks: [AudioTrack], fxChannels: [FXChannel]) {
+        syncedFXChannels = fxChannels
         let allPlugins = tracks.flatMap(\.plugins) + fxChannels.flatMap(\.plugins) + configuredMasterPlugins
         let activePluginIDs = Set(allPlugins.map(\.id))
         let removedPluginIDs = Set(pluginDescriptors.keys).subtracting(activePluginIDs)
@@ -1583,6 +1620,32 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
+    public func setClipMuted(_ clipID: UUID, muted: Bool) {
+        let mainKey = clipID.uuidString
+        if let player = clipPlayerNodes[clipID] {
+            if muted {
+                if mutedClipVolumes[mainKey] == nil {
+                    mutedClipVolumes[mainKey] = player.volume
+                }
+                player.volume = 0.0
+            } else {
+                player.volume = mutedClipVolumes.removeValue(forKey: mainKey) ?? 1.0
+            }
+        }
+
+        for (key, player) in sendClipPlayerNodes where key.hasSuffix(":\(clipID.uuidString)") {
+            let volumeKey = "send:\(key)"
+            if muted {
+                if mutedClipVolumes[volumeKey] == nil {
+                    mutedClipVolumes[volumeKey] = player.volume
+                }
+                player.volume = 0.0
+            } else {
+                player.volume = mutedClipVolumes.removeValue(forKey: volumeKey) ?? 1.0
+            }
+        }
+    }
+
     public func updateSendLevel(
         track: AudioTrack,
         send: FXSend,
@@ -1719,6 +1782,21 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
+    public func setPluginEnabled(_ pluginID: UUID, enabled: Bool) {
+        if var descriptor = pluginDescriptors[pluginID] {
+            descriptor.enabled = enabled
+            pluginDescriptors[pluginID] = descriptor
+        }
+        configuredMasterPlugins = configuredMasterPlugins.map { descriptor in
+            guard descriptor.id == pluginID else { return descriptor }
+            var updated = descriptor
+            updated.enabled = enabled
+            return updated
+        }
+        pluginAudioUnits[pluginID]?.auAudioUnit.shouldBypassEffect = !enabled
+        vst3Instances[pluginID]?.setBypassed(!enabled)
+    }
+
     private func connectMasterOutput(from node: AVAudioNode, format: AVAudioFormat) {
         guard let processor = masterVSTProcessor else {
             engine.disconnectNodeOutput(node)
@@ -1766,6 +1844,7 @@ public final class AudioEngineManager: ObservableObject {
                 self.engine.attach(audioUnit)
                 self.unavailablePluginIDs.remove(plugin.id)
                 self.engine.connect(previousNode, to: audioUnit, format: format)
+                audioUnit.auAudioUnit.shouldBypassEffect = !(self.pluginDescriptors[plugin.id]?.enabled ?? true)
                 self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                 self.masterPluginNodes.append(audioUnit)
                 self.pluginAudioUnits[plugin.id] = audioUnit
@@ -1976,6 +2055,12 @@ public final class AudioEngineManager: ObservableObject {
             guard (trackPluginNodes[track.id]?.count ?? 0) == availablePluginCount else {
                 return false
             }
+            let vstIDs = track.plugins
+                .filter { $0.enabled && $0.kind == .vst3 }
+                .map(\.id)
+            guard vstIDs.allSatisfy({ vst3Instances[$0] != nil || unavailablePluginIDs.contains($0) }) else {
+                return false
+            }
         }
 
         for channel in fxChannels {
@@ -2002,6 +2087,15 @@ public final class AudioEngineManager: ObservableObject {
                 return false
             }
         }
+
+        let masterAUPlugins = configuredMasterPlugins.filter { $0.enabled && $0.kind == .au }
+        guard masterAUPlugins.allSatisfy({
+            pluginAudioUnits[$0.id] != nil || unavailablePluginIDs.contains($0.id)
+        }) else { return false }
+        let availableMasterAUCount = masterAUPlugins.filter {
+            !unavailablePluginIDs.contains($0.id)
+        }.count
+        guard masterPluginNodes.count == availableMasterAUCount else { return false }
 
         let masterVSTIDs = configuredMasterPlugins
             .filter { $0.enabled && supportsRealtimeVST3($0) }
@@ -2086,6 +2180,7 @@ public final class AudioEngineManager: ObservableObject {
                         self.engine.attach(audioUnit)
                         self.unavailablePluginIDs.remove(pluginID)
                         self.engine.connect(previousNode, to: audioUnit, format: format)
+                        audioUnit.auAudioUnit.shouldBypassEffect = !(self.pluginDescriptors[pluginID]?.enabled ?? true)
                         self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
                         self.trackPluginNodes[trackID, default: []].append(audioUnit)
                         self.pluginAudioUnits[pluginID] = audioUnit
@@ -2421,17 +2516,50 @@ public final class AudioEngineManager: ObservableObject {
 
     // MARK: - Transport: Play / Record
 
-    public func startPlayOrRecord(tracks: [AudioTrack], fxChannels: [FXChannel] = []) {
-        if isPlaying || isRecording {
+    public func startPlayOrRecord(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel] = [],
+        isRetry: Bool = false,
+        recordArmedTracks: Bool = true
+    ) {
+        if isPlaying || isRecording || (isStartingPlayback && !isRetry) {
             stop(tracks: tracks)
             return
         }
 
-        syncTracks(tracks, fxChannels: fxChannels)
+        if !isRetry {
+            isStartingPlayback = true
+        }
 
-        // AU creation is asynchronous. Never start playback while the graph is incomplete.
+        startPlaybackTask?.cancel()
+        startPlaybackTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  self.isStartingPlayback else { return }
+            self.startPlaybackTask = nil
+            self.beginPlayOrRecord(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
+        }
+    }
+
+    private func beginPlayOrRecord(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        recordArmedTracks: Bool
+    ) {
+
+        // The graph is prepared by project/plugin changes, never by transport
+        // start. Wait here until asynchronous plugin insertion has completed.
         guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
-            schedulePlaybackRetry(tracks: tracks, fxChannels: fxChannels)
+            schedulePlaybackRetry(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
             return
         }
 
@@ -2442,11 +2570,15 @@ public final class AudioEngineManager: ObservableObject {
             try? engine.start()
         }
 
-        let armedTracks = tracks.filter { $0.isRecordArmed }
+        let armedTracks = recordArmedTracks ? tracks.filter { $0.isRecordArmed } : []
         let hasArmedTracks = !armedTracks.isEmpty
 
         if hasArmedTracks, recordingFinalizationTask != nil {
-            schedulePlaybackRetry(tracks: tracks, fxChannels: fxChannels)
+            schedulePlaybackRetry(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
             return
         }
 
@@ -2454,6 +2586,7 @@ public final class AudioEngineManager: ObservableObject {
             hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
         )
 
+        isStartingPlayback = false
         if hasArmedTracks {
             startRecording(
                 armedTracks: armedTracks,
@@ -2466,10 +2599,15 @@ public final class AudioEngineManager: ObservableObject {
 
         isPlaying = true
         isRecording = hasArmedTracks
+        if punchInTime != nil, punchOutTime != nil, currentTime < (punchInTime ?? 0.0) {
+            isRecording = false
+        }
         hasWarmedUpAudioGraph = true
         schedulePendingPluginUIRequests()
         startMetronome(at: sharedStartTime)
-        startPlayheadTimer(at: sharedStartTime.hostTime)
+        if playheadTimer == nil {
+            startPlayheadTimer(at: sharedStartTime.hostTime)
+        }
     }
 
     private func schedulePendingPluginUIRequests() {
@@ -2488,7 +2626,11 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
-    private func schedulePlaybackRetry(tracks: [AudioTrack], fxChannels: [FXChannel]) {
+    private func schedulePlaybackRetry(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        recordArmedTracks: Bool
+    ) {
         guard playbackRetryTask == nil else { return }
 
         playbackRetryTask = Task { @MainActor [weak self] in
@@ -2506,7 +2648,12 @@ public final class AudioEngineManager: ObservableObject {
                     continue
                 }
                 self.playbackRetryTask = nil
-                self.startPlayOrRecord(tracks: tracks, fxChannels: fxChannels)
+                self.startPlayOrRecord(
+                    tracks: tracks,
+                    fxChannels: fxChannels,
+                    isRetry: true,
+                    recordArmedTracks: recordArmedTracks
+                )
                 return
             }
             self?.playbackRetryTask = nil
@@ -2519,7 +2666,7 @@ public final class AudioEngineManager: ObservableObject {
             hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
         )
 
-        for track in tracks where !track.isRecordArmed {
+        for track in tracks {
             guard let player = playerNodes[track.id] else {
                 continue
             }
@@ -2528,7 +2675,8 @@ public final class AudioEngineManager: ObservableObject {
                 for: track,
                 player: player,
                 startSec: startSec,
-                sharedStartTime: transportStartTime
+                sharedStartTime: transportStartTime,
+                startPlayers: false
             )
 
             for send in track.fxSends where send.enabled && send.level > 0 {
@@ -2540,9 +2688,23 @@ public final class AudioEngineManager: ObservableObject {
                     compensatePluginLatency: false,
                     sharedStartTime: transportStartTime,
                     sendID: send.id,
-                    fxChannelID: send.fxChannelID
+                    fxChannelID: send.fxChannelID,
+                    startPlayers: false
                 )
             }
+        }
+
+        for (clipID, stream) in vst3StreamingClips {
+            stream.start(at: pendingVST3StartTimes.removeValue(forKey: clipID.uuidString) ?? transportStartTime)
+        }
+        for (clipKey, stream) in fxVSTStreamingClips {
+            stream.start(at: pendingVST3StartTimes.removeValue(forKey: clipKey) ?? transportStartTime)
+        }
+        for player in clipPlayerNodes.values {
+            player.play(at: transportStartTime)
+        }
+        for player in sendClipPlayerNodes.values {
+            player.play(at: transportStartTime)
         }
     }
 
@@ -2565,7 +2727,8 @@ public final class AudioEngineManager: ObservableObject {
         compensatePluginLatency: Bool = true,
         sharedStartTime: AVAudioTime,
         sendID: UUID? = nil,
-        fxChannelID: UUID? = nil
+        fxChannelID: UUID? = nil,
+        startPlayers: Bool = true
     ) {
         guard let clips = audioFiles[track.id] else { return }
         let isSendPlayback = sendID != nil
@@ -2586,6 +2749,9 @@ public final class AudioEngineManager: ObservableObject {
         }
         let pluginLatency = compensatePluginLatency ? (trackPluginLatencies[track.id] ?? 0.0) : 0.0
         for item in clips {
+            if item.clip.isMuted {
+                continue
+            }
             let file = item.file
             let clipStart = item.clip.startTime
             let format = file.processingFormat
@@ -2644,28 +2810,50 @@ public final class AudioEngineManager: ObservableObject {
                     } else {
                         vst3StreamingClips[item.clip.id]?.stop()
                         vst3StreamingClips[item.clip.id] = streamingClip
+                        if !startPlayers {
+                            pendingVST3StartTimes[item.clip.id.uuidString] = startTime
+                        }
                     }
-                    streamingClip.start(at: startTime)
+                    if let sendID, !startPlayers {
+                        pendingVST3StartTimes[fxStreamKey(sendID: sendID, clipID: item.clip.id)] = startTime
+                    }
+                    if startPlayers {
+                        streamingClip.start(at: startTime)
+                    }
                     continue
                 }
             }
-            guard let playbackBuffer = makeClipPlaybackBuffer(
-                fileURL: item.clip.fileURL,
-                startingFrame: startingFrame,
-                frameCount: frameCount,
-                gainDB: item.clip.gainDB,
-                clipOffset: max(0.0, startSec - scheduledClipStart),
-                clipDuration: clipDuration,
-                fadeInDuration: item.clip.fadeInDuration,
-                fadeOutDuration: item.clip.fadeOutDuration
-            ) else { continue }
-            targetPlayer.scheduleBuffer(
-                playbackBuffer,
-                at: startTime,
-                options: [],
-                completionHandler: nil
-            )
+            if item.clip.gainDB == 0.0,
+               item.clip.fadeInDuration == 0.0,
+               item.clip.fadeOutDuration == 0.0 {
+                targetPlayer.scheduleSegment(
+                    item.file,
+                    startingFrame: startingFrame,
+                    frameCount: frameCount,
+                    at: startTime,
+                    completionHandler: nil
+                )
+            } else {
+                guard let playbackBuffer = makeClipPlaybackBuffer(
+                    fileURL: item.clip.fileURL,
+                    startingFrame: startingFrame,
+                    frameCount: frameCount,
+                    gainDB: item.clip.gainDB,
+                    clipOffset: max(0.0, startSec - scheduledClipStart),
+                    clipDuration: clipDuration,
+                    fadeInDuration: item.clip.fadeInDuration,
+                    fadeOutDuration: item.clip.fadeOutDuration
+                ) else { continue }
+                targetPlayer.scheduleBuffer(
+                    playbackBuffer,
+                    at: startTime,
+                    options: [],
+                    completionHandler: nil
+                )
+            }
         }
+        guard startPlayers else { return }
+
         if isMainTrackPlayer {
             for item in clips {
                 let hasStreamingClip: Bool
@@ -2752,6 +2940,9 @@ public final class AudioEngineManager: ObservableObject {
         sharedStartTime: AVAudioTime
     ) {
         activeWriters.removeAll()
+        punchArmedTrackIDs = Set(armedTracks.map(\.id))
+        punchPlaybackState = 0
+        isPunchRecording = punchInTime.map { currentTime >= $0 } ?? true
         // CRITICAL: Use hardwareSampleRate (actual HW rate from inputNode) — NOT the UI sampleRate.
         // This ensures the WAV file header matches the actual captured audio sample rate.
         let recordSampleRate = self.hardwareSampleRate
@@ -2762,7 +2953,7 @@ public final class AudioEngineManager: ObservableObject {
             recordingTransportStartHostTime = sharedStartTime.hostTime
             pendingRecordingClipStartTime = max(
                 0.0,
-                currentTime - recordingPlacementCompensation
+                (punchInTime ?? currentTime) - recordingPlacementCompensation
             )
             hasLoggedFirstRecordingInput = false
         }
@@ -2802,17 +2993,49 @@ public final class AudioEngineManager: ObservableObject {
 
         captureLock.withLock {
             self.writersSnapshot = activeWriters
-            self.recordingActiveState = true
+            self.recordingActiveState = self.isPunchRecording
         }
 
-        startPlayback(tracks: playbackTracks, sharedStartTime: sharedStartTime)
+        startPlayback(
+            tracks: playbackTracks + armedTracks,
+            sharedStartTime: sharedStartTime
+        )
+    }
+
+    private func updatePunchRecordingState() {
+        guard isPlaying else { return }
+        guard punchInTime != nil, punchOutTime != nil else { return }
+        let nextState: Int
+        if let punchInTime, currentTime < punchInTime {
+            nextState = 0
+        } else if let punchOutTime, currentTime >= punchOutTime {
+            nextState = 2
+        } else {
+            nextState = 1
+        }
+        guard nextState != punchPlaybackState else { return }
+        punchPlaybackState = nextState
+        let recordingNow = nextState == 1
+        isPunchRecording = recordingNow
+        isRecording = recordingNow
+        captureLock.withLock {
+            recordingActiveState = recordingNow
+        }
+        let playbackVolume: Float = recordingNow ? 0.0 : 1.0
+        for trackID in punchArmedTrackIDs {
+            trackOutputNodes[trackID]?.outputVolume = playbackVolume
+        }
     }
 
     // MARK: - Transport: Stop
 
     public func stop(tracks: [AudioTrack]) {
+        startPlaybackTask?.cancel()
+        startPlaybackTask = nil
         playbackRetryTask?.cancel()
         playbackRetryTask = nil
+        isStartingPlayback = false
+        stopPlayheadTimer()
         guard isPlaying || isRecording else { return }
 
         stopMetronome()
@@ -2842,12 +3065,25 @@ public final class AudioEngineManager: ObservableObject {
             stream.stop()
         }
         fxVSTStreamingClips.removeAll()
+        pendingVST3StartTimes.removeAll()
         for player in sendClipPlayerNodes.values {
             player.stop()
         }
         for (_, player) in sendPlayerNodes {
             player.stop()
         }
+        // Punch recording temporarily mutes the armed tracks' main output.
+        // Restore it before the next transport start; FX sends use a separate
+        // path and otherwise can remain audible while the track stays silent.
+        let anySolo = tracks.contains { $0.isSoloed }
+        for track in tracks where punchArmedTrackIDs.contains(track.id) {
+            let volume = effectiveTrackVolume(for: track, anySolo: anySolo)
+            trackOutputNodes[track.id]?.outputVolume = volume
+            playerNodes[track.id]?.volume = volume
+        }
+        punchArmedTrackIDs.removeAll()
+        punchPlaybackState = 0
+        isPunchRecording = false
         // Keep AVAudioEngine running during normal transport stop. This is the
         // host's continuous render path and lets Audio Units preserve tails,
         // meters, and GUI-related runtime state between transport operations.
@@ -2863,6 +3099,13 @@ public final class AudioEngineManager: ObservableObject {
                         }
                     }
                 }
+            }
+            // Newly recorded clips are added after the previous graph sync.
+            // Refresh the playback file cache after their files are finalized.
+            if let self,
+               !self.isPlaying,
+               !self.isRecording {
+                self.syncTracks(tracks, fxChannels: self.syncedFXChannels)
             }
             self?.activeClips.removeAll()
             self?.recordingFinalizationTask = nil

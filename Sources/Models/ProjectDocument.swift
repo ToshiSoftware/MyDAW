@@ -14,6 +14,18 @@ public struct PluginStateDocument: Codable, Hashable {
     }
 }
 
+public struct PunchRangeDocument: Codable, Hashable {
+    public let startBeat: Double
+    public let endBeat: Double
+    public let enabled: Bool
+
+    public init(startBeat: Double = 4.0, endBeat: Double = 8.0, enabled: Bool = false) {
+        self.startBeat = startBeat
+        self.endBeat = endBeat
+        self.enabled = enabled
+    }
+}
+
 public struct ProjectDocument: Codable {
     public let version: Int
     public let pixelsPerSecond: Double
@@ -33,10 +45,11 @@ public struct ProjectDocument: Codable {
     public let fxChannels: [FXChannelDocument]
     public let masterPlugins: [TrackPluginDescriptor]
     public let pluginStates: [PluginStateDocument]
+    public let punchRange: PunchRangeDocument
 
     private enum CodingKeys: String, CodingKey {
         case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
-        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates
+        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange
     }
 
     public init(
@@ -56,7 +69,8 @@ public struct ProjectDocument: Codable {
         tracks: [TrackDocument],
         fxChannels: [FXChannelDocument] = [],
         masterPlugins: [TrackPluginDescriptor] = [],
-        pluginStates: [PluginStateDocument] = []
+        pluginStates: [PluginStateDocument] = [],
+        punchRange: PunchRangeDocument = PunchRangeDocument()
     ) {
         self.version = 4
         self.pixelsPerSecond = pixelsPerSecond
@@ -76,6 +90,7 @@ public struct ProjectDocument: Codable {
         self.fxChannels = fxChannels
         self.masterPlugins = masterPlugins
         self.pluginStates = pluginStates
+        self.punchRange = punchRange
     }
 
     public init(from decoder: Decoder) throws {
@@ -98,6 +113,7 @@ public struct ProjectDocument: Codable {
         fxChannels = try values.decodeIfPresent([FXChannelDocument].self, forKey: .fxChannels) ?? []
         masterPlugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .masterPlugins) ?? []
         pluginStates = try values.decodeIfPresent([PluginStateDocument].self, forKey: .pluginStates) ?? []
+        punchRange = try values.decodeIfPresent(PunchRangeDocument.self, forKey: .punchRange) ?? PunchRangeDocument()
     }
 }
 
@@ -203,12 +219,13 @@ public struct ClipDocument: Codable {
     public let duration: Double
     public let originalDuration: Double
     public let gainDB: Double
+    public let isMuted: Bool
     public let fadeInDuration: Double
     public let fadeOutDuration: Double
     public let filePath: String
 
     private enum CodingKeys: String, CodingKey {
-        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, fadeInDuration, fadeOutDuration, filePath
+        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, isMuted, fadeInDuration, fadeOutDuration, filePath
     }
 
     public init(
@@ -218,6 +235,7 @@ public struct ClipDocument: Codable {
         duration: Double,
         originalDuration: Double,
         gainDB: Double = 0.0,
+        isMuted: Bool = false,
         fadeInDuration: Double = 0.0,
         fadeOutDuration: Double = 0.0,
         filePath: String
@@ -228,6 +246,7 @@ public struct ClipDocument: Codable {
         self.duration = duration
         self.originalDuration = originalDuration
         self.gainDB = min(24.0, max(-24.0, gainDB))
+        self.isMuted = isMuted
         self.fadeInDuration = max(0.0, fadeInDuration)
         self.fadeOutDuration = max(0.0, fadeOutDuration)
         self.filePath = filePath
@@ -241,6 +260,7 @@ public struct ClipDocument: Codable {
         duration = try values.decode(Double.self, forKey: .duration)
         originalDuration = try values.decodeIfPresent(Double.self, forKey: .originalDuration) ?? duration
         gainDB = min(24.0, max(-24.0, try values.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0.0))
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
         fadeInDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeInDuration) ?? 0.0)
         fadeOutDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeOutDuration) ?? 0.0)
         filePath = try values.decode(String.self, forKey: .filePath)

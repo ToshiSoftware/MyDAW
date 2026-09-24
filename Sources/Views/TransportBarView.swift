@@ -31,6 +31,10 @@ public struct TransportBarView: View {
         return String(format: "%03d:%02d", totalBeats / 4 + 1, totalBeats % 4 + 1)
     }
 
+    private var isTransportActive: Bool {
+        audioEngine.isPlaying || audioEngine.isStartingPlayback
+    }
+
     private func commitBPMText() {
         let parsedValue = Double(bpmText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? audioEngine.bpm
         let clamped = max(20.0, min(400.0, parsedValue))
@@ -82,17 +86,24 @@ public struct TransportBarView: View {
                 .help("Rewind to Beginning (00:00.000)")
 
                 Button(action: {
+                    let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+                    audioEngine.setPunchRange(
+                        startTime: projectState.punchRange.startBeat * beatDuration,
+                        endTime: projectState.punchRange.endBeat * beatDuration,
+                        enabled: projectState.punchRange.enabled
+                    )
                     audioEngine.startPlayOrRecord(
                         tracks: projectState.tracks,
-                        fxChannels: projectState.fxChannels
+                        fxChannels: projectState.fxChannels,
+                        recordArmedTracks: false
                     )
                 }) {
-                    Image(systemName: audioEngine.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: isTransportActive ? "pause.fill" : "play.fill")
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(audioEngine.isPlaying ? .black : .green)
+                        .foregroundColor(isTransportActive ? .black : .green)
                         .frame(width: 40, height: 28)
                         .background(
-                            audioEngine.isPlaying
+                            isTransportActive
                                 ? Color.green
                                 : Color.green.opacity(0.18)
                         )
@@ -106,15 +117,20 @@ public struct TransportBarView: View {
                 .keyboardShortcut(.space, modifiers: [])
                 .help("Start / Pause (Spacebar)")
 
-                // Record status indicator / toggle
+                // Record status indicator / start recording
                 let anyArmed = projectState.tracks.contains { $0.isRecordArmed }
                 Button(action: {
-                    if let selId = projectState.selectedTrackId,
-                       let track = projectState.tracks.first(where: { $0.id == selId }) {
-                        projectState.toggleRecordArm(for: track)
-                    } else if let first = projectState.tracks.first {
-                        projectState.toggleRecordArm(for: first)
-                    }
+                    let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+                    audioEngine.setPunchRange(
+                        startTime: projectState.punchRange.startBeat * beatDuration,
+                        endTime: projectState.punchRange.endBeat * beatDuration,
+                        enabled: projectState.punchRange.enabled
+                    )
+                    audioEngine.startPlayOrRecord(
+                        tracks: projectState.tracks,
+                        fxChannels: projectState.fxChannels,
+                        recordArmedTracks: true
+                    )
                 }) {
                     Circle()
                         .fill(audioEngine.isRecording ? Color.red : (anyArmed ? Color.red.opacity(0.8) : Color.white.opacity(0.12)))
@@ -128,7 +144,20 @@ public struct TransportBarView: View {
                         )
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help(anyArmed ? "Tracks Armed for Recording" : "Click to Arm Selected Track for Recording")
+                .help(anyArmed ? "Record Armed Tracks" : "No Tracks Armed for Recording")
+
+                Button {
+                    projectState.setPunchEnabled(!projectState.punchRange.enabled)
+                } label: {
+                    Text("P")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(projectState.punchRange.enabled ? .black : .red.opacity(0.75))
+                        .frame(width: 22, height: 20)
+                        .background(projectState.punchRange.enabled ? Color.red : Color.white.opacity(0.08))
+                        .cornerRadius(3)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .help(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
 
                 Button(action: {
                     projectState.deleteSelectedClip()
@@ -144,7 +173,7 @@ public struct TransportBarView: View {
                 .disabled(projectState.audioEngine.isRecording || !projectState.tracks.contains { $0.selectedClipId != nil })
                 .help("Delete Selected Recording")
 
-                Button(action: { projectState.saveProject() }) {
+                Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.cyan.opacity(audioEngine.isPlaying ? 0.35 : 0.9))

@@ -24,6 +24,8 @@ private func myDAWVST3Destroy(_ instance: UnsafeMutableRawPointer?)
 public final class VST3NativeInstance {
     private var handle: UnsafeMutableRawPointer?
     private let maxFrames: Int
+    private let bypassLock = NSLock()
+    private var bypassed = false
     public let latencySamples: Int
 
     public init?(descriptor: TrackPluginDescriptor, sampleRate: Double, maxFrames: Int) {
@@ -83,7 +85,22 @@ public final class VST3NativeInstance {
 
     public func processInterleaved(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>, frames: Int) -> Bool {
         guard let handle, frames > 0, frames <= maxFrames else { return false }
+        bypassLock.lock()
+        let isBypassed = bypassed
+        bypassLock.unlock()
+        if isBypassed {
+            for index in 0..<(frames * 2) {
+                output[index] = input[index]
+            }
+            return true
+        }
         return myDAWVST3ProcessInterleaved(handle, input, output, Int32(frames), 2) == 0
+    }
+
+    public func setBypassed(_ bypassed: Bool) {
+        bypassLock.lock()
+        self.bypassed = bypassed
+        bypassLock.unlock()
     }
 
     public func captureState() -> Data? {

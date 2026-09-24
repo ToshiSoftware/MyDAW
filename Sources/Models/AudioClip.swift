@@ -8,6 +8,7 @@ public final class AudioClip: Identifiable, ObservableObject {
     @Published public var startTime: Double
     @Published public var sourceStartTime: Double
     @Published public var gainDB: Double
+    @Published public var isMuted: Bool
     @Published public private(set) var fadeInDuration: Double
     @Published public private(set) var fadeOutDuration: Double
     @Published public private(set) var sampleRate: Double = 48000.0
@@ -21,6 +22,7 @@ public final class AudioClip: Identifiable, ObservableObject {
         self.startTime = max(0.0, startTime)
         self.sourceStartTime = 0.0
         self.gainDB = 0.0
+        self.isMuted = false
         self.fadeInDuration = 0.0
         self.fadeOutDuration = 0.0
         self.fileURL = fileURL
@@ -91,6 +93,7 @@ public final class AudioClip: Identifiable, ObservableObject {
             duration: duration
         )
         copy.gainDB = gainDB
+        copy.isMuted = isMuted
         copy.setFadeInDuration(fadeInDuration)
         copy.setFadeOutDuration(fadeOutDuration)
         return copy

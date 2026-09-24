@@ -130,6 +130,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         let source = clips[index]
         let splitOffset = timelineTime - source.startTime
         guard splitOffset > 0.02, splitOffset < source.duration - 0.02 else { return false }
+        let originalFadeOutDuration = source.fadeOutDuration
 
         let rightClip = AudioClip(
             startTime: timelineTime,
@@ -142,11 +143,13 @@ public final class AudioTrack: Identifiable, ObservableObject {
             duration: source.duration - splitOffset
         )
         rightClip.setGainDB(source.gainDB)
+        rightClip.setFadeOutDuration(originalFadeOutDuration)
         source.setTrim(
             startTime: source.startTime,
             sourceStartTime: source.sourceStartTime,
             duration: splitOffset
         )
+        source.setFadeOutDuration(0.0)
         clips.insert(rightClip, at: index + 1)
         selectedClipId = rightClip.id
         return true

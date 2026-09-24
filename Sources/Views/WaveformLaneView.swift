@@ -156,6 +156,8 @@ private struct AudioClipView: View {
                 .contextMenu {
                             locateFileButton
                     Divider()
+                    muteButton
+                    Divider()
                     deleteButton
                 }
                 .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
@@ -231,6 +233,7 @@ private struct AudioClipView: View {
                     .gesture(fadeOutGesture)
             }
             .clipShape(RoundedRectangle(cornerRadius: 3))
+            .opacity(clip.isMuted ? 0.35 : 1.0)
             .opacity(projectState.clipDragPreview?.clipID == clip.id ? 0 : 1)
             .contentShape(Rectangle())
             .gesture(
@@ -296,6 +299,8 @@ private struct AudioClipView: View {
             .contextMenu {
                 locateFileButton
                 Divider()
+                muteButton
+                Divider()
 
                 Button {
                     projectState.selectClip(trackId: track.id, clipId: clip.id)
@@ -352,6 +357,19 @@ private struct AudioClipView: View {
             Label("Choose Recording File…", systemImage: "folder")
         }
         .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
+    }
+
+    private var muteButton: some View {
+        Button {
+            projectState.selectClip(trackId: track.id, clipId: clip.id)
+            projectState.toggleClipMute(trackId: track.id, clipId: clip.id)
+        } label: {
+            Label(
+                clip.isMuted ? "Unmute Recording" : "Mute Recording",
+                systemImage: clip.isMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
+            )
+        }
+        .disabled(projectState.audioEngine.isRecording)
     }
 
     private var deleteButton: some View {
@@ -496,9 +514,8 @@ private struct AudioClipView: View {
                 let initialStart = resizeStartTime ?? clip.startTime
                 let initialSource = resizeSourceStartTime ?? clip.sourceStartTime
                 let initialDuration = resizeDuration ?? clip.duration
-                let rawDelta = Double(value.translation.width / pps)
-                let delta = min(initialDuration - 0.02, max(-initialSource, rawDelta))
-                let snappedStartTime = projectState.snappedTimelineTime(initialStart + delta)
+                let rawStartTime = max(0.0, Double(value.location.x / pps))
+                let snappedStartTime = projectState.snappedTimelineTime(rawStartTime)
                 let snappedDelta = min(
                     initialDuration - 0.02,
                     max(-initialSource, snappedStartTime - initialStart)
@@ -529,12 +546,11 @@ private struct AudioClipView: View {
                     resizeDuration = clip.duration
                     projectState.selectClip(trackId: track.id, clipId: clip.id)
                 }
-                let initialDuration = resizeDuration ?? clip.duration
                 let initialSource = resizeSourceStartTime ?? clip.sourceStartTime
                 let maxDuration = max(0.02, clip.originalDuration - initialSource)
-                let rawDelta = Double(value.translation.width / projectState.pixelsPerSecond)
                 let initialStart = resizeStartTime ?? clip.startTime
-                let snappedEndTime = projectState.snappedTimelineTime(initialStart + initialDuration + rawDelta)
+                let rawEndTime = max(0.0, Double(value.location.x / projectState.pixelsPerSecond))
+                let snappedEndTime = projectState.snappedTimelineTime(rawEndTime)
                 let newDuration = min(maxDuration, max(0.02, snappedEndTime - initialStart))
                 clip.setTrim(
                     startTime: initialStart,

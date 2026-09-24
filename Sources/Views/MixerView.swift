@@ -110,6 +110,15 @@ private struct MasterChannelView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(projectState.masterPlugins) { plugin in
                     HStack(spacing: 4) {
+                        Button {
+                            projectState.toggleMasterPlugin(plugin.id)
+                        } label: {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 8))
+                                .foregroundColor(plugin.enabled ? .green : .gray)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
                         Button(plugin.menuDisplayName) {
                             projectState.audioEngine.openPluginUI(pluginID: plugin.id)
                         }
@@ -222,6 +231,15 @@ private struct MixerChannelView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(track.plugins) { plugin in
                             HStack(spacing: 4) {
+                                Button {
+                                    projectState.togglePlugin(plugin.id, on: track.id)
+                                } label: {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(plugin.enabled ? .green : .gray)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
                                 Button(plugin.menuDisplayName) {
                                     projectState.openPluginUI(plugin.id, on: track.id)
                                 }
@@ -425,6 +443,15 @@ private struct FXChannelView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(channel.plugins) { plugin in
                     HStack(spacing: 4) {
+                        Button {
+                            projectState.togglePlugin(plugin.id, onFX: channel.id)
+                        } label: {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 8))
+                                .foregroundColor(plugin.enabled ? .green : .gray)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
                         Button(plugin.menuDisplayName) {
                             projectState.audioEngine.openPluginUI(pluginID: plugin.id)
                         }

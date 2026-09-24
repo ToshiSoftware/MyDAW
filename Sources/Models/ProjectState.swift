@@ -56,6 +56,7 @@ public final class ProjectState: ObservableObject {
     @Published public var clipDragPreview: ClipDragPreview?
     @Published public var pixelsPerSecond: CGFloat = 80.0 // Horizontal zoom factor
     @Published public var timelineScrollTime: Double = 0.0
+    @Published public var punchRange = PunchRangeDocument()
     @Published public private(set) var zoomRevision: Int = 0
     @Published public private(set) var scrollRestoreRevision: Int = 0
     @Published public var isRestoringScrollPosition: Bool = false
@@ -72,9 +73,11 @@ public final class ProjectState: ObservableObject {
     @Published public var isExportingMasterMix = false
     @Published public var masterExportCompleted = false
     @Published public var masterExportError: String?
+    @Published public private(set) var saveConfirmationMessage: String?
     @Published public private(set) var isProjectOpen = false
     public var masterExportURL: URL?
     private var masterExportTask: Task<Void, Never>?
+    private var saveConfirmationTask: Task<Void, Never>?
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
     @Published public var waveformVerticalScale: CGFloat = 1.0 {
@@ -102,6 +105,38 @@ public final class ProjectState: ObservableObject {
             .flatMap { $0.clips }
             .map { $0.startTime + $0.duration }
             .max() ?? 0.0
+    }
+
+    public func setPunchRange(startBeat: Double, endBeat: Double) {
+        let lower = max(0.0, min(startBeat, endBeat))
+        let upper = max(lower + 1.0, max(startBeat, endBeat))
+        punchRange = PunchRangeDocument(
+            startBeat: lower,
+            endBeat: upper,
+            enabled: punchRange.enabled
+        )
+    }
+
+    public func setPunchStartBeat(_ startBeat: Double) {
+        setPunchRange(startBeat: startBeat, endBeat: punchRange.endBeat)
+    }
+
+    public func setPunchEndBeat(_ endBeat: Double) {
+        setPunchRange(startBeat: punchRange.startBeat, endBeat: endBeat)
+    }
+
+    public func setPunchEnabled(_ enabled: Bool) {
+        punchRange = PunchRangeDocument(
+            startBeat: punchRange.startBeat,
+            endBeat: punchRange.endBeat,
+            enabled: enabled
+        )
+        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+        audioEngine.setPunchRange(
+            startTime: punchRange.startBeat * beatDuration,
+            endTime: punchRange.endBeat * beatDuration,
+            enabled: enabled
+        )
     }
 
     public let audioEngine: AudioEngineManager
@@ -458,6 +493,13 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    public func togglePlugin(_ pluginID: UUID, on trackID: UUID) {
+        guard let track = tracks.first(where: { $0.id == trackID }),
+              let index = track.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
+        track.plugins[index].enabled.toggle()
+          audioEngine.setPluginEnabled(pluginID, enabled: track.plugins[index].enabled)
+    }
+
     public func addFXChannel() {
         let channel = FXChannel(name: "FX \(fxChannels.count + 1)")
         fxChannels.append(channel)
@@ -507,6 +549,13 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    public func togglePlugin(_ pluginID: UUID, onFX fxChannelID: UUID) {
+        guard let channel = fxChannels.first(where: { $0.id == fxChannelID }),
+              let index = channel.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
+        channel.plugins[index].enabled.toggle()
+          audioEngine.setPluginEnabled(pluginID, enabled: channel.plugins[index].enabled)
+    }
+
     public func insertMasterPlugin(_ descriptor: TrackPluginDescriptor) {
         masterPlugins.append(descriptor.newInstance())
         audioEngine.syncMasterPlugins(masterPlugins)
@@ -515,6 +564,12 @@ public final class ProjectState: ObservableObject {
     public func removeMasterPlugin(_ pluginID: UUID) {
         masterPlugins.removeAll { $0.id == pluginID }
         audioEngine.syncMasterPlugins(masterPlugins)
+    }
+
+    public func toggleMasterPlugin(_ pluginID: UUID) {
+        guard let index = masterPlugins.firstIndex(where: { $0.id == pluginID }) else { return }
+        masterPlugins[index].enabled.toggle()
+        audioEngine.setPluginEnabled(pluginID, enabled: masterPlugins[index].enabled)
     }
 
     public func openPluginUI(_ pluginID: UUID, on trackID: UUID) {
@@ -632,6 +687,14 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    public func toggleClipMute(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isRecording,
+              let track = tracks.first(where: { $0.id == trackId }),
+              let clip = track.clips.first(where: { $0.id == clipId }) else { return }
+        clip.isMuted.toggle()
+          audioEngine.setClipMuted(clip.id, muted: clip.isMuted)
+    }
+
     public func duplicateClip(trackId: UUID, clipId: UUID) {
         guard !audioEngine.isRecording,
               let track = tracks.first(where: { $0.id == trackId }) else { return }
@@ -714,6 +777,7 @@ public final class ProjectState: ObservableObject {
                             duration: clip.duration,
                             originalDuration: clip.originalDuration,
                             gainDB: clip.gainDB,
+                            isMuted: clip.isMuted,
                             fadeInDuration: clip.fadeInDuration,
                             fadeOutDuration: clip.fadeOutDuration,
                             filePath: relativePath(for: clip.fileURL, to: projectFolderURL)
@@ -725,7 +789,8 @@ public final class ProjectState: ObservableObject {
             },
             fxChannels: fxChannels.map { FXChannelDocument(channel: $0) },
             masterPlugins: masterPlugins,
-            pluginStates: audioEngine.capturePluginStates()
+            pluginStates: audioEngine.capturePluginStates(),
+            punchRange: punchRange
         )
 
         do {
@@ -736,6 +801,17 @@ public final class ProjectState: ObservableObject {
         } catch {
             presentProjectError("Could not save project: \(error.localizedDescription)")
             return false
+        }
+    }
+
+    public func saveProjectAndShowConfirmation() {
+        guard saveProject() else { return }
+        saveConfirmationTask?.cancel()
+        saveConfirmationMessage = "Project saved."
+        saveConfirmationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveConfirmationMessage = nil
         }
     }
 
@@ -830,6 +906,7 @@ public final class ProjectState: ObservableObject {
                         duration: clipDocument.duration
                     )
                     clip.setGainDB(clipDocument.gainDB)
+                    clip.isMuted = clipDocument.isMuted
                     clip.setFadeInDuration(clipDocument.fadeInDuration)
                     clip.setFadeOutDuration(clipDocument.fadeOutDuration)
                 }
@@ -849,7 +926,14 @@ public final class ProjectState: ObservableObject {
                 )
             }
             masterPlugins = uniquePluginInstances(document.masterPlugins)
+            punchRange = document.punchRange
             audioEngine.setSavedPluginStates(document.pluginStates)
+            let beatDuration = 60.0 / max(20.0, min(400.0, document.bpm))
+            audioEngine.setPunchRange(
+                startTime: punchRange.startBeat * beatDuration,
+                endTime: punchRange.endBeat * beatDuration,
+                enabled: punchRange.enabled
+            )
 
             // Restore waveform data after the project model is visible. The
             // cache performs file analysis off the main thread. Start this

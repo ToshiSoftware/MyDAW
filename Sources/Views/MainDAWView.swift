@@ -92,6 +92,23 @@ public struct MainDAWView: View {
                 .allowsHitTesting(projectState.isShowingStartupLog)
         }
         .overlay {
+            if let message = projectState.saveConfirmationMessage {
+                ZStack {
+                    Color.black.opacity(0.28)
+                    Text(message)
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 18)
+                        .background(Color.black.opacity(0.8))
+                        .cornerRadius(8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .overlay {
             if !projectState.isProjectOpen {
                 ProjectSelectionView(
                     onCreate: { _ = projectState.createNewProject() },
@@ -102,9 +119,16 @@ public struct MainDAWView: View {
         .background(
             SpacebarHandler {
                 guard !projectState.isShowingMasterExportDialog else { return }
+                let beatDuration = 60.0 / max(20.0, min(400.0, projectState.audioEngine.bpm))
+                projectState.audioEngine.setPunchRange(
+                    startTime: projectState.punchRange.startBeat * beatDuration,
+                    endTime: projectState.punchRange.endBeat * beatDuration,
+                    enabled: projectState.punchRange.enabled
+                )
                 projectState.audioEngine.startPlayOrRecord(
                     tracks: projectState.tracks,
-                    fxChannels: projectState.fxChannels
+                    fxChannels: projectState.fxChannels,
+                    recordArmedTracks: false
                 )
             } rewind: {
                 guard !projectState.isShowingMasterExportDialog else { return }

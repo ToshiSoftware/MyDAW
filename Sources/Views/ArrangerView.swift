@@ -267,9 +267,9 @@ struct TimelineRulerView: View {
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
     let width: CGFloat
-
     var body: some View {
-        Canvas { context, size in
+        ZStack(alignment: .topLeading) {
+            Canvas { context, size in
             let pps = projectState.pixelsPerSecond
 
             // Background
@@ -323,11 +323,18 @@ struct TimelineRulerView: View {
                 let text = Text(timeStr)
                     .font(.system(size: isBarStart ? 12 : 8, weight: isBarStart ? .black : .bold))
                     .foregroundColor(isBarStart ? Color.orange : Color.white.opacity(0.6))
-                context.draw(context.resolve(text), at: CGPoint(x: x + 16, y: 12))
+                context.draw(context.resolve(text), at: CGPoint(x: x + 16, y: 22))
 
                 time += interval
                 markerIndex += 1
             }
+            }
+
+            PunchRangeOverlay(
+                audioEngine: audioEngine,
+                projectState: projectState,
+                width: width
+            )
         }
         .frame(width: width, height: 32)
         .contentShape(Rectangle())
@@ -343,6 +350,91 @@ struct TimelineRulerView: View {
                     )
                 }
         )
+    }
+}
+
+private struct PunchRangeOverlay: View {
+    @ObservedObject var audioEngine: AudioEngineManager
+    @ObservedObject var projectState: ProjectState
+    let width: CGFloat
+    @State private var dragStartTime: Double?
+
+    var body: some View {
+        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+        let pixelsPerSecond = max(0.001, projectState.pixelsPerSecond)
+        let startX = CGFloat(projectState.punchRange.startBeat * beatDuration) * pixelsPerSecond
+        let endX = CGFloat(projectState.punchRange.endBeat * beatDuration) * pixelsPerSecond
+
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(projectState.punchRange.enabled ? Color.red.opacity(0.38) : Color.gray.opacity(0.08))
+                .frame(width: max(1.0, endX - startX), height: 10)
+                .offset(x: startX, y: 0)
+                .allowsHitTesting(false)
+
+            Text("PUNCH")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.white.opacity(projectState.punchRange.enabled ? 0.95 : 0.5))
+                .offset(x: startX + 4, y: 1)
+                .allowsHitTesting(false)
+
+            punchHandle(
+                x: startX,
+                initialTime: projectState.punchRange.startBeat * beatDuration,
+                pixelsPerSecond: pixelsPerSecond,
+                isStartHandle: true,
+                beatDuration: beatDuration
+            )
+            punchHandle(
+                x: endX,
+                initialTime: projectState.punchRange.endBeat * beatDuration,
+                pixelsPerSecond: pixelsPerSecond,
+                isStartHandle: false,
+                beatDuration: beatDuration
+            )
+        }
+        .frame(width: width, height: 32, alignment: .topLeading)
+    }
+
+    private func punchHandle(
+        x: CGFloat,
+        initialTime: Double,
+        pixelsPerSecond: CGFloat,
+        isStartHandle: Bool,
+        beatDuration: Double
+    ) -> some View {
+        Capsule()
+            .fill(projectState.punchRange.enabled ? Color.red : Color.gray)
+            .frame(width: 10, height: 14)
+            .overlay(Circle().fill(Color.white).frame(width: 4, height: 4))
+            .frame(width: 24, height: 32)
+            .contentShape(Rectangle())
+            .position(x: min(max(12.0, x), max(12.0, width - 12.0)), y: 6)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if dragStartTime == nil {
+                            dragStartTime = initialTime
+                        }
+                        let rawTime = max(
+                            0.0,
+                            (dragStartTime ?? initialTime) + Double(value.translation.width) / Double(pixelsPerSecond)
+                        )
+                        let snappedBeat = projectState.snappedTimelineTime(rawTime) / beatDuration
+                        if isStartHandle {
+                            projectState.setPunchStartBeat(
+                                min(snappedBeat, projectState.punchRange.endBeat - 1.0)
+                            )
+                        } else {
+                            projectState.setPunchEndBeat(
+                                max(snappedBeat, projectState.punchRange.startBeat + 1.0)
+                            )
+                        }
+                    }
+                    .onEnded { _ in
+                        dragStartTime = nil
+                    }
+            )
     }
 }
 
