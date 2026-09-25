@@ -352,6 +352,7 @@ public final class AudioEngineManager: ObservableObject {
     @Published public var isPlaying: Bool = false
     @Published public var isRecording: Bool = false
     @Published public private(set) var isPunchRecording: Bool = false
+    @Published public private(set) var hasPendingRecording: Bool = false
     @Published public private(set) var isStartingPlayback: Bool = false
     @Published public var currentTime: Double = 0.0 // Playhead in seconds
     @Published public var bpm: Double = 120.0 {
@@ -1796,15 +1797,18 @@ public final class AudioEngineManager: ObservableObject {
         }
         guard let masterOutputNode,
               let format = AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2) else { return }
-        let enabledPlugins = plugins.filter(\.enabled)
-        let auPlugins = enabledPlugins.filter { $0.kind == .au }
-        let vstPlugins = enabledPlugins.filter { supportsRealtimeVST3($0) }
-        let signature = enabledPlugins.map(\.id)
+        let auPlugins = plugins.filter { $0.kind == .au }
+        let vstPlugins = plugins.filter { supportsRealtimeVST3($0) }
+        let signature = plugins.map(\.id)
         guard signature != masterPluginSignature else { return }
         let removedPluginIDs = Set(masterPluginSignature).subtracting(signature)
         for pluginID in removedPluginIDs {
             pluginUIRequests.remove(pluginID)
             pendingPluginUIRequests.remove(pluginID)
+            pluginStateRestoreTasks[pluginID]?.cancel()
+            pluginStateRestoreTasks.removeValue(forKey: pluginID)
+            pluginAudioUnits.removeValue(forKey: pluginID)
+            vst3Instances.removeValue(forKey: pluginID)
             vst3UIInstances.removeValue(forKey: pluginID)?.removeEditor()
             pluginWindows[pluginID]?.close()
             pluginWindows.removeValue(forKey: pluginID)
@@ -1860,7 +1864,8 @@ public final class AudioEngineManager: ObservableObject {
         }
     }
 
-    public func setPluginEnabled(_ pluginID: UUID, enabled: Bool) {
+    @discardableResult
+    public func setPluginEnabled(_ pluginID: UUID, enabled: Bool) -> Bool {
         if var descriptor = pluginDescriptors[pluginID] {
             descriptor.enabled = enabled
             pluginDescriptors[pluginID] = descriptor
@@ -1873,6 +1878,7 @@ public final class AudioEngineManager: ObservableObject {
         }
         pluginAudioUnits[pluginID]?.auAudioUnit.shouldBypassEffect = !enabled
         vst3Instances[pluginID]?.setBypassed(!enabled)
+        return pluginAudioUnits[pluginID] != nil || vst3Instances[pluginID] != nil
     }
 
     private func connectMasterOutput(from node: AVAudioNode, format: AVAudioFormat) {
@@ -1911,7 +1917,7 @@ public final class AudioEngineManager: ObservableObject {
             }
             DispatchQueue.main.async {
                     guard self.masterPluginGraphGeneration == generation,
-                        self.masterPluginSignature == self.configuredMasterPlugins.filter(\.enabled).map(\.id) else {
+                        self.masterPluginSignature == self.configuredMasterPlugins.map(\.id) else {
                     return
                 }
                 let wasEngineRunning = self.engine.isRunning
@@ -2170,10 +2176,6 @@ public final class AudioEngineManager: ObservableObject {
         guard masterAUPlugins.allSatisfy({
             pluginAudioUnits[$0.id] != nil || unavailablePluginIDs.contains($0.id)
         }) else { return false }
-        let availableMasterAUCount = masterAUPlugins.filter {
-            !unavailablePluginIDs.contains($0.id)
-        }.count
-        guard masterPluginNodes.count == availableMasterAUCount else { return false }
 
         let masterVSTIDs = configuredMasterPlugins
             .filter { $0.enabled && supportsRealtimeVST3($0) }
@@ -3082,6 +3084,7 @@ public final class AudioEngineManager: ObservableObject {
                 print("Failed to initialize disk writer for track \(track.name): \(error)")
             }
         }
+        hasPendingRecording = !activeClips.isEmpty
 
         captureLock.withLock {
             self.writersSnapshot = activeWriters
@@ -3200,6 +3203,7 @@ public final class AudioEngineManager: ObservableObject {
                 self.syncTracks(tracks, fxChannels: self.syncedFXChannels)
             }
             self?.activeClips.removeAll()
+            self?.hasPendingRecording = false
             self?.recordingFinalizationTask = nil
         }
 

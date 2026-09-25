@@ -493,6 +493,13 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    public func movePlugin(_ pluginID: UUID, before targetPluginID: UUID, on trackID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+              let track = tracks.first(where: { $0.id == trackID }) else { return }
+        track.movePlugin(id: pluginID, before: targetPluginID)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
     public func togglePlugin(_ pluginID: UUID, on trackID: UUID) {
         guard let track = tracks.first(where: { $0.id == trackID }),
               let index = track.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
@@ -542,14 +549,23 @@ public final class ProjectState: ObservableObject {
     }
 
     public func insertPlugin(_ descriptor: TrackPluginDescriptor, intoFX fxChannelID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         guard let channel = fxChannels.first(where: { $0.id == fxChannelID }) else { return }
         channel.insertPlugin(descriptor.newInstance())
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
     public func removePlugin(_ pluginID: UUID, fromFX fxChannelID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         guard let channel = fxChannels.first(where: { $0.id == fxChannelID }) else { return }
         channel.removePlugin(id: pluginID)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    public func movePlugin(_ pluginID: UUID, before targetPluginID: UUID, onFX fxChannelID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+              let channel = fxChannels.first(where: { $0.id == fxChannelID }) else { return }
+        channel.movePlugin(id: pluginID, before: targetPluginID)
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
@@ -565,21 +581,36 @@ public final class ProjectState: ObservableObject {
     }
 
     public func insertMasterPlugin(_ descriptor: TrackPluginDescriptor) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         masterPlugins.append(descriptor.newInstance())
         audioEngine.syncMasterPlugins(masterPlugins)
     }
 
     public func removeMasterPlugin(_ pluginID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         masterPlugins.removeAll { $0.id == pluginID }
+        audioEngine.syncMasterPlugins(masterPlugins)
+    }
+
+    public func moveMasterPlugin(_ pluginID: UUID, before targetPluginID: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+              pluginID != targetPluginID,
+              let sourceIndex = masterPlugins.firstIndex(where: { $0.id == pluginID }),
+              let targetIndex = masterPlugins.firstIndex(where: { $0.id == targetPluginID }) else { return }
+        let plugin = masterPlugins.remove(at: sourceIndex)
+        let adjustedTargetIndex = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
+        masterPlugins.insert(plugin, at: adjustedTargetIndex)
         audioEngine.syncMasterPlugins(masterPlugins)
     }
 
     public func toggleMasterPlugin(_ pluginID: UUID) {
         guard let index = masterPlugins.firstIndex(where: { $0.id == pluginID }) else { return }
         masterPlugins[index].enabled.toggle()
-        if audioEngine.isPlaying || audioEngine.isRecording {
-            audioEngine.setPluginEnabled(pluginID, enabled: masterPlugins[index].enabled)
-        } else {
+        let wasAppliedToLoadedPlugin = audioEngine.setPluginEnabled(
+            pluginID,
+            enabled: masterPlugins[index].enabled
+        )
+        if !wasAppliedToLoadedPlugin {
             audioEngine.syncMasterPlugins(masterPlugins)
         }
     }

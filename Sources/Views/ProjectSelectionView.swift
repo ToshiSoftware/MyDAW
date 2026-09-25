@@ -4,6 +4,10 @@ struct ProjectSelectionView: View {
     let onCreate: () -> Void
     let onOpen: () -> Void
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2"
+    }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.92)
@@ -17,6 +21,10 @@ struct ProjectSelectionView: View {
                 Text("MyDAW")
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundColor(.white)
+
+                Text("Version \(appVersion)")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(.white.opacity(0.55))
 
                 Text("プロジェクトフォルダを選択してください")
                     .foregroundColor(.white.opacity(0.7))

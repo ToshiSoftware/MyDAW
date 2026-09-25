@@ -169,6 +169,15 @@ public final class AudioTrack: Identifiable, ObservableObject {
         plugins.removeAll { $0.id == id }
     }
 
+    public func movePlugin(id: UUID, before targetID: UUID) {
+        guard id != targetID,
+              let sourceIndex = plugins.firstIndex(where: { $0.id == id }),
+              let targetIndex = plugins.firstIndex(where: { $0.id == targetID }) else { return }
+        let plugin = plugins.remove(at: sourceIndex)
+        let adjustedTargetIndex = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
+        plugins.insert(plugin, at: adjustedTargetIndex)
+    }
+
     public func restoreClip(_ clip: AudioClip) {
         clips.append(clip)
     }

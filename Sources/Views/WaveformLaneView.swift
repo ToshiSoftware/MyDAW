@@ -132,10 +132,20 @@ private struct AudioClipView: View {
     }
 
     var body: some View {
+        let audioEngine = projectState.audioEngine
+        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+        let hasPassedPunchOut = projectState.punchRange.enabled &&
+            audioEngine.currentTime >= projectState.punchRange.endBeat * beatDuration
         let isActiveClip = track.isRecordArmed &&
             clip.id == track.clips.last?.id &&
-            projectState.audioEngine.isRecording
-        let liveDuration = max(0.0, projectState.audioEngine.currentTime - clip.startTime)
+            (audioEngine.isRecording ||
+             (audioEngine.hasPendingRecording && audioEngine.isPlaying && hasPassedPunchOut))
+        let liveEndTime = audioEngine.isPunchRecording
+            ? audioEngine.currentTime
+            : min(audioEngine.currentTime, projectState.punchRange.enabled
+                ? projectState.punchRange.endBeat * beatDuration
+                : audioEngine.currentTime)
+        let liveDuration = max(0.0, liveEndTime - clip.startTime)
         let displayDuration = max(clip.duration, isActiveClip ? liveDuration : 0.0)
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipId == clip.id

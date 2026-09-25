@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct MixerView: View {
     @ObservedObject public var projectState: ProjectState
@@ -32,7 +33,11 @@ public struct MixerView: View {
                         MixerChannelView(track: track, projectState: projectState)
                     }
                     ForEach(projectState.fxChannels) { channel in
-                        FXChannelView(channel: channel, projectState: projectState)
+                        FXChannelView(
+                            channel: channel,
+                            projectState: projectState,
+                            audioEngine: projectState.audioEngine
+                        )
                     }
                     MasterChannelView(
                         projectState: projectState,
@@ -106,6 +111,7 @@ private struct MasterChannelView: View {
                     .font(.system(size: 9, weight: .semibold))
             }
             .menuStyle(BorderlessButtonMenuStyle())
+            .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
 
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(projectState.masterPlugins) { plugin in
@@ -119,16 +125,16 @@ private struct MasterChannelView: View {
                         }
                         .buttonStyle(PlainButtonStyle())
                         .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                        Button(plugin.menuDisplayName) {
-                            projectState.audioEngine.openPluginUI(pluginID: plugin.id)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .font(.system(size: 8))
-                        .foregroundColor(
-                            projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                        PluginNameButton(
+                            name: plugin.menuDisplayName,
+                            pluginID: plugin.id,
+                            isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
+                            canReorder: !audioEngine.isPlaying && !audioEngine.isRecording,
+                            onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
+                            onMove: { sourceID in
+                                projectState.moveMasterPlugin(sourceID, before: plugin.id)
+                            }
                         )
-                        .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
-                        .lineLimit(1)
                         Button {
                             projectState.removeMasterPlugin(plugin.id)
                         } label: {
@@ -225,6 +231,7 @@ private struct MixerChannelView: View {
                     .foregroundColor(.white.opacity(0.8))
             }
             .menuStyle(BorderlessButtonMenuStyle())
+            .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
 
             if !track.plugins.isEmpty {
                 ScrollView(.vertical, showsIndicators: true) {
@@ -240,16 +247,16 @@ private struct MixerChannelView: View {
                                 }
                                 .buttonStyle(PlainButtonStyle())
                                 .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                                Button(plugin.menuDisplayName) {
-                                    projectState.openPluginUI(plugin.id, on: track.id)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .font(.system(size: 8))
-                                .foregroundColor(
-                                    projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                                PluginNameButton(
+                                    name: plugin.menuDisplayName,
+                                    pluginID: plugin.id,
+                                    isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
+                                    canReorder: !projectState.audioEngine.isPlaying && !projectState.audioEngine.isRecording,
+                                    onOpen: { projectState.openPluginUI(plugin.id, on: track.id) },
+                                    onMove: { sourceID in
+                                        projectState.movePlugin(sourceID, before: plugin.id, on: track.id)
+                                    }
                                 )
-                                .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
-                                .lineLimit(1)
                                 .help("Open AU plugin window")
 
                                 Button {
@@ -378,6 +385,7 @@ struct MixerLevelMeter: View {
 private struct FXChannelView: View {
     @ObservedObject var channel: FXChannel
     @ObservedObject var projectState: ProjectState
+    @ObservedObject var audioEngine: AudioEngineManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -439,6 +447,7 @@ private struct FXChannelView: View {
                     .font(.system(size: 9, weight: .semibold))
             }
             .menuStyle(BorderlessButtonMenuStyle())
+            .disabled(audioEngine.isPlaying || audioEngine.isRecording)
 
             ScrollView(.vertical, showsIndicators: true) {
                 ForEach(channel.plugins) { plugin in
@@ -452,16 +461,16 @@ private struct FXChannelView: View {
                         }
                         .buttonStyle(PlainButtonStyle())
                         .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                        Button(plugin.menuDisplayName) {
-                            projectState.audioEngine.openPluginUI(pluginID: plugin.id)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .font(.system(size: 8))
-                        .foregroundColor(
-                            projectState.audioEngine.isPluginUnavailable(plugin.id) ? .red : .primary
+                        PluginNameButton(
+                            name: plugin.menuDisplayName,
+                            pluginID: plugin.id,
+                            isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
+                            canReorder: !audioEngine.isPlaying && !audioEngine.isRecording,
+                            onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
+                            onMove: { sourceID in
+                                projectState.movePlugin(sourceID, before: plugin.id, onFX: channel.id)
+                            }
                         )
-                        .disabled(projectState.audioEngine.isPluginUnavailable(plugin.id))
-                        .lineLimit(1)
                         Button {
                             projectState.removePlugin(plugin.id, fromFX: channel.id)
                         } label: {
@@ -483,6 +492,39 @@ private struct FXChannelView: View {
             RoundedRectangle(cornerRadius: 3)
                 .stroke(channel.color.opacity(0.6), lineWidth: 1)
         )
+    }
+}
+
+private struct PluginNameButton: View {
+    let name: String
+    let pluginID: UUID
+    let isUnavailable: Bool
+    let canReorder: Bool
+    let onOpen: () -> Void
+    let onMove: (UUID) -> Void
+
+    var body: some View {
+        Button(name, action: onOpen)
+            .buttonStyle(PlainButtonStyle())
+            .font(.system(size: 8))
+            .foregroundColor(isUnavailable ? .red : .primary)
+            .disabled(isUnavailable)
+            .lineLimit(1)
+            .onDrag {
+                guard canReorder else { return NSItemProvider() }
+                return NSItemProvider(object: pluginID.uuidString as NSString)
+            }
+            .onDrop(of: [.text], isTargeted: nil) { providers in
+                guard canReorder, let provider = providers.first else { return false }
+                provider.loadObject(ofClass: NSString.self) { object, _ in
+                    guard let value = object as? NSString,
+                          let sourceID = UUID(uuidString: value as String) else { return }
+                    Task { @MainActor in
+                        onMove(sourceID)
+                    }
+                }
+                return true
+            }
     }
 }
 
