@@ -42,6 +42,25 @@ int MyDAWVST3AttachEditor(
     int* height
 );
 
+/// attached() 後にプラグインが確定した実際のサイズを取得する。
+/// attached() を呼んだ後、プラグインによっては resizeView() で
+/// サイズを更新するものがあるため、このAPIで再取得する。
+int MyDAWVST3GetEditorSize(
+    MyDAWVST3Instance* instance,
+    int* width,
+    int* height
+);
+
+/// attached() 後にプラグインが resizeView() を呼んできたとき、
+/// Swift 側のウィンドウを更新するためのコールバックを登録する。
+/// context は Swift の Unmanaged ポインタなど任意の値を渡せる。
+typedef void (*MyDAWVST3ResizeCallback)(void* context, int width, int height);
+void MyDAWVST3SetResizeCallback(
+    MyDAWVST3Instance* instance,
+    MyDAWVST3ResizeCallback callback,
+    void* context
+);
+
 void MyDAWVST3RemoveEditor(MyDAWVST3Instance* instance);
 
 void MyDAWVST3FreeState(void* data);

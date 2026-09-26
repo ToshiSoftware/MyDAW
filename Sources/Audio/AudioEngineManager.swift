@@ -582,26 +582,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         super.init()
         setupEngine()
         startMeterTimer()
-        // メインウィンドウがアクティブになったとき、プラグインウィンドウを上に追従させる。
-        // delegate ではなく NotificationCenter を使うことで WindowCloseHandler と競合しない。
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleMainWindowBecameMain(_:)),
-            name: NSWindow.didBecomeMainNotification,
-            object: nil
-        )
-    }
-
-    @objc private func handleMainWindowBecameMain(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
-        // プラグインウィンドウ自身がmainになった場合は無視
-        guard !pluginWindows.values.contains(where: { $0 === window }) else { return }
-        // MyDAWのメインウィンドウがフォーカスを取ったとき、
-        // 開いているプラグインウィンドウを全てメインウィンドウの前面に並べる
-        mainApplicationWindow = window
-        for pluginWindow in pluginWindows.values where pluginWindow.isVisible {
-            pluginWindow.orderFront(nil)
-        }
+        // プラグインウィンドウは .floating レベルを使用するため、
+        // メインウィンドウのアクティブ化に応じて orderFront する処理は不要になった。
     }
 
     private static func resolveRecordingsDirectory() -> URL {
@@ -2851,35 +2833,57 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             return
         }
 
+        // ウィンドウを表示する前にエディタをアタッチしてサイズを確定する。
+        // 旧実装では仮サイズ(640×480)でウィンドウを先に makeKeyAndOrderFront してから
+        // サイズを変更していたため、ビットマップとウィンドウのサイズが一致しないことがあった。
+        // C++ 側では attached() を先に呼んでから getSize() を取得するよう修正済み。
         let hostView = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+
+        guard let contentSize = instance.attachEditor(to: hostView) else {
+            print("VST3 plugin editor attach failed: \(pluginID)")
+            return
+        }
+        hostView.frame = NSRect(origin: .zero, size: contentSize)
+
         let window = NSWindow(
-            contentRect: hostView.frame,
+            contentRect: NSRect(origin: .zero, size: contentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.contentView = hostView
         window.title = pluginDescriptors[pluginID]?.name ?? "VST3"
+        window.setContentSize(contentSize)
         window.center()
         restorePluginWindowFrame(window, pluginID: pluginID)
         window.isReleasedWhenClosed = false
         configurePluginWindow(window)
-        window.makeKeyAndOrderFront(nil)
-
-        guard let contentSize = instance.attachEditor(to: hostView) else {
-            print("VST3 plugin editor attach failed: \(pluginID)")
-            window.close()
-            return
-        }
-        hostView.frame = NSRect(origin: .zero, size: contentSize)
-        window.setContentSize(contentSize)
-        window.layoutIfNeeded()
         pluginWindows[pluginID] = window
+
+        // プラグインが後から IPlugFrame::resizeView() を呼んできたとき
+        // ウィンドウとホストビューのサイズを追従させる。
+        instance.onResizeRequest = { [weak self, weak window, weak hostView] newSize in
+            guard let self, let window, let hostView else { return }
+            let clamped = NSSize(
+                width: max(320, newSize.width),
+                height: max(240, newSize.height)
+            )
+            hostView.setFrameSize(clamped)
+            window.setContentSize(clamped)
+            window.layoutIfNeeded()
+            print("VST3 resizeView: \(clamped) [\(pluginID)]")
+            _ = self // suppress "self captured but never used" warning
+        }
+
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func closePluginWindow(pluginID: UUID) {
         if pluginDescriptors[pluginID]?.kind == .vst3 {
-            vst3UIInstances.removeValue(forKey: pluginID)?.removeEditor()
+            if let uiInstance = vst3UIInstances.removeValue(forKey: pluginID) {
+                uiInstance.onResizeRequest = nil
+                uiInstance.removeEditor()
+            }
         }
         guard let window = pluginWindows.removeValue(forKey: pluginID) else { return }
         window.contentViewController = nil
@@ -2963,16 +2967,36 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         maximumContentSize: NSSize? = nil,
         cacheForPlugin: Bool = true
     ) {
+        // contentViewController を使う場合、NSWindow は自動的にビューコントローラーの
+        // view を contentView として設定し、ウィンドウのリサイズに追従させる。
+        // translatesAutoresizingMaskIntoConstraints を false にすると
+        // この自動リサイズが壊れ、ビューが左下に張り付いて上部に空白ができるため、
+        // デフォルト (true) のままにする。
         let pluginView = viewController.view
-        pluginView.translatesAutoresizingMaskIntoConstraints = false
-        pluginView.layoutSubtreeIfNeeded()
 
-        let fittingSize = pluginView.fittingSize
-        let intrinsicSize = pluginView.intrinsicContentSize
+        // プラグインが preferredContentSize を報告している場合はそれを使う。
+        // AU プラグインの多くはこの値で正しいサイズを返す。
+        let preferredSize = viewController.preferredContentSize
         let existingSize = pluginView.bounds.size
+
+        let rawSize: NSSize
+        if preferredSize.width > 1 && preferredSize.height > 1 {
+            rawSize = preferredSize
+        } else if existingSize.width > 1 && existingSize.height > 1 {
+            rawSize = existingSize
+        } else {
+            // レイアウトを走らせてサイズを取得する
+            pluginView.layoutSubtreeIfNeeded()
+            let intrinsicSize = pluginView.intrinsicContentSize
+            let fittingSize = pluginView.fittingSize
+            rawSize = NSSize(
+                width: max(fittingSize.width, intrinsicSize.width, existingSize.width),
+                height: max(fittingSize.height, intrinsicSize.height, existingSize.height)
+            )
+        }
         let fittingContentSize = NSSize(
-            width: max(fittingSize.width, intrinsicSize.width, existingSize.width, 480),
-            height: max(fittingSize.height, intrinsicSize.height, existingSize.height, 360)
+            width: max(rawSize.width, 480),
+            height: max(rawSize.height, 360)
         )
         let contentSize: NSSize
         if let maximumContentSize {
@@ -3006,21 +3030,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     private func configurePluginWindow(_ window: NSWindow) {
         window.delegate = self
-        window.level = .normal
-        window.hidesOnDeactivate = false
+        // .floating レベルにすることで、メインウィンドウを何度クリックしても
+        // プラグインウィンドウが後ろに回らないようにする。
+        // プラグイン同士は同じ .floating レベルにあるため、
+        // クリックで互いの重なり順を変えることは引き続き可能。
+        window.level = .floating
+        // アプリが非アクティブになったとき（他のアプリに切り替えたとき）は
+        // プラグインウィンドウを自動的に隠す。
+        // MyDAW に戻ると自動的に再表示される。Logic Pro 等と同じ挙動。
+        window.hidesOnDeactivate = true
         window.collectionBehavior.insert(.moveToActiveSpace)
-
-        // キャッシュ済みのメインウィンドウ参照か、現在のメインウィンドウを使用する
-        if let main = NSApp.windows.first(where: { $0 !== window && $0.isMainWindow }) {
-            mainApplicationWindow = main
-        }
-
-        // addChildWindow は使わない。
-        // 子ウィンドウにすると macOS がプラグイン間の z-order を管理してしまい、
-        // ユーザーがクリックで重なり順を変えられなくなるため。
-        // 代わりに windowDidBecomeKey (delegate) と handleMainWindowBecameMain
-        // (NotificationCenter) で orderFront を呼ぶことで、
-        // クリックしたウィンドウが前面に来る動作を実現する。
     }
 
     private func restorePluginWindowFrame(_ window: NSWindow, pluginID: UUID) {

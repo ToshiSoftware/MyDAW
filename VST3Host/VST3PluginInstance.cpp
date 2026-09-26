@@ -19,18 +19,17 @@
 #include <string>
 #include <vector>
 
+// Forward declaration
+struct MyDAWVST3Instance;
+
 class MyDAWVST3PlugFrame : public Steinberg::IPlugFrame {
 public:
+    MyDAWVST3Instance* owner = nullptr;
+
     Steinberg::tresult PLUGIN_API resizeView(
         Steinberg::IPlugView*,
         Steinberg::ViewRect* newSize
-    ) override {
-        if (newSize) {
-            width = newSize->getWidth();
-            height = newSize->getHeight();
-        }
-        return Steinberg::kResultOk;
-    }
+    ) override;
 
     Steinberg::tresult PLUGIN_API queryInterface(
         const Steinberg::TUID iid,
@@ -75,7 +74,31 @@ struct MyDAWVST3Instance {
     Steinberg::Vst::ProcessContext processContext{};
     double sampleRate = 44100.0;
     std::mutex processMutex;
+
+    // resizeView コールバック（Swift 側のウィンドウを更新するため）
+    MyDAWVST3ResizeCallback resizeCallback = nullptr;
+    void* resizeContext = nullptr;
 };
+
+// resizeView の実装（MyDAWVST3Instance が定義された後に記述）
+Steinberg::tresult PLUGIN_API MyDAWVST3PlugFrame::resizeView(
+    Steinberg::IPlugView*,
+    Steinberg::ViewRect* newSize
+) {
+    if (!newSize) {
+        return Steinberg::kInvalidArgument;
+    }
+    int newWidth  = newSize->getWidth();
+    int newHeight = newSize->getHeight();
+    width  = newWidth;
+    height = newHeight;
+
+    // Swift 側コールバックが登録されていればウィンドウ更新を通知する
+    if (owner && owner->resizeCallback) {
+        owner->resizeCallback(owner->resizeContext, newWidth, newHeight);
+    }
+    return Steinberg::kResultOk;
+}
 
 MyDAWVST3Instance* MyDAWVST3Create(
     const char* bundlePath,
@@ -124,9 +147,9 @@ MyDAWVST3Instance* MyDAWVST3Create(
         return nullptr;
     }
 
-    instance->component = instance->provider->getComponentPtr();
+    instance->component  = instance->provider->getComponentPtr();
     instance->controller = instance->provider->getControllerPtr();
-    instance->processor = Steinberg::FUnknownPtr<Steinberg::Vst::IAudioProcessor>(
+    instance->processor  = Steinberg::FUnknownPtr<Steinberg::Vst::IAudioProcessor>(
         instance->component
     );
     if (!instance->component || !instance->processor) {
@@ -148,7 +171,7 @@ MyDAWVST3Instance* MyDAWVST3Create(
         return nullptr;
     }
 
-    Steinberg::Vst::SpeakerArrangement inputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
+    Steinberg::Vst::SpeakerArrangement inputArrangement  = Steinberg::Vst::SpeakerArr::kStereo;
     Steinberg::Vst::SpeakerArrangement outputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
     instance->processor->setBusArrangements(&inputArrangement, 1, &outputArrangement, 1);
 
@@ -192,15 +215,10 @@ int MyDAWVST3AttachEditor(
         if (!instance->editorView) {
             return -2;
         }
-        instance->plugFrame = std::make_unique<MyDAWVST3PlugFrame>();
+        auto frame = std::make_unique<MyDAWVST3PlugFrame>();
+        frame->owner = instance;
+        instance->plugFrame = std::move(frame);
     }
-
-    Steinberg::ViewRect viewRect;
-    if (instance->editorView->getSize(&viewRect) != Steinberg::kResultTrue) {
-        return -3;
-    }
-    *width = std::max(320, viewRect.getWidth());
-    *height = std::max(240, viewRect.getHeight());
 
     if (instance->editorView->isPlatformTypeSupported(Steinberg::kPlatformTypeNSView) !=
         Steinberg::kResultTrue) {
@@ -209,18 +227,74 @@ int MyDAWVST3AttachEditor(
     if (instance->editorView->setFrame(instance->plugFrame.get()) != Steinberg::kResultOk) {
         return -5;
     }
+
+    // attached() を先に呼ぶ。
+    // プラグインによっては attached() が完了して初めてサイズが確定するため、
+    // getSize() は attached() の後で呼ぶ。
     if (instance->editorView->attached(parentView, Steinberg::kPlatformTypeNSView) !=
         Steinberg::kResultTrue) {
         instance->editorView->setFrame(nullptr);
         return -6;
     }
+
+    // attached() 後に getSize() を呼んでサイズを取得する。
+    // プラグインが attached() 中に resizeView() を呼んでいた場合は
+    // plugFrame に記録された値が最新となるため、それを優先する。
+    Steinberg::ViewRect viewRect;
+    if (instance->editorView->getSize(&viewRect) == Steinberg::kResultTrue) {
+        int w = viewRect.getWidth();
+        int h = viewRect.getHeight();
+        // plugFrame 側の resizeView() 経由の値があればそちらを優先
+        if (instance->plugFrame->width  > 0) { w = instance->plugFrame->width; }
+        if (instance->plugFrame->height > 0) { h = instance->plugFrame->height; }
+        *width  = std::max(320, w);
+        *height = std::max(240, h);
+    } else {
+        // getSize() が失敗した場合は plugFrame の値か最低限のサイズ
+        *width  = std::max(320, instance->plugFrame->width);
+        *height = std::max(240, instance->plugFrame->height);
+    }
+
     return 0;
+}
+
+int MyDAWVST3GetEditorSize(
+    MyDAWVST3Instance* instance,
+    int* width,
+    int* height
+) {
+    if (!instance || !width || !height || !instance->editorView) {
+        return -1;
+    }
+    Steinberg::ViewRect viewRect;
+    if (instance->editorView->getSize(&viewRect) != Steinberg::kResultTrue) {
+        return -2;
+    }
+    int w = viewRect.getWidth();
+    int h = viewRect.getHeight();
+    if (instance->plugFrame->width  > 0) { w = instance->plugFrame->width; }
+    if (instance->plugFrame->height > 0) { h = instance->plugFrame->height; }
+    *width  = std::max(320, w);
+    *height = std::max(240, h);
+    return 0;
+}
+
+void MyDAWVST3SetResizeCallback(
+    MyDAWVST3Instance* instance,
+    MyDAWVST3ResizeCallback callback,
+    void* context
+) {
+    if (!instance) { return; }
+    instance->resizeCallback = callback;
+    instance->resizeContext  = context;
 }
 
 void MyDAWVST3RemoveEditor(MyDAWVST3Instance* instance) {
     if (!instance || !instance->editorView) {
         return;
     }
+    instance->resizeCallback = nullptr;
+    instance->resizeContext  = nullptr;
     instance->editorView->setFrame(nullptr);
     instance->editorView->removed();
     instance->editorView.reset();
@@ -241,37 +315,37 @@ int MyDAWVST3ProcessInterleaved(
     std::lock_guard<std::mutex> lock(instance->processMutex);
 
     for (int frame = 0; frame < frames; ++frame) {
-        instance->inputLeft[frame] = input[frame * 2];
+        instance->inputLeft[frame]  = input[frame * 2];
         instance->inputRight[frame] = input[frame * 2 + 1];
     }
 
-    instance->inputChannels[0] = instance->inputLeft.data();
-    instance->inputChannels[1] = instance->inputRight.data();
+    instance->inputChannels[0]  = instance->inputLeft.data();
+    instance->inputChannels[1]  = instance->inputRight.data();
     instance->outputChannels[0] = instance->outputLeft.data();
     instance->outputChannels[1] = instance->outputRight.data();
 
     Steinberg::Vst::AudioBusBuffers inputs[1]{};
-    inputs[0].numChannels = 2;
+    inputs[0].numChannels      = 2;
     inputs[0].channelBuffers32 = instance->inputChannels;
     Steinberg::Vst::AudioBusBuffers outputs[1]{};
-    outputs[0].numChannels = 2;
+    outputs[0].numChannels      = 2;
     outputs[0].channelBuffers32 = instance->outputChannels;
 
     Steinberg::Vst::ProcessData data{};
     data.symbolicSampleSize = Steinberg::Vst::kSample32;
-    data.numSamples = frames;
-    data.numInputs = 1;
-    data.numOutputs = 1;
-    data.inputs = inputs;
-    data.outputs = outputs;
-    data.processContext = &instance->processContext;
+    data.numSamples         = frames;
+    data.numInputs          = 1;
+    data.numOutputs         = 1;
+    data.inputs             = inputs;
+    data.outputs            = outputs;
+    data.processContext     = &instance->processContext;
 
     if (instance->processor->process(data) != Steinberg::kResultOk) {
         return -2;
     }
 
     for (int frame = 0; frame < frames; ++frame) {
-        output[frame * 2] = instance->outputLeft[frame];
+        output[frame * 2]     = instance->outputLeft[frame];
         output[frame * 2 + 1] = instance->outputRight[frame];
     }
     return 0;
@@ -343,9 +417,9 @@ void MyDAWVST3Destroy(MyDAWVST3Instance* instance) {
 
     instance->editorView.reset();
     instance->plugFrame.reset();
-    instance->processor = nullptr;
+    instance->processor  = nullptr;
     instance->controller = nullptr;
-    instance->component = nullptr;
+    instance->component  = nullptr;
     instance->provider.reset();
     instance->module.reset();
     instance->hostApplication.reset();
