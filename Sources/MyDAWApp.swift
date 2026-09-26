@@ -2,8 +2,15 @@ import SwiftUI
 import AVFoundation
 
 final class MyDAWApplicationDelegate: NSObject, NSApplicationDelegate {
+    var shutdownAudioEngine: (() -> Void)?
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        shutdownAudioEngine?()
+        shutdownAudioEngine = nil
     }
 }
 
@@ -22,6 +29,11 @@ struct MyDAWApp: App {
         WindowGroup {
             MainDAWView(projectState: projectState)
                 .navigationTitle("MyDAW - Professional Audio Workstation")
+                .onAppear {
+                    applicationDelegate.shutdownAudioEngine = {
+                        projectState.audioEngine.shutdown()
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {

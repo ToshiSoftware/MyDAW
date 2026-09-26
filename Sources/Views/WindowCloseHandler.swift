@@ -44,6 +44,11 @@ struct WindowCloseHandler: NSViewRepresentable {
                 return true
             }
 
+            guard projectState.isProjectOpen else {
+                closeWindow()
+                return false
+            }
+
             let alert = NSAlert()
             alert.messageText = "Save changes to MyDAW?"
             alert.informativeText = "保存してからMyDAWを終了しますか？"

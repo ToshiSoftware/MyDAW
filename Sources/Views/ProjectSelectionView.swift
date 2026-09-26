@@ -26,24 +26,34 @@ struct ProjectSelectionView: View {
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(.white.opacity(0.55))
 
-                Text("プロジェクトフォルダを選択してください")
+                Text("Choose a project folder to get started")
                     .foregroundColor(.white.opacity(0.7))
 
                 HStack(spacing: 14) {
                     Button(action: onCreate) {
-                        Label("新規プロジェクト", systemImage: "plus")
-                            .frame(width: 190, height: 42)
+                        Label("New Project", systemImage: "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 150, height: 100)
+                            .background(Color.orange)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
+                    .buttonStyle(.plain)
+                    .help("Create a new project")
                     .keyboardShortcut(.defaultAction)
 
                     Button(action: onOpen) {
-                        Label("既存プロジェクトを開く", systemImage: "folder")
-                            .frame(width: 190, height: 42)
+                        Label("Open Project", systemImage: "folder")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 150, height: 100)
+                            .background(Color.orange)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
+                    .buttonStyle(.plain)
+                    .help("Open an existing project")
                     .keyboardShortcut("o", modifiers: [.command])
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
             }
             .padding(48)
         }

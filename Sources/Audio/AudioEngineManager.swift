@@ -232,6 +232,7 @@ private final class VST3StreamingClip {
             isFinished = true
         }
         player.stop()
+        schedulingQueue.sync {}
     }
 
     @discardableResult
@@ -3750,6 +3751,39 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         recordingTimingLock.withLock {
             pendingRecordingClipStartTime = nil
         }
+        isPlaying = false
+        isRecording = false
+    }
+
+    public func shutdown() {
+        startPlaybackTask?.cancel()
+        startPlaybackTask = nil
+        playbackRetryTask?.cancel()
+        playbackRetryTask = nil
+        isStartingPlayback = false
+        stopPlayheadTimer()
+        stopMetronome()
+
+        captureLock.withLock {
+            recordingActiveState = false
+            writersSnapshot.removeAll()
+        }
+        engine.stop()
+
+        for stream in vst3StreamingClips.values {
+            stream.stop()
+        }
+        vst3StreamingClips.removeAll()
+        for stream in fxVSTStreamingClips.values {
+            stream.stop()
+        }
+        fxVSTStreamingClips.removeAll()
+
+        for player in playerNodes.values { player.stop() }
+        for player in clipPlayerNodes.values { player.stop() }
+        for player in sendClipPlayerNodes.values { player.stop() }
+        for player in sendPlayerNodes.values { player.stop() }
+
         isPlaying = false
         isRecording = false
     }

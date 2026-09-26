@@ -56,7 +56,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(!projectState.canUndo || audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Undo Clip Edit")
+                .fastToolTip("Undo Clip Edit", horizontalOffset: 12)
 
                 Button(action: { projectState.redo() }) {
                     Image(systemName: "arrow.uturn.forward")
@@ -68,7 +68,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(!projectState.canRedo || audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Redo Clip Edit")
+                .fastToolTip("Redo Clip Edit")
 
                 // Rewind (|<<)
                 Button(action: {
@@ -83,7 +83,7 @@ public struct TransportBarView: View {
                         .cornerRadius(5)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help("Rewind to Beginning (00:00.000)")
+                .fastToolTip("Rewind to Beginning (00:00.000)")
 
                 Button(action: {
                     DispatchQueue.main.async {
@@ -117,7 +117,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .keyboardShortcut(.space, modifiers: [])
-                .help("Start / Pause (Spacebar)")
+                .fastToolTip("Start / Pause (Spacebar)")
 
                 // Record status indicator / start recording
                 let anyArmed = projectState.tracks.contains { $0.isRecordArmed }
@@ -148,7 +148,7 @@ public struct TransportBarView: View {
                         )
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help(anyArmed ? "Record Armed Tracks" : "No Tracks Armed for Recording")
+                .fastToolTip(anyArmed ? "Record Armed Tracks" : "No Tracks Armed for Recording")
 
                 Button {
                     projectState.setPunchEnabled(!projectState.punchRange.enabled)
@@ -161,7 +161,7 @@ public struct TransportBarView: View {
                         .cornerRadius(3)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
+                .fastToolTip(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
 
                 Button(action: {
                     projectState.deleteSelectedClip()
@@ -175,7 +175,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(projectState.audioEngine.isRecording || !projectState.tracks.contains { $0.selectedClipId != nil })
-                .help("Delete Selected Recording")
+                .fastToolTip("Delete Selected Recording")
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")
@@ -187,7 +187,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Save Project")
+                .fastToolTip("Save Project")
 
                 Button(action: { projectState.loadProject() }) {
                     Image(systemName: "folder")
@@ -199,7 +199,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Open Project")
+                .fastToolTip("Open Project")
 
                 Toggle(isOn: $audioEngine.metronomeEnabled) {
                     Image(systemName: "metronome")
@@ -209,7 +209,7 @@ public struct TransportBarView: View {
                 .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
                 .frame(width: 34, height: 28)
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Toggle Metronome Click")
+                .fastToolTip("Toggle Metronome Click")
 
                 Button(action: { showingBufferSettings = true }) {
                     Image(systemName: "gearshape")
@@ -221,7 +221,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Audio Buffer Settings")
+                .fastToolTip("Audio Buffer Settings")
 
                 Button(action: { projectState.snapToGrid.toggle() }) {
                     Image(systemName: projectState.snapToGrid ? "square.grid.3x3.fill" : "square.grid.3x3")
@@ -232,7 +232,7 @@ public struct TransportBarView: View {
                         .cornerRadius(5)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help(projectState.snapToGrid ? "Disable Beat Snap" : "Enable Beat Snap")
+                .fastToolTip(projectState.snapToGrid ? "Disable Beat Snap" : "Enable Beat Snap")
             }
 
             // LCD Display: Time & Audio Format (Logic Pro Dark Glass Style)
@@ -453,12 +453,62 @@ public struct TransportBarView: View {
             Rectangle()
                 .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
         )
+        .zIndex(2)
         .sheet(isPresented: $showingBufferSettings) {
             BufferSettingsView(
                 deviceManager: projectState.deviceManager,
                 audioEngine: audioEngine
             )
         }
+    }
+}
+
+private extension View {
+    func fastToolTip(_ text: String, horizontalOffset: CGFloat = 0) -> some View {
+        modifier(FastToolTipModifier(text: text, horizontalOffset: horizontalOffset))
+    }
+}
+
+private struct FastToolTipModifier: ViewModifier {
+    let text: String
+    let horizontalOffset: CGFloat
+    @State private var isHovering = false
+    @State private var isPresented = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                isHovering = hovering
+                if hovering {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        if isHovering {
+                            isPresented = true
+                        }
+                    }
+                } else {
+                    isPresented = false
+                }
+            }
+            .overlay(alignment: .top) {
+                if isPresented {
+                    Text(text)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.94))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .fixedSize()
+                        .offset(x: horizontalOffset, y: -34)
+                        .zIndex(1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .zIndex(isPresented ? 1 : 0)
     }
 }
 
