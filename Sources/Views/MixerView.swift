@@ -129,14 +129,16 @@ private struct MasterChannelView: View {
                             name: plugin.menuDisplayName,
                             pluginID: plugin.id,
                             isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
-                            canReorder: !audioEngine.isPlaying && !audioEngine.isRecording,
+                            canReorder: false,
                             onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
                             onMove: { sourceID in
                                 projectState.moveMasterPlugin(sourceID, before: plugin.id)
                             }
                         )
                         Button {
-                            projectState.removeMasterPlugin(plugin.id)
+                            DispatchQueue.main.async {
+                                projectState.removeMasterPlugin(plugin.id)
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 9))
@@ -496,6 +498,7 @@ private struct FXChannelView: View {
 }
 
 private struct PluginNameButton: View {
+    @State private var suppressTapUntil: Date?
     let name: String
     let pluginID: UUID
     let isUnavailable: Bool
@@ -504,14 +507,23 @@ private struct PluginNameButton: View {
     let onMove: (UUID) -> Void
 
     var body: some View {
-        Button(name, action: onOpen)
-            .buttonStyle(PlainButtonStyle())
+        Text(name)
             .font(.system(size: 8))
             .foregroundColor(isUnavailable ? .red : .primary)
-            .disabled(isUnavailable)
             .lineLimit(1)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if let suppressTapUntil, Date() < suppressTapUntil {
+                    self.suppressTapUntil = nil
+                    return
+                }
+                self.suppressTapUntil = nil
+                guard !isUnavailable else { return }
+                onOpen()
+            }
             .onDrag {
                 guard canReorder else { return NSItemProvider() }
+                suppressTapUntil = Date().addingTimeInterval(0.5)
                 return NSItemProvider(object: pluginID.uuidString as NSString)
             }
             .onDrop(of: [.text], isTargeted: nil) { providers in
@@ -523,8 +535,10 @@ private struct PluginNameButton: View {
                         onMove(sourceID)
                     }
                 }
+                suppressTapUntil = Date().addingTimeInterval(0.5)
                 return true
             }
+            .allowsHitTesting(!isUnavailable)
     }
 }
 

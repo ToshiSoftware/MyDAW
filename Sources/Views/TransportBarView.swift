@@ -86,17 +86,19 @@ public struct TransportBarView: View {
                 .help("Rewind to Beginning (00:00.000)")
 
                 Button(action: {
-                    let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-                    audioEngine.setPunchRange(
-                        startTime: projectState.punchRange.startBeat * beatDuration,
-                        endTime: projectState.punchRange.endBeat * beatDuration,
-                        enabled: projectState.punchRange.enabled
-                    )
-                    audioEngine.startPlayOrRecord(
-                        tracks: projectState.tracks,
-                        fxChannels: projectState.fxChannels,
-                        recordArmedTracks: false
-                    )
+                    DispatchQueue.main.async {
+                        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+                        audioEngine.setPunchRange(
+                            startTime: projectState.punchRange.startBeat * beatDuration,
+                            endTime: projectState.punchRange.endBeat * beatDuration,
+                            enabled: projectState.punchRange.enabled
+                        )
+                        audioEngine.startPlayOrRecord(
+                            tracks: projectState.tracks,
+                            fxChannels: projectState.fxChannels,
+                            recordArmedTracks: false
+                        )
+                    }
                 }) {
                     Image(systemName: isTransportActive ? "pause.fill" : "play.fill")
                         .font(.system(size: 14, weight: .bold))
@@ -120,17 +122,19 @@ public struct TransportBarView: View {
                 // Record status indicator / start recording
                 let anyArmed = projectState.tracks.contains { $0.isRecordArmed }
                 Button(action: {
-                    let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-                    audioEngine.setPunchRange(
-                        startTime: projectState.punchRange.startBeat * beatDuration,
-                        endTime: projectState.punchRange.endBeat * beatDuration,
-                        enabled: projectState.punchRange.enabled
-                    )
-                    audioEngine.startPlayOrRecord(
-                        tracks: projectState.tracks,
-                        fxChannels: projectState.fxChannels,
-                        recordArmedTracks: true
-                    )
+                    DispatchQueue.main.async {
+                        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+                        audioEngine.setPunchRange(
+                            startTime: projectState.punchRange.startBeat * beatDuration,
+                            endTime: projectState.punchRange.endBeat * beatDuration,
+                            enabled: projectState.punchRange.enabled
+                        )
+                        audioEngine.startPlayOrRecord(
+                            tracks: projectState.tracks,
+                            fxChannels: projectState.fxChannels,
+                            recordArmedTracks: true
+                        )
+                    }
                 }) {
                     Circle()
                         .fill(audioEngine.isRecording ? Color.red : (anyArmed ? Color.red.opacity(0.8) : Color.white.opacity(0.12)))

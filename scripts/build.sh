@@ -56,8 +56,14 @@ cmake --build "$VST3_BUILD_DIR" --target MyDAWVST3Bridge -j2
 VST3_BRIDGE_LIBRARY_DIR="$VST3_BUILD_DIR"
 VST3_SDK_LIBRARY_DIR="$VST3_BUILD_DIR/lib/Release"
 
-# Gather all swift files
-SWIFT_FILES=$(find Sources -name "*.swift")
+# Copy sources to local cache directory to prevent Google Drive timestamp modification error during compilation
+TEMP_SRC_DIR="$CACHE_DIR/Sources"
+rm -rf "$TEMP_SRC_DIR"
+mkdir -p "$TEMP_SRC_DIR"
+cp -R Sources/* "$TEMP_SRC_DIR/"
+
+# Gather all swift files from temp dir
+SWIFT_FILES=$(find "$TEMP_SRC_DIR" -name "*.swift")
 
 echo "Compiling Swift sources..."
 "$SWIFTC_CMD" \

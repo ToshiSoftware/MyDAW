@@ -504,11 +504,7 @@ public final class ProjectState: ObservableObject {
         guard let track = tracks.first(where: { $0.id == trackID }),
               let index = track.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
         track.plugins[index].enabled.toggle()
-        if audioEngine.isPlaying || audioEngine.isRecording {
-            audioEngine.setPluginEnabled(pluginID, enabled: track.plugins[index].enabled)
-        } else {
-            audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-        }
+        audioEngine.setPluginEnabled(pluginID, enabled: track.plugins[index].enabled)
     }
 
     public func addFXChannel() {
@@ -573,23 +569,19 @@ public final class ProjectState: ObservableObject {
         guard let channel = fxChannels.first(where: { $0.id == fxChannelID }),
               let index = channel.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
         channel.plugins[index].enabled.toggle()
-        if audioEngine.isPlaying || audioEngine.isRecording {
-            audioEngine.setPluginEnabled(pluginID, enabled: channel.plugins[index].enabled)
-        } else {
-            audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-        }
+        audioEngine.setPluginEnabled(pluginID, enabled: channel.plugins[index].enabled)
     }
 
     public func insertMasterPlugin(_ descriptor: TrackPluginDescriptor) {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         masterPlugins.append(descriptor.newInstance())
-        audioEngine.syncMasterPlugins(masterPlugins)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
     }
 
     public func removeMasterPlugin(_ pluginID: UUID) {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         masterPlugins.removeAll { $0.id == pluginID }
-        audioEngine.syncMasterPlugins(masterPlugins)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
     }
 
     public func moveMasterPlugin(_ pluginID: UUID, before targetPluginID: UUID) {
@@ -600,19 +592,13 @@ public final class ProjectState: ObservableObject {
         let plugin = masterPlugins.remove(at: sourceIndex)
         let adjustedTargetIndex = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
         masterPlugins.insert(plugin, at: adjustedTargetIndex)
-        audioEngine.syncMasterPlugins(masterPlugins)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
     }
 
     public func toggleMasterPlugin(_ pluginID: UUID) {
         guard let index = masterPlugins.firstIndex(where: { $0.id == pluginID }) else { return }
         masterPlugins[index].enabled.toggle()
-        let wasAppliedToLoadedPlugin = audioEngine.setPluginEnabled(
-            pluginID,
-            enabled: masterPlugins[index].enabled
-        )
-        if !wasAppliedToLoadedPlugin {
-            audioEngine.syncMasterPlugins(masterPlugins)
-        }
+        audioEngine.setPluginEnabled(pluginID, enabled: masterPlugins[index].enabled)
     }
 
     public func openPluginUI(_ pluginID: UUID, on trackID: UUID) {
@@ -906,7 +892,7 @@ public final class ProjectState: ObservableObject {
         }
     }
 
-    private func loadProject(from url: URL, projectFolderURL: URL) {
+    public func loadProject(from url: URL, projectFolderURL: URL) {
         do {
             let projectFolderURL = projectFolderURL.standardizedFileURL
             let recordingsURL = projectFolderURL.appendingPathComponent("Recordings", isDirectory: true)
@@ -942,7 +928,7 @@ public final class ProjectState: ObservableObject {
                 for clipDocument in trackDocument.clips {
                     let clipURL = resolveClipURL(clipDocument.filePath, relativeTo: projectFolderURL)
                     let clip = AudioClip(id: clipDocument.id, startTime: clipDocument.startTime, fileURL: clipURL)
-                    track.restoreClip(clip)
+                    clip.loadMetadata()
                     clip.setTrim(
                         startTime: clipDocument.startTime,
                         sourceStartTime: clipDocument.sourceStartTime,
@@ -952,6 +938,7 @@ public final class ProjectState: ObservableObject {
                     clip.isMuted = clipDocument.isMuted
                     clip.setFadeInDuration(clipDocument.fadeInDuration)
                     clip.setFadeOutDuration(clipDocument.fadeOutDuration)
+                    track.restoreClip(clip)
                 }
                 track.selectedClipId = trackDocument.selectedClipId
                 restoredTracks.append(track)
@@ -978,17 +965,6 @@ public final class ProjectState: ObservableObject {
                 enabled: punchRange.enabled
             )
 
-            // Restore waveform data after the project model is visible. The
-            // cache performs file analysis off the main thread. Start this
-            // before AU restoration so a slow plug-in cannot delay waveform
-            // reconstruction after loading a project.
-            Task { @MainActor in
-                for track in self.tracks {
-                    for clip in track.clips {
-                        clip.loadMetadata()
-                    }
-                }
-            }
             selectedTrackId = document.selectedTrackId
             showsBeats = document.showsBeats
             pixelsPerSecond = CGFloat(document.pixelsPerSecond)
@@ -1009,17 +985,12 @@ public final class ProjectState: ObservableObject {
             audioEngine.recordingsDirectory = recordingsURL
             isProjectOpen = true
 
+            audioEngine.syncTracks(
+                tracks,
+                fxChannels: fxChannels,
+                masterPlugins: masterPlugins
+            )
             audioEngine.prepareForPluginGraphRestore()
-
-            Task { @MainActor in
-                await Task.yield()
-                guard !self.audioEngine.isPlaying && !self.audioEngine.isRecording else { return }
-                self.audioEngine.syncTracks(
-                    self.tracks,
-                    fxChannels: self.fxChannels,
-                    masterPlugins: self.masterPlugins
-                )
-            }
         } catch {
             presentProjectError("Could not open project: \(error.localizedDescription)")
         }

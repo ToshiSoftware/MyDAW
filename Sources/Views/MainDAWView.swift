@@ -111,8 +111,16 @@ public struct MainDAWView: View {
         .overlay {
             if !projectState.isProjectOpen {
                 ProjectSelectionView(
-                    onCreate: { _ = projectState.createNewProject() },
-                    onOpen: { projectState.loadProject() }
+                    onCreate: {
+                        DispatchQueue.main.async {
+                            _ = projectState.createNewProject()
+                        }
+                    },
+                    onOpen: {
+                        DispatchQueue.main.async {
+                            projectState.loadProject()
+                        }
+                    }
                 )
             }
         }
@@ -154,6 +162,13 @@ public struct MainDAWView: View {
             guard !didInitializePlayhead else { return }
             didInitializePlayhead = true
             projectState.audioEngine.rewind(tracks: projectState.tracks)
+            if let projectArg = CommandLine.arguments.dropFirst().first(where: { $0.hasSuffix(".mydaw") }) {
+                let url = URL(fileURLWithPath: projectArg)
+                let folder = url.deletingLastPathComponent()
+                DispatchQueue.main.async {
+                    projectState.loadProject(from: url, projectFolderURL: folder)
+                }
+            }
         }
     }
 }
