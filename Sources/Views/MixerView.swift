@@ -129,7 +129,7 @@ private struct MasterChannelView: View {
                             name: plugin.menuDisplayName,
                             pluginID: plugin.id,
                             isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
-                            canReorder: false,
+                            canReorder: !projectState.audioEngine.isPlaying && !projectState.audioEngine.isRecording,
                             onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
                             onMove: { sourceID in
                                 projectState.moveMasterPlugin(sourceID, before: plugin.id)

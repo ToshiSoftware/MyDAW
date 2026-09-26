@@ -465,6 +465,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var pluginWindows: [UUID: NSWindow] = [:]
     private var pluginWindowFrames: [UUID: NSRect] = [:]
     private var pluginViewControllers: [UUID: NSViewController] = [:]
+    private weak var mainApplicationWindow: NSWindow?
     private let masterChannelID = UUID()
     private var masterOutputNode: AVAudioMixerNode?
     private var masterPluginNodes: [AVAudioNode] = []
@@ -581,6 +582,26 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         super.init()
         setupEngine()
         startMeterTimer()
+        // メインウィンドウがアクティブになったとき、プラグインウィンドウを上に追従させる。
+        // delegate ではなく NotificationCenter を使うことで WindowCloseHandler と競合しない。
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMainWindowBecameMain(_:)),
+            name: NSWindow.didBecomeMainNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleMainWindowBecameMain(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        // プラグインウィンドウ自身がmainになった場合は無視
+        guard !pluginWindows.values.contains(where: { $0 === window }) else { return }
+        // MyDAWのメインウィンドウがフォーカスを取ったとき、
+        // 開いているプラグインウィンドウを全てメインウィンドウの前面に並べる
+        mainApplicationWindow = window
+        for pluginWindow in pluginWindows.values where pluginWindow.isVisible {
+            pluginWindow.orderFront(nil)
+        }
     }
 
     private static func resolveRecordingsDirectory() -> URL {
@@ -2778,18 +2799,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             return
         }
 
-        if let descriptor,
-           isRelabLX480(descriptor),
-           hasMultipleRelabLX480Instances(descriptor: descriptor) {
-            print("Using Generic UI for multiple Relab LX480 AU instances: \(pluginTitle)")
-            presentGenericPluginView(
-                audioUnit: audioUnit,
-                pluginID: pluginID,
-                title: pluginTitle
-            )
-            return
-        }
-
         // Some AU implementations are not safe to initialize their custom
         // view until the host graph has rendered at least one real-time cycle.
         // Use the same warm-up rule for every plug-in and retry after playback
@@ -2808,21 +2817,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         )
     }
 
-    private func isRelabLX480(_ descriptor: TrackPluginDescriptor) -> Bool {
-        descriptor.kind == .au &&
-            descriptor.name.localizedCaseInsensitiveContains("LX480")
-    }
-
-    private func hasMultipleRelabLX480Instances(
-        descriptor: TrackPluginDescriptor
-    ) -> Bool {
-        pluginDescriptors.values.filter { candidate in
-            isRelabLX480(candidate) &&
-                candidate.componentType == descriptor.componentType &&
-                candidate.componentSubType == descriptor.componentSubType &&
-                candidate.componentManufacturer == descriptor.componentManufacturer
-        }.count > 1
-    }
 
     private func openVST3PluginUI(pluginID: UUID) {
         guard let descriptor = pluginDescriptors[pluginID],
@@ -2899,6 +2893,15 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             pluginWindowFrames[entry.key] = window.frame
             pluginWindows.removeValue(forKey: entry.key)
         }
+    }
+
+    /// プラグインウィンドウがキーになった（クリックされた）とき、
+    /// そのウィンドウを orderFront して最前面に出す。
+    /// これによりプラグイン間の重なり順をクリックで自由に変更できる。
+    public func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              pluginWindows.values.contains(where: { $0 === window }) else { return }
+        window.orderFront(nil)
     }
 
     private func requestOriginalPluginUI(
@@ -3004,15 +3007,20 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private func configurePluginWindow(_ window: NSWindow) {
         window.delegate = self
         window.level = .normal
-        window.hidesOnDeactivate = true
+        window.hidesOnDeactivate = false
         window.collectionBehavior.insert(.moveToActiveSpace)
 
-        guard let mainWindow = NSApp.windows.first(where: {
-            $0 !== window && $0.isMainWindow
-        }) else { return }
-        if !(mainWindow.childWindows ?? []).contains(where: { $0 === window }) {
-            mainWindow.addChildWindow(window, ordered: .above)
+        // キャッシュ済みのメインウィンドウ参照か、現在のメインウィンドウを使用する
+        if let main = NSApp.windows.first(where: { $0 !== window && $0.isMainWindow }) {
+            mainApplicationWindow = main
         }
+
+        // addChildWindow は使わない。
+        // 子ウィンドウにすると macOS がプラグイン間の z-order を管理してしまい、
+        // ユーザーがクリックで重なり順を変えられなくなるため。
+        // 代わりに windowDidBecomeKey (delegate) と handleMainWindowBecameMain
+        // (NotificationCenter) で orderFront を呼ぶことで、
+        // クリックしたウィンドウが前面に来る動作を実現する。
     }
 
     private func restorePluginWindowFrame(_ window: NSWindow, pluginID: UUID) {
