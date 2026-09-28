@@ -245,7 +245,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# The VST3 bridge (C++, Steinberg SDK) is built with CMake, same as scripts/build.sh.\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nBUILD_DIR=\"$PROJECT_DIR/.build_myDAW_vst3\"\ncmake -S \"$PROJECT_DIR/VST3Host\" -B \"$BUILD_DIR\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_OSX_ARCHITECTURES=arm64\ncmake --build \"$BUILD_DIR\" --target MyDAWVST3Bridge -j4\n";
+			shellScript = "set -e\n# The VST3 bridge (C++, Steinberg SDK) is built with CMake, same as scripts/build.sh.\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nBUILD_DIR=\"$HOME/Library/Caches/MyDAW/vst3-build\"\ncmake -S \"$PROJECT_DIR/VST3Host\" -B \"$BUILD_DIR\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_OSX_ARCHITECTURES=arm64\ncmake --build \"$BUILD_DIR\" --target MyDAWVST3Bridge -j4\n";
 			showEnvVarsInLog = 0;
 		};
 		DAW000140000000000000001 /* Strip Extended Attributes */ = {
@@ -372,8 +372,8 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/.build_myDAW_vst3",
-					"$(PROJECT_DIR)/.build_myDAW_vst3/lib/Release",
+					"$(HOME)/Library/Caches/MyDAW/vst3-build",
+					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
 				MARKETING_VERSION = 1.5;
 				OTHER_LDFLAGS = (
@@ -413,8 +413,8 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/.build_myDAW_vst3",
-					"$(PROJECT_DIR)/.build_myDAW_vst3/lib/Release",
+					"$(HOME)/Library/Caches/MyDAW/vst3-build",
+					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
 				MARKETING_VERSION = 1.5;
 				OTHER_LDFLAGS = (

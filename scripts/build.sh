@@ -46,7 +46,9 @@ echo "SDK Path: $SDK_PATH"
 echo "Compiler: $SWIFTC_CMD"
 
 # Build the isolated VST3 bridge. The AU path remains Swift/AVAudioEngine-only.
-VST3_BUILD_DIR="$PROJECT_DIR/.build_myDAW_vst3"
+# Keep the CMake build outside Google Drive: CMakeCache.txt stores absolute
+# paths, so a cache synced from another Mac (different home directory) breaks.
+VST3_BUILD_DIR="$HOME/Library/Caches/MyDAW/vst3-build"
 echo "Building VST3 bridge..."
 cmake -S "$PROJECT_DIR/VST3Host" -B "$VST3_BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \

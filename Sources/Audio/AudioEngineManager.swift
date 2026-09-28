@@ -107,6 +107,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     @Published public private(set) var selectedInputDeviceID: AudioDeviceID = 0
     @Published public private(set) var selectedOutputDeviceID: AudioDeviceID = 0
     @Published public private(set) var unavailablePluginIDs: Set<UUID> = []
+    // Private aggregate device used when input and output are different devices.
+    private var aggregateIODeviceID: AudioObjectID = 0
 
     // Player node and file mapping per track ID
     private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
@@ -273,9 +275,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             .reduce(0.0, +)
     }
 
-    public override init() {
+    public init(inputDeviceID: AudioDeviceID = 0, outputDeviceID: AudioDeviceID = 0) {
         self.recordingsDirectory = Self.resolveRecordingsDirectory()
         super.init()
+        if inputDeviceID != 0 || outputDeviceID != 0 {
+            bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID)
+        }
         setupEngine()
         startMeterTimer()
         // プラグインウィンドウは .floating レベルを使用するため、
@@ -671,31 +676,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         guard !isPlaying && !isRecording else { return false }
         engine.stop()
 
-        var inputID = inputDeviceID
-        var outputID = outputDeviceID
         var applied = true
-        if let inputUnit = engine.inputNode.audioUnit, inputID != 0 {
-            let status = AudioUnitSetProperty(
-                inputUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &inputID,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-            applied = applied && status == noErr
-        }
-        if let outputUnit = engine.outputNode.audioUnit, outputID != 0 {
-            let status = AudioUnitSetProperty(
-                outputUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &outputID,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-            applied = applied && status == noErr
-        }
         if let sampleRate,
            sampleRate.isFinite,
            sampleRate > 0.0 {
@@ -718,11 +699,114 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 applied = applied && status == noErr
             }
         }
-        guard applied else { return false }
+
+        // Rebinding the I/O unit after the engine has run with input enabled
+        // leaves AVAudioEngine with stale 0-channel node formats, so only
+        // rebind when the device pair actually changes.
+        let devicesChanged = inputDeviceID != selectedInputDeviceID ||
+            outputDeviceID != selectedOutputDeviceID
+        if devicesChanged && !bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID) {
+            applied = false
+        }
+        guard applied else {
+            setupEngine()
+            return false
+        }
         selectedInputDeviceID = inputDeviceID
         selectedOutputDeviceID = outputDeviceID
         setupEngine()
         return true
+    }
+
+    /// Binds the engine's I/O unit to the given devices. On macOS,
+    /// AVAudioEngine's inputNode and outputNode share a single AUHAL, so it
+    /// can only be bound to one device. Separate input/output devices (e.g. a
+    /// MacBook's built-in mic and speakers) are combined into a private
+    /// aggregate device clocked by the output; binding an input-only or
+    /// output-only device leaves the engine without a valid output format.
+    /// Call before the engine first starts.
+    @discardableResult
+    private func bindIODevice(inputDeviceID: AudioDeviceID, outputDeviceID: AudioDeviceID) -> Bool {
+        guard let ioUnit = engine.outputNode.audioUnit else { return false }
+        let previousAggregateID = aggregateIODeviceID
+        var newAggregateID = AudioObjectID(0)
+
+        var deviceID: AudioDeviceID
+        if inputDeviceID == 0 || inputDeviceID == outputDeviceID {
+            deviceID = outputDeviceID
+        } else if outputDeviceID == 0 {
+            deviceID = inputDeviceID
+        } else {
+            guard let aggregateID = Self.makeAggregateDevice(
+                inputDeviceID: inputDeviceID,
+                outputDeviceID: outputDeviceID
+            ) else { return false }
+            newAggregateID = aggregateID
+            deviceID = aggregateID
+        }
+        guard deviceID != 0 else { return false }
+
+        let status = AudioUnitSetProperty(
+            ioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            print("Failed to set audio device \(deviceID): \(status)")
+            if newAggregateID != 0 {
+                AudioHardwareDestroyAggregateDevice(newAggregateID)
+            }
+            return false
+        }
+        if previousAggregateID != 0 {
+            AudioHardwareDestroyAggregateDevice(previousAggregateID)
+        }
+        aggregateIODeviceID = newAggregateID
+        selectedInputDeviceID = inputDeviceID
+        selectedOutputDeviceID = outputDeviceID
+        return true
+    }
+
+    private static func makeAggregateDevice(
+        inputDeviceID: AudioDeviceID,
+        outputDeviceID: AudioDeviceID
+    ) -> AudioObjectID? {
+        guard let inputUID = deviceUID(for: inputDeviceID),
+              let outputUID = deviceUID(for: outputDeviceID) else { return nil }
+
+        let description: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "MyDAW I/O",
+            kAudioAggregateDeviceUIDKey: "com.mydaw.aggregate.\(UUID().uuidString)",
+            kAudioAggregateDeviceIsPrivateKey: 1,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [kAudioSubDeviceUIDKey: outputUID],
+                [kAudioSubDeviceUIDKey: inputUID, kAudioSubDeviceDriftCompensationKey: 1],
+            ],
+        ]
+        var aggregateID = AudioObjectID(0)
+        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID)
+        guard status == noErr, aggregateID != 0 else {
+            print("Failed to create aggregate audio device: \(status)")
+            return nil
+        }
+        return aggregateID
+    }
+
+    private static func deviceUID(for deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var uid: Unmanaged<CFString>?
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid) == noErr,
+              let uid else { return nil }
+        return uid.takeUnretainedValue() as String
     }
 
     private func updateEstimatedRecordingLatency() {

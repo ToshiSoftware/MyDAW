@@ -161,8 +161,13 @@ public final class ProjectState: ObservableObject {
     private var activeClipEditSnapshot: ClipEditSnapshot?
 
     public init(audioEngine: AudioEngineManager? = nil, deviceManager: AudioDeviceManager? = nil, pluginManager: PluginManager? = nil) {
-        self.audioEngine = audioEngine ?? AudioEngineManager()
-        self.deviceManager = deviceManager ?? AudioDeviceManager()
+        let deviceManager = deviceManager ?? AudioDeviceManager()
+        self.deviceManager = deviceManager
+        // The engine must be bound to its devices before it first starts.
+        self.audioEngine = audioEngine ?? AudioEngineManager(
+            inputDeviceID: deviceManager.selectedInputDeviceID,
+            outputDeviceID: deviceManager.selectedOutputDeviceID
+        )
         self.pluginManager = pluginManager ?? PluginManager()
 
         if self.audioEngine.applyAudioDevices(
