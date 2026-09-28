@@ -21,6 +21,17 @@ int MyDAWVST3ProcessInterleaved(
     int channels
 );
 
+/// Real-time safe: no allocation, no copies. Output buffers must not alias
+/// the inputs. frames must be <= the instance's maxFrames.
+int MyDAWVST3ProcessStereo(
+    MyDAWVST3Instance* instance,
+    const float* inputLeft,
+    const float* inputRight,
+    float* outputLeft,
+    float* outputRight,
+    int frames
+);
+
 int MyDAWVST3GetLatencySamples(const MyDAWVST3Instance* instance);
 
 int MyDAWVST3GetState(

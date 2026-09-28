@@ -5,6 +5,7 @@ public struct TrackHeaderView: View {
     @ObservedObject public var projectState: ProjectState
     public let isSelected: Bool
 
+    @State private var isShowingColorPalette = false
     @State private var isEditingName: Bool = false
     @State private var resizeStartHeight: CGFloat?
 
@@ -21,10 +22,20 @@ public struct TrackHeaderView: View {
     public var body: some View {
         let meterPeak = track.isRecordArmed ? track.currentInputPeak : track.currentOutputPeak
         HStack(spacing: 0) {
-            // Track Color Bar
+            // Track Color Bar: click to pick a colour
             Rectangle()
                 .fill(track.color)
-                .frame(width: 4)
+                .frame(width: 6)
+                .padding(.trailing, 6)
+                .contentShape(Rectangle())
+                .onTapGesture { isShowingColorPalette = true }
+                .help("Change track color")
+                .popover(isPresented: $isShowingColorPalette, arrowEdge: .trailing) {
+                    TrackColorPalette(color: $track.color) {
+                        isShowingColorPalette = false
+                    }
+                }
+                .padding(.trailing, -6)
 
             VStack(alignment: .leading, spacing: 5) {
                 // Top Row: Track Name & Channel Mode & Delete
@@ -53,8 +64,8 @@ public struct TrackHeaderView: View {
 
                     // Mono / Stereo Badge
                     Menu {
-                        Button("Mono") { track.channelMode = .mono }
-                        Button("Stereo") { track.channelMode = .stereo }
+                        Button("Mono") { projectState.setInputRouting(for: track, channelMode: .mono) }
+                        Button("Stereo") { projectState.setInputRouting(for: track, channelMode: .stereo) }
                     } label: {
                         Text(track.channelMode == .mono ? "1" : "2")
                             .font(.system(size: 10, weight: .bold))
@@ -138,6 +149,31 @@ public struct TrackHeaderView: View {
                     .buttonStyle(PlainButtonStyle())
                     .help("Solo Track")
 
+                    // Input Monitor [I]: live input through this track's mixer while armed
+                    Button(action: {
+                        projectState.toggleInputMonitoring(for: track)
+                    }) {
+                        let isHearing = track.isInputMonitoring && track.isRecordArmed
+                        Text("I")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(isHearing ? .black : .green.opacity(track.isInputMonitoring ? 1.0 : 0.7))
+                            .frame(width: 22, height: 20)
+                            .background(
+                                isHearing
+                                    ? Color.green
+                                    : Color.white.opacity(0.08)
+                            )
+                            .cornerRadius(3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(Color.green.opacity(track.isInputMonitoring ? 1.0 : 0.0), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .help(track.isInputMonitoring
+                        ? (track.isRecordArmed ? "Input Monitoring (On)" : "Input Monitoring (active when Record is armed)")
+                        : "Input Monitoring (Off)")
+
                     Spacer()
 
                     // Input Channel Selector Menu
@@ -145,7 +181,7 @@ public struct TrackHeaderView: View {
                     Menu {
                         ForEach(channelOptions) { opt in
                             Button(opt.name) {
-                                track.inputChannelIndex = opt.channelOffset
+                                projectState.setInputRouting(for: track, inputChannelIndex: opt.channelOffset)
                             }
                         }
                     } label: {
@@ -212,3 +248,48 @@ public struct TrackHeaderView: View {
     }
 }
 
+
+
+/// Preset swatches plus the system picker for any other colour.
+private struct TrackColorPalette: View {
+    @Binding var color: Color
+    let onDone: () -> Void
+
+    static let presets: [Color] = [
+        Color(red: 0.20, green: 0.60, blue: 1.00), Color(red: 0.35, green: 0.80, blue: 0.95),
+        Color(red: 0.25, green: 0.85, blue: 0.60), Color(red: 0.55, green: 0.85, blue: 0.25),
+        Color(red: 0.95, green: 0.85, blue: 0.25), Color(red: 1.00, green: 0.65, blue: 0.15),
+        Color(red: 1.00, green: 0.45, blue: 0.20), Color(red: 0.90, green: 0.35, blue: 0.45),
+        Color(red: 0.95, green: 0.30, blue: 0.70), Color(red: 0.70, green: 0.45, blue: 0.95),
+        Color(red: 0.45, green: 0.45, blue: 0.95), Color(red: 0.60, green: 0.40, blue: 0.25),
+        Color(red: 0.55, green: 0.65, blue: 0.70), Color(red: 0.80, green: 0.80, blue: 0.80),
+        Color(red: 0.40, green: 0.70, blue: 0.55), Color(red: 0.85, green: 0.55, blue: 0.55),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(22), spacing: 6), count: 4), spacing: 6) {
+                ForEach(Array(Self.presets.enumerated()), id: \.offset) { _, swatch in
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(swatch)
+                        .frame(width: 22, height: 22)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.white, lineWidth: isSelected(swatch) ? 2 : 0)
+                        )
+                        .onTapGesture {
+                            color = swatch
+                            onDone()
+                        }
+                }
+            }
+            ColorPicker("Custom…", selection: $color, supportsOpacity: false)
+                .font(.system(size: 11))
+        }
+        .padding(10)
+    }
+
+    private func isSelected(_ swatch: Color) -> Bool {
+        NSColor(swatch).usingColorSpace(.sRGB) == NSColor(color).usingColorSpace(.sRGB)
+    }
+}

@@ -24,7 +24,6 @@ public struct MainDAWView: View {
             .frame(minHeight: 180, maxHeight: .infinity)
 
             MixerView(projectState: projectState)
-                .frame(height: 370)
                 .layoutPriority(1)
 
             // 3. Bottom Status Bar

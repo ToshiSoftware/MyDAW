@@ -150,6 +150,9 @@ private struct AudioClipView: View {
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipId == clip.id
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
+        let layerSpans = ClipLayering.spans(for: track.clips)
+        let fadeInLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: true)
+        let fadeOutLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: false)
 
         if clip.isFileMissing {
             missingFileView
@@ -216,6 +219,11 @@ private struct AudioClipView: View {
             }
             .frame(width: clipWidth, height: max(20.0, height))
             .background(track.color.opacity(0.08))
+            .overlay {
+                if !isActiveClip {
+                    coveredOverlay(spans: layerSpans, width: clipWidth)
+                }
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: 3)
                     .stroke(isSelected ? Color.white : track.color.opacity(0.9), lineWidth: isSelected ? 2 : 1)
@@ -233,14 +241,18 @@ private struct AudioClipView: View {
                     .gesture(gainGesture)
             }
             .overlay(alignment: .topLeading) {
-                fadeInHandle
-                    .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond - 5.0, y: -5.0)
-                    .gesture(fadeInGesture)
+                if !fadeInLocked {
+                    fadeInHandle
+                        .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond - 5.0, y: -5.0)
+                        .gesture(fadeInGesture)
+                }
             }
             .overlay(alignment: .topTrailing) {
-                fadeOutHandle
-                    .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond + 5.0, y: -5.0)
-                    .gesture(fadeOutGesture)
+                if !fadeOutLocked {
+                    fadeOutHandle
+                        .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond + 5.0, y: -5.0)
+                        .gesture(fadeOutGesture)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 3))
             .opacity(clip.isMuted ? 0.35 : 1.0)
@@ -340,6 +352,52 @@ private struct AudioClipView: View {
             }
             .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
         }
+    }
+
+    /// Darkens the parts of this clip silenced by clips layered above it,
+    /// following the crossfade envelope so the handover is visible.
+    private func coveredOverlay(spans: [ClipLayerSpan], width: CGFloat) -> some View {
+        let clipID = clip.id
+        let start = clip.startTime
+        let pps = projectState.pixelsPerSecond
+        let segments = ClipLayering.segments(spans, clip: clipID)
+        return Canvas { context, size in
+            for segment in segments where segment.kind != .plain {
+                let x0 = CGFloat(segment.start - start) * pps
+                let x1 = CGFloat(segment.end - start) * pps
+                guard x1 > x0 else { continue }
+                if segment.kind == .hidden {
+                    context.fill(Path(CGRect(x: x0, y: 0, width: x1 - x0, height: size.height)), with: .color(.black.opacity(0.55)))
+                    continue
+                }
+                var x = x0
+                while x < x1 {
+                    let step = min(2.0, x1 - x)
+                    let time = start + Double((x + step / 2) / pps)
+                    let covered = coverage(spans, clipID, time)
+                    if covered > 0.01 {
+                        context.fill(
+                            Path(CGRect(x: x, y: 0, width: step, height: size.height)),
+                            with: .color(.black.opacity(0.55 * covered))
+                        )
+                    }
+                    x += step
+                }
+            }
+        }
+        .frame(width: width)
+        .allowsHitTesting(false)
+    }
+
+    /// 0 where this clip is fully audible, 1 where an upper clip fully hides it
+    /// (its own fades are not counted as "covered").
+    private func coverage(_ spans: [ClipLayerSpan], _ clipID: UUID, _ time: Double) -> Double {
+        guard let index = spans.firstIndex(where: { $0.id == clipID }) else { return 0 }
+        let own = spans[index]
+        let alone = ClipLayering.gain([ClipLayerSpan(id: own.id, start: own.start, end: own.end, fadeIn: own.fadeIn, fadeOut: own.fadeOut, isMuted: own.isMuted)], clip: clipID, at: time)
+        guard alone > 0 else { return 0 }
+        let layered = ClipLayering.gain(spans, clip: clipID, at: time)
+        return max(0, min(1, 1 - layered / alone))
     }
 
     private var missingFileView: some View {
@@ -486,6 +544,10 @@ private struct AudioClipView: View {
             .onEnded { _ in
                 fadeInStartDuration = nil
                 projectState.endClipEdit()
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
             }
     }
 
@@ -507,6 +569,10 @@ private struct AudioClipView: View {
             .onEnded { _ in
                 fadeOutStartDuration = nil
                 projectState.endClipEdit()
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
             }
     }
 

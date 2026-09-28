@@ -290,7 +290,13 @@ public final class ProjectState: ObservableObject {
                       let peaks = userInfo["peaks"] as? [Float] else { return }
 
                 let liveChannelWaveforms = userInfo["liveChannelWaveforms"] as? [UUID: [[(min: Float, max: Float)]]] ?? [:]
-                let outputPeaks = userInfo["outputPeaks"] as? [UUID: Float] ?? [:]
+                let outputPeaks = userInfo["outputPeaks"] as? [UUID: StereoPeak] ?? [:]
+                let fxOutputPeaks = userInfo["fxOutputPeaks"] as? [UUID: StereoPeak] ?? [:]
+                for channel in self.fxChannels {
+                    let peak = fxOutputPeaks[channel.id] ?? .zero
+                    channel.outputStereoPeak = channel.outputStereoPeak.falling(to: peak, by: 0.82)
+                    channel.currentOutputPeak = channel.outputStereoPeak.maximum
+                }
 
                 // Update track input peak meters
                 for track in self.tracks {
@@ -309,8 +315,9 @@ public final class ProjectState: ObservableObject {
                     } else {
                         track.currentInputPeak = max(0.0, track.currentInputPeak * 0.70)
                     }
-                    let outputPeak = outputPeaks[track.id] ?? 0.0
-                    track.currentOutputPeak = max(outputPeak, track.currentOutputPeak * 0.82)
+                    let outputPeak = outputPeaks[track.id] ?? .zero
+                    track.outputStereoPeak = track.outputStereoPeak.falling(to: outputPeak, by: 0.82)
+                    track.currentOutputPeak = track.outputStereoPeak.maximum
 
                     // Append live waveform points if recording
                     if let channelPoints = liveChannelWaveforms[track.id], !channelPoints.isEmpty {
@@ -513,6 +520,14 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    public func renameFXChannel(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let channel = fxChannels.first(where: { $0.id == id }) else { return }
+        channel.name = trimmed
+        // Send rows in track strips show FX names but observe only the project.
+        objectWillChange.send()
+    }
+
     public func removeFXChannel(id: UUID) {
         fxChannels.removeAll { $0.id == id }
         for track in tracks {
@@ -618,6 +633,21 @@ public final class ProjectState: ObservableObject {
 
     public func toggleRecordArm(for track: AudioTrack) {
         track.isRecordArmed.toggle()
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    public func setInputRouting(for track: AudioTrack, channelMode: ChannelMode? = nil, inputChannelIndex: Int? = nil) {
+        if let channelMode {
+            track.channelMode = channelMode
+        }
+        if let inputChannelIndex {
+            track.inputChannelIndex = inputChannelIndex
+        }
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    public func toggleInputMonitoring(for track: AudioTrack) {
+        track.isInputMonitoring.toggle()
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
@@ -793,6 +823,7 @@ public final class ProjectState: ObservableObject {
                     isRecordArmed: track.isRecordArmed,
                     isMuted: track.isMuted,
                     isSoloed: track.isSoloed,
+                    isInputMonitoring: track.isInputMonitoring,
                     volume: track.volume,
                     pan: track.pan,
                     trackHeight: Double(track.trackHeight),
@@ -918,6 +949,7 @@ public final class ProjectState: ObservableObject {
                     isRecordArmed: trackDocument.isRecordArmed,
                     isMuted: trackDocument.isMuted,
                     isSoloed: trackDocument.isSoloed,
+                    isInputMonitoring: trackDocument.isInputMonitoring,
                     volume: trackDocument.volume,
                     pan: trackDocument.pan,
                     trackHeight: CGFloat(trackDocument.trackHeight),

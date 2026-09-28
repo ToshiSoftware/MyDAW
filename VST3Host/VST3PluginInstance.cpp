@@ -4,6 +4,7 @@
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "public.sdk/source/vst/hosting/plugprovider.h"
 #include "public.sdk/source/common/memorystream.h"
+#include "public.sdk/source/vst/hosting/parameterchanges.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
@@ -17,10 +18,88 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Forward declaration
 struct MyDAWVST3Instance;
+
+// Receives parameter edits from the plug-in's controller (its GUI) so they
+// can be delivered to the processor through ProcessData on the next block.
+// Plug-ins with split controller/processor rely on this; without it GUI
+// changes never reach the DSP.
+class MyDAWVST3ComponentHandler : public Steinberg::Vst::IComponentHandler {
+public:
+    MyDAWVST3ComponentHandler() { pending.reserve(256); }
+
+    Steinberg::tresult PLUGIN_API beginEdit(Steinberg::Vst::ParamID) override {
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API performEdit(
+        Steinberg::Vst::ParamID id,
+        Steinberg::Vst::ParamValue value
+    ) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto& entry : pending) {
+            if (entry.first == id) {
+                entry.second = value;
+                return Steinberg::kResultOk;
+            }
+        }
+        pending.emplace_back(id, value);
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API endEdit(Steinberg::Vst::ParamID) override {
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32) override {
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API queryInterface(
+        const Steinberg::TUID iid,
+        void** obj
+    ) override {
+        if (!obj) {
+            return Steinberg::kInvalidArgument;
+        }
+        if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IComponentHandler::iid) ||
+            Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::FUnknown::iid)) {
+            *obj = this;
+            addRef();
+            return Steinberg::kResultTrue;
+        }
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+
+    Steinberg::uint32 PLUGIN_API addRef() override { return 1000; }
+    Steinberg::uint32 PLUGIN_API release() override { return 1000; }
+
+    // Render thread: never blocks; if the UI thread holds the lock the
+    // edits simply arrive one block later.
+    void drainInto(Steinberg::Vst::ParameterChanges& changes) {
+        std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            return;
+        }
+        for (const auto& entry : pending) {
+            Steinberg::int32 queueIndex = 0;
+            if (auto* queue = changes.addParameterData(entry.first, queueIndex)) {
+                Steinberg::int32 pointIndex = 0;
+                queue->addPoint(0, entry.second, pointIndex);
+            }
+        }
+        pending.clear();
+    }
+
+private:
+    std::mutex mutex;
+    std::vector<std::pair<Steinberg::Vst::ParamID, Steinberg::Vst::ParamValue>> pending;
+};
 
 class MyDAWVST3PlugFrame : public Steinberg::IPlugFrame {
 public:
@@ -64,6 +143,9 @@ struct MyDAWVST3Instance {
     Steinberg::FUnknownPtr<Steinberg::Vst::IAudioProcessor> processor;
     Steinberg::IPtr<Steinberg::IPlugView> editorView;
     std::unique_ptr<MyDAWVST3PlugFrame> plugFrame;
+    MyDAWVST3ComponentHandler componentHandler;
+    Steinberg::Vst::ParameterChanges inputParameterChanges{64};
+    Steinberg::Vst::ParameterChanges outputParameterChanges{64};
     int maxFrames = 0;
     std::vector<float> inputLeft;
     std::vector<float> inputRight;
@@ -74,6 +156,7 @@ struct MyDAWVST3Instance {
     Steinberg::Vst::ProcessContext processContext{};
     double sampleRate = 44100.0;
     std::mutex processMutex;
+    int processFailureLogCount = 0;
 
     // resizeView コールバック（Swift 側のウィンドウを更新するため）
     MyDAWVST3ResizeCallback resizeCallback = nullptr;
@@ -155,6 +238,9 @@ MyDAWVST3Instance* MyDAWVST3Create(
     if (!instance->component || !instance->processor) {
         return nullptr;
     }
+    if (instance->controller) {
+        instance->controller->setComponentHandler(&instance->componentHandler);
+    }
 
     if (instance->component->activateBus(
             Steinberg::Vst::kAudio,
@@ -168,12 +254,21 @@ MyDAWVST3Instance* MyDAWVST3Create(
             0,
             true
         ) != Steinberg::kResultTrue) {
+        fprintf(stderr, "[MyDAWVST3] activateBus failed for %s\n", selectedClass.name().c_str());
         return nullptr;
     }
 
     Steinberg::Vst::SpeakerArrangement inputArrangement  = Steinberg::Vst::SpeakerArr::kStereo;
     Steinberg::Vst::SpeakerArrangement outputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
-    instance->processor->setBusArrangements(&inputArrangement, 1, &outputArrangement, 1);
+    auto busArrangementResult = instance->processor->setBusArrangements(&inputArrangement, 1, &outputArrangement, 1);
+    if (busArrangementResult != Steinberg::kResultOk) {
+        fprintf(
+            stderr,
+            "[MyDAWVST3] setBusArrangements returned %d (not kResultOk) for %s; plugin may reject stereo I/O\n",
+            static_cast<int>(busArrangementResult),
+            selectedClass.name().c_str()
+        );
+    }
 
     Steinberg::Vst::ProcessSetup setup {
         Steinberg::Vst::kRealtime,
@@ -181,9 +276,20 @@ MyDAWVST3Instance* MyDAWVST3Create(
         maxFrames,
         sampleRate
     };
-    if (instance->processor->setupProcessing(setup) != Steinberg::kResultOk ||
-        instance->component->setActive(true) != Steinberg::kResultOk ||
-        instance->processor->setProcessing(true) != Steinberg::kResultOk) {
+    auto setupResult = instance->processor->setupProcessing(setup);
+    auto activeResult = instance->component->setActive(true);
+    auto processingResult = instance->processor->setProcessing(true);
+    if (setupResult != Steinberg::kResultOk ||
+        activeResult != Steinberg::kResultOk ||
+        processingResult != Steinberg::kResultOk) {
+        fprintf(
+            stderr,
+            "[MyDAWVST3] init failed for %s: setupProcessing=%d setActive=%d setProcessing=%d\n",
+            selectedClass.name().c_str(),
+            static_cast<int>(setupResult),
+            static_cast<int>(activeResult),
+            static_cast<int>(processingResult)
+        );
         return nullptr;
     }
 
@@ -301,6 +407,14 @@ void MyDAWVST3RemoveEditor(MyDAWVST3Instance* instance) {
     instance->plugFrame.reset();
 }
 
+static void attachParameterChanges(MyDAWVST3Instance* instance, Steinberg::Vst::ProcessData& data) {
+    instance->inputParameterChanges.clearQueue();
+    instance->componentHandler.drainInto(instance->inputParameterChanges);
+    instance->outputParameterChanges.clearQueue();
+    data.inputParameterChanges  = &instance->inputParameterChanges;
+    data.outputParameterChanges = &instance->outputParameterChanges;
+}
+
 int MyDAWVST3ProcessInterleaved(
     MyDAWVST3Instance* instance,
     const float* input,
@@ -310,6 +424,18 @@ int MyDAWVST3ProcessInterleaved(
 ) {
     if (!instance || !input || !output || frames <= 0 || frames > instance->maxFrames ||
         channels != 2) {
+        if (instance && instance->processFailureLogCount < 5) {
+            ++instance->processFailureLogCount;
+            fprintf(
+                stderr,
+                "[MyDAWVST3] ProcessInterleaved rejected: frames=%d maxFrames=%d channels=%d hasInput=%d hasOutput=%d\n",
+                frames,
+                instance ? instance->maxFrames : -1,
+                channels,
+                input != nullptr,
+                output != nullptr
+            );
+        }
         return -1;
     }
     std::lock_guard<std::mutex> lock(instance->processMutex);
@@ -339,8 +465,19 @@ int MyDAWVST3ProcessInterleaved(
     data.inputs             = inputs;
     data.outputs            = outputs;
     data.processContext     = &instance->processContext;
+    attachParameterChanges(instance, data);
 
-    if (instance->processor->process(data) != Steinberg::kResultOk) {
+    auto processResult = instance->processor->process(data);
+    if (processResult != Steinberg::kResultOk) {
+        if (instance->processFailureLogCount < 5) {
+            ++instance->processFailureLogCount;
+            fprintf(
+                stderr,
+                "[MyDAWVST3] process() returned %d (not kResultOk), frames=%d\n",
+                static_cast<int>(processResult),
+                frames
+            );
+        }
         return -2;
     }
 
@@ -349,6 +486,45 @@ int MyDAWVST3ProcessInterleaved(
         output[frame * 2 + 1] = instance->outputRight[frame];
     }
     return 0;
+}
+
+int MyDAWVST3ProcessStereo(
+    MyDAWVST3Instance* instance,
+    const float* inputLeft,
+    const float* inputRight,
+    float* outputLeft,
+    float* outputRight,
+    int frames
+) {
+    if (!instance || !inputLeft || !inputRight || !outputLeft || !outputRight ||
+        frames <= 0 || frames > instance->maxFrames) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(instance->processMutex);
+
+    float* inputChannels[2] = {const_cast<float*>(inputLeft), const_cast<float*>(inputRight)};
+    float* outputChannels[2] = {outputLeft, outputRight};
+
+    Steinberg::Vst::AudioBusBuffers inputs[1]{};
+    inputs[0].numChannels      = 2;
+    inputs[0].channelBuffers32 = inputChannels;
+    Steinberg::Vst::AudioBusBuffers outputs[1]{};
+    outputs[0].numChannels      = 2;
+    outputs[0].channelBuffers32 = outputChannels;
+
+    Steinberg::Vst::ProcessData data{};
+    data.symbolicSampleSize = Steinberg::Vst::kSample32;
+    data.numSamples         = frames;
+    data.numInputs          = 1;
+    data.numOutputs         = 1;
+    data.inputs             = inputs;
+    data.outputs            = outputs;
+    data.processContext     = &instance->processContext;
+    attachParameterChanges(instance, data);
+
+    const auto result = instance->processor->process(data);
+    instance->processContext.projectTimeSamples += frames;
+    return result == Steinberg::kResultOk ? 0 : -2;
 }
 
 int MyDAWVST3GetLatencySamples(const MyDAWVST3Instance* instance) {
@@ -397,7 +573,14 @@ int MyDAWVST3SetState(
     }
 
     Steinberg::MemoryStream stream(const_cast<void*>(data), size);
-    return instance->component->setState(&stream) == Steinberg::kResultOk ? 0 : -2;
+    if (instance->component->setState(&stream) != Steinberg::kResultOk) {
+        return -2;
+    }
+    if (instance->controller) {
+        stream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
+        instance->controller->setComponentState(&stream);
+    }
+    return 0;
 }
 
 void MyDAWVST3FreeState(void* data) {
@@ -417,6 +600,9 @@ void MyDAWVST3Destroy(MyDAWVST3Instance* instance) {
 
     instance->editorView.reset();
     instance->plugFrame.reset();
+    if (instance->controller) {
+        instance->controller->setComponentHandler(nullptr);
+    }
     instance->processor  = nullptr;
     instance->controller = nullptr;
     instance->component  = nullptr;

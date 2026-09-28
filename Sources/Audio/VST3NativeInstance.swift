@@ -4,8 +4,8 @@ import AVFoundation
 
 @_silgen_name("MyDAWVST3Create")
 private func myDAWVST3Create(_ bundlePath: UnsafePointer<CChar>, _ pluginUID: UnsafePointer<CChar>, _ sampleRate: Double, _ maxFrames: Int32) -> UnsafeMutableRawPointer?
-@_silgen_name("MyDAWVST3ProcessInterleaved")
-private func myDAWVST3ProcessInterleaved(_ instance: UnsafeMutableRawPointer?, _ input: UnsafePointer<Float>, _ output: UnsafeMutablePointer<Float>, _ frames: Int32, _ channels: Int32) -> Int32
+@_silgen_name("MyDAWVST3ProcessStereo")
+private func myDAWVST3ProcessStereo(_ instance: UnsafeMutableRawPointer?, _ inputLeft: UnsafePointer<Float>, _ inputRight: UnsafePointer<Float>, _ outputLeft: UnsafeMutablePointer<Float>, _ outputRight: UnsafeMutablePointer<Float>, _ frames: Int32) -> Int32
 @_silgen_name("MyDAWVST3GetLatencySamples")
 private func myDAWVST3GetLatencySamples(_ instance: UnsafeMutableRawPointer?) -> Int32
 @_silgen_name("MyDAWVST3GetState")
@@ -25,11 +25,9 @@ private func myDAWVST3RemoveEditor(_ instance: UnsafeMutableRawPointer?)
 @_silgen_name("MyDAWVST3Destroy")
 private func myDAWVST3Destroy(_ instance: UnsafeMutableRawPointer?)
 
-public final class VST3NativeInstance {
+public final class VST3NativeInstance: @unchecked Sendable {
     private var handle: UnsafeMutableRawPointer?
     private let maxFrames: Int
-    private let bypassLock = NSLock()
-    private var bypassed = false
     public let latencySamples: Int
 
     /// プラグインが IPlugFrame::resizeView() を呼んできたときに通知するコールバック。
@@ -48,67 +46,30 @@ public final class VST3NativeInstance {
         latencySamples = Int(myDAWVST3GetLatencySamples(createdHandle))
     }
 
-    public func process(buffer: AVAudioPCMBuffer) -> Bool {
-        guard let handle,
-              buffer.format.commonFormat == .pcmFormatFloat32,
-              buffer.format.channelCount == 2,
-              let channelData = buffer.floatChannelData else {
-            return false
-        }
-
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return true }
-        var input = [Float](repeating: 0.0, count: maxFrames * 2)
-        var output = [Float](repeating: 0.0, count: maxFrames * 2)
-
-        var frameOffset = 0
-        while frameOffset < frameCount {
-            let blockFrames = min(maxFrames, frameCount - frameOffset)
-            for frame in 0..<blockFrames {
-                input[frame * 2] = channelData[0][frameOffset + frame]
-                input[frame * 2 + 1] = channelData[1][frameOffset + frame]
-            }
-
-            let result = input.withUnsafeBufferPointer { inputBuffer in
-                output.withUnsafeMutableBufferPointer { outputBuffer in
-                    myDAWVST3ProcessInterleaved(
-                        handle,
-                        inputBuffer.baseAddress!,
-                        outputBuffer.baseAddress!,
-                        Int32(blockFrames),
-                        2
-                    )
-                }
-            }
-            guard result == 0 else { return false }
-
-            for frame in 0..<blockFrames {
-                channelData[0][frameOffset + frame] = output[frame * 2]
-                channelData[1][frameOffset + frame] = output[frame * 2 + 1]
-            }
-            frameOffset += blockFrames
+    /// Real-time safe; called from the audio render thread. Outputs must not
+    /// alias inputs. Splits into blocks of at most `maxFrames`.
+    public func processStereo(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frames: Int
+    ) -> Bool {
+        guard let handle else { return false }
+        var offset = 0
+        while offset < frames {
+            let blockFrames = min(maxFrames, frames - offset)
+            guard myDAWVST3ProcessStereo(
+                handle,
+                inputLeft + offset,
+                inputRight + offset,
+                outputLeft + offset,
+                outputRight + offset,
+                Int32(blockFrames)
+            ) == 0 else { return false }
+            offset += blockFrames
         }
         return true
-    }
-
-    public func processInterleaved(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>, frames: Int) -> Bool {
-        guard let handle, frames > 0, frames <= maxFrames else { return false }
-        bypassLock.lock()
-        let isBypassed = bypassed
-        bypassLock.unlock()
-        if isBypassed {
-            for index in 0..<(frames * 2) {
-                output[index] = input[index]
-            }
-            return true
-        }
-        return myDAWVST3ProcessInterleaved(handle, input, output, Int32(frames), 2) == 0
-    }
-
-    public func setBypassed(_ bypassed: Bool) {
-        bypassLock.lock()
-        self.bypassed = bypassed
-        bypassLock.unlock()
     }
 
     public func captureState() -> Data? {

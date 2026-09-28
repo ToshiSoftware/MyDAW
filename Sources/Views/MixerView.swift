@@ -1,325 +1,568 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Studio One-style mixer: every strip has three stacked sections (inserts,
+/// sends, controls) whose heights are shared, draggable and remembered.
 public struct MixerView: View {
     @ObservedObject public var projectState: ProjectState
+    @AppStorage("mixer.height") private var mixerHeight: Double = 460
+    @AppStorage("mixer.pluginSectionHeight") private var pluginSectionHeight: Double = 110
+    @AppStorage("mixer.sendSectionHeight") private var sendSectionHeight: Double = 80
+    @State private var heightDragStart: Double?
+
+    static let stripWidth: CGFloat = 92
+    static let minControlHeight: Double = 230
+    private static let chromeHeight: Double = 34
 
     public init(projectState: ProjectState) {
         self.projectState = projectState
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let layout = MixerSectionLayout(
+            pluginHeight: $pluginSectionHeight,
+            sendHeight: $sendSectionHeight,
+            maxTopHeight: max(60, mixerHeight - Self.chromeHeight - Self.minControlHeight)
+        )
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.white.opacity(0.12))
+                .frame(height: 5)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                        .onChanged { value in
+                            let start = heightDragStart ?? mixerHeight
+                            if heightDragStart == nil { heightDragStart = start }
+                            mixerHeight = min(1000, max(320, start - Double(value.translation.height)))
+                        }
+                        .onEnded { _ in heightDragStart = nil }
+                )
+
             HStack {
                 Label("Mixer", systemImage: "slider.vertical.3")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white.opacity(0.75))
                 Spacer()
-                    Button {
-                        projectState.addFXChannel()
-                    } label: {
-                        Label("Add FX", systemImage: "plus.circle")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                Text("Track controls")
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.35))
-            }
-
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack(alignment: .top, spacing: 6) {
-                    ForEach(projectState.tracks) { track in
-                        MixerChannelView(track: track, projectState: projectState)
-                    }
-                    ForEach(projectState.fxChannels) { channel in
-                        FXChannelView(
-                            channel: channel,
-                            projectState: projectState,
-                            audioEngine: projectState.audioEngine
-                        )
-                    }
-                    MasterChannelView(
-                        projectState: projectState,
-                        audioEngine: projectState.audioEngine
-                    )
+                Button {
+                    projectState.addFXChannel()
+                } label: {
+                    Label("Add FX", systemImage: "plus.circle")
+                        .font(.system(size: 9, weight: .semibold))
                 }
-                .frame(
-                    minWidth: CGFloat(projectState.tracks.count + projectState.fxChannels.count + 1) * 191.0,
-                    alignment: .leading
-                )
+                .buttonStyle(PlainButtonStyle())
             }
-            .scrollIndicators(.visible)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(height: 22)
+
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 2) {
+                        ForEach(projectState.tracks) { track in
+                            TrackStripView(track: track, projectState: projectState, layout: layout)
+                        }
+                        ForEach(projectState.fxChannels) { channel in
+                            FXStripView(
+                                channel: channel,
+                                projectState: projectState,
+                                audioEngine: projectState.audioEngine,
+                                layout: layout
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                }
+                .scrollIndicators(.visible)
+                Rectangle()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(width: 1)
+                MasterStripView(projectState: projectState, audioEngine: projectState.audioEngine, layout: layout)
+                    .padding(.horizontal, 4)
+            }
+            .frame(maxHeight: .infinity)
+            .padding(.bottom, 4)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(minHeight: 340, maxHeight: 370)
+        .frame(height: mixerHeight)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.white.opacity(0.1))
-                .frame(height: 1)
+        .contextMenu {
+            Button {
+                projectState.addFXChannel()
+            } label: {
+                Label("Add FX", systemImage: "plus.circle")
+            }
         }
     }
 }
 
-private struct MasterChannelView: View {
-    @ObservedObject var projectState: ProjectState
-    @ObservedObject var audioEngine: AudioEngineManager
+/// Shared heights of the insert and send sections; the control section
+/// takes the rest.
+struct MixerSectionLayout {
+    @Binding var pluginHeight: Double
+    @Binding var sendHeight: Double
+    let maxTopHeight: Double
+}
+
+/// Stacks a strip's three sections with draggable dividers between them.
+private struct StripSections<Plugins: View, Sends: View, Controls: View>: View {
+    let layout: MixerSectionLayout
+    let background: Color
+    let border: Color
+    @ViewBuilder let plugins: () -> Plugins
+    @ViewBuilder let sends: () -> Sends
+    @ViewBuilder let controls: () -> Controls
+    @State private var dragStart: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: 3, height: 16)
-                Text("MASTER")
-                    .font(.system(size: 10, weight: .black))
-                Spacer()
+        VStack(spacing: 0) {
+            plugins()
+                .frame(height: CGFloat(layout.pluginHeight), alignment: .top)
+                .clipped()
+            divider { delta in
+                layout.pluginHeight = clampTop(plugin: (dragStart ?? layout.pluginHeight) + delta, send: layout.sendHeight).plugin
+            } begin: { layout.pluginHeight }
+            sends()
+                .frame(height: CGFloat(layout.sendHeight), alignment: .top)
+                .clipped()
+            divider { delta in
+                layout.sendHeight = clampTop(plugin: layout.pluginHeight, send: (dragStart ?? layout.sendHeight) + delta).send
+            } begin: { layout.sendHeight }
+            controls()
+                .frame(maxHeight: .infinity)
+        }
+        .frame(width: MixerView.stripWidth)
+        .background(background)
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(border, lineWidth: 1))
+    }
+
+    private func clampTop(plugin: Double, send: Double) -> (plugin: Double, send: Double) {
+        let pluginValue = max(36, plugin)
+        let sendValue = max(28, send)
+        let overflow = pluginValue + sendValue - layout.maxTopHeight
+        return overflow > 0 ? (pluginValue, max(28, sendValue - overflow)) : (pluginValue, sendValue)
+    }
+
+    private func divider(onDrag: @escaping (Double) -> Void, begin: @escaping () -> Double) -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.14))
+            .frame(height: 3)
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
             }
-            MixerLevelMeter(
-                peak: audioEngine.masterPeak,
-                label: "MASTER"
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        if dragStart == nil { dragStart = begin() }
+                        onDrag(Double(value.translation.height))
+                    }
+                    .onEnded { _ in dragStart = nil }
             )
-            Text("FINAL OUTPUT")
+    }
+}
+
+private struct SectionHeader<Accessory: View>: View {
+    let title: String
+    @ViewBuilder let accessory: () -> Accessory
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text(title)
                 .font(.system(size: 8, weight: .bold))
                 .foregroundColor(.white.opacity(0.55))
+            Spacer(minLength: 0)
+            accessory()
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 16)
+    }
+}
 
-            HStack(spacing: 6) {
-                Text("VOLUME")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                Slider(
-                    value: Binding(
-                        get: { projectState.audioEngine.masterVolume },
-                        set: { projectState.audioEngine.masterVolume = $0 }
-                    ),
-                    in: 0.0...1.5
-                )
-                    .accentColor(.white)
+private struct InsertMenu: View {
+    let plugins: [TrackPluginDescriptor]
+    let disabled: Bool
+    let onInsert: (TrackPluginDescriptor) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(plugins) { plugin in
+                Button(plugin.menuDisplayName) { onInsert(plugin) }
             }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 9, weight: .bold))
+        }
+        .menuStyle(BorderlessButtonMenuStyle())
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(disabled)
+        .help("Insert plug-in")
+    }
+}
 
-            Menu {
-                ForEach(projectState.pluginManager.availablePlugins) { plugin in
-                    Button(plugin.menuDisplayName) {
+private struct PluginRow: View {
+    let plugin: TrackPluginDescriptor
+    let isUnavailable: Bool
+    let canReorder: Bool
+    let onToggle: () -> Void
+    let onOpen: () -> Void
+    let onMove: (UUID) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Button(action: onToggle) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(plugin.enabled ? .green : .gray)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
+            PluginNameButton(
+                name: plugin.name.components(separatedBy: ": ").last ?? plugin.name,
+                pluginID: plugin.id,
+                isUnavailable: isUnavailable,
+                canReorder: canReorder,
+                onOpen: onOpen,
+                onMove: onMove
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(plugin.menuDisplayName)
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .buttonStyle(PlainButtonStyle())
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 18)
+        .background(Color.white.opacity(plugin.enabled ? 0.08 : 0.03))
+        .cornerRadius(2)
+    }
+}
+
+/// Fader column: dB labels, fader, L/R meter. Heights align across strips.
+private struct FaderColumn: View {
+    @Binding var gain: Float
+    let peak: StereoPeak
+    let tint: Color
+    let onChange: () -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            EditableValueText(text: MixerScale.label(forGain: gain)) { text in
+                if let value = MixerScale.gain(parsing: text) {
+                    gain = min(MixerGain.maximum, value)
+                    onChange()
+                }
+            }
+            .frame(height: 14)
+            HStack(spacing: 2) {
+                FaderScale().frame(width: 18)
+                VolumeFader(gain: $gain, tint: tint, onChange: onChange).frame(width: 26)
+                StereoMeter(peak: peak).frame(width: 11)
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+}
+
+private struct PanBlock: View {
+    @Binding var pan: Float
+    let tint: Color
+    let onChange: () -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            PanControl(pan: $pan, tint: tint, onChange: onChange)
+            EditableValueText(
+                text: MixerScale.panLabel(pan),
+                onCommit: { text in
+                    if let value = MixerScale.pan(parsing: text) {
+                        pan = value
+                        onChange()
+                    }
+                },
+                font: .system(size: 9, weight: .semibold, design: .monospaced)
+            )
+            .frame(height: 12)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 30)
+    }
+}
+
+private struct StripFooter: View {
+    let name: String
+    let color: Color
+    /// When set, the name can be edited by double-clicking it.
+    var onRename: ((String) -> Void)?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(color).frame(height: 3)
+            Group {
+                if let onRename {
+                    EditableValueText(
+                        text: name,
+                        onCommit: onRename,
+                        font: .system(size: 9, weight: .semibold)
+                    )
+                    .help("Double-click to rename")
+                } else {
+                    Text(name)
+                        .font(.system(size: 9, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.horizontal, 3)
+            .frame(maxWidth: .infinity)
+            .frame(height: 18)
+        }
+    }
+}
+
+private struct TrackStripView: View {
+    @ObservedObject var track: AudioTrack
+    @ObservedObject var projectState: ProjectState
+    let layout: MixerSectionLayout
+
+    private var isBusy: Bool {
+        projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording
+    }
+
+    private func applyLevels() {
+        projectState.audioEngine.updateMixerLevels(tracks: projectState.tracks, fxChannels: projectState.fxChannels)
+    }
+
+    var body: some View {
+        StripSections(
+            layout: layout,
+            background: track.id == projectState.selectedTrackId
+                ? Color(red: 0.18, green: 0.20, blue: 0.24)
+                : Color(red: 0.13, green: 0.14, blue: 0.16),
+            border: track.color.opacity(0.45)
+        ) {
+            VStack(spacing: 2) {
+                SectionHeader(title: "INSERT") {
+                    InsertMenu(plugins: projectState.pluginManager.availablePlugins, disabled: isBusy) { plugin in
+                        projectState.insertPlugin(plugin, into: track.id)
+                    }
+                }
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 2) {
+                        ForEach(track.plugins) { plugin in
+                            PluginRow(
+                                plugin: plugin,
+                                isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
+                                canReorder: !isBusy,
+                                onToggle: { projectState.togglePlugin(plugin.id, on: track.id) },
+                                onOpen: { projectState.openPluginUI(plugin.id, on: track.id) },
+                                onMove: { sourceID in projectState.movePlugin(sourceID, before: plugin.id, on: track.id) },
+                                onRemove: { projectState.removePlugin(plugin.id, from: track.id) }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 3)
+                }
+            }
+        } sends: {
+            VStack(spacing: 2) {
+                SectionHeader(title: "SEND") { EmptyView() }
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 4) {
+                        ForEach(projectState.fxChannels) { fxChannel in
+                            let level = track.fxSends.first(where: { $0.fxChannelID == fxChannel.id })?.level ?? 0
+                            VStack(spacing: 1) {
+                                HStack(spacing: 2) {
+                                    Text(fxChannel.name)
+                                        .font(.system(size: 8))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                    EditableValueText(
+                                        text: MixerScale.label(forGain: level),
+                                        onCommit: { text in
+                                            if let value = MixerScale.gain(parsing: text) {
+                                                projectState.setSend(trackID: track.id, fxChannelID: fxChannel.id, level: min(MixerGain.maximum, value))
+                                            }
+                                        },
+                                        font: .system(size: 8, design: .monospaced)
+                                    )
+                                    .frame(width: 34)
+                                }
+                                SendLevelBar(gain: level, tint: fxChannel.color) { value in
+                                    projectState.setSend(trackID: track.id, fxChannelID: fxChannel.id, level: value)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 5)
+                }
+            }
+        } controls: {
+            VStack(spacing: 4) {
+                PanBlock(pan: $track.pan, tint: .cyan, onChange: applyLevels)
+                HStack(spacing: 4) {
+                    Button("M") { projectState.toggleMute(for: track) }
+                        .buttonStyle(MixerButtonStyle(active: track.isMuted, color: .cyan))
+                    Button("S") { projectState.toggleSolo(for: track) }
+                        .buttonStyle(MixerButtonStyle(active: track.isSoloed, color: .yellow))
+                }
+                .frame(height: 20)
+                FaderColumn(
+                    gain: $track.volume,
+                    peak: track.isRecordArmed
+                        ? StereoPeak(left: track.currentInputPeak, right: track.currentInputPeak)
+                        : track.outputStereoPeak,
+                    tint: track.isRecordArmed ? .red : Color(white: 0.85),
+                    onChange: applyLevels
+                )
+                StripFooter(name: track.name, color: track.color)
+                    .contentShape(Rectangle())
+                    .onTapGesture { projectState.selectedTrackId = track.id }
+            }
+            .padding(.top, 4)
+        }
+    }
+}
+
+private struct FXStripView: View {
+    @ObservedObject var channel: FXChannel
+    @ObservedObject var projectState: ProjectState
+    @ObservedObject var audioEngine: AudioEngineManager
+    let layout: MixerSectionLayout
+
+    private var isBusy: Bool { audioEngine.isPlaying || audioEngine.isRecording }
+
+    private func applyLevels() {
+        projectState.audioEngine.updateMixerLevels(tracks: projectState.tracks, fxChannels: projectState.fxChannels)
+    }
+
+    var body: some View {
+        StripSections(
+            layout: layout,
+            background: Color(red: 0.14, green: 0.12, blue: 0.19),
+            border: channel.color.opacity(0.6)
+        ) {
+            VStack(spacing: 2) {
+                SectionHeader(title: "INSERT") {
+                    InsertMenu(plugins: projectState.pluginManager.availablePlugins, disabled: isBusy) { plugin in
+                        projectState.insertPlugin(plugin, intoFX: channel.id)
+                    }
+                }
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 2) {
+                        ForEach(channel.plugins) { plugin in
+                            PluginRow(
+                                plugin: plugin,
+                                isUnavailable: audioEngine.isPluginUnavailable(plugin.id),
+                                canReorder: !isBusy,
+                                onToggle: { projectState.togglePlugin(plugin.id, onFX: channel.id) },
+                                onOpen: { audioEngine.openPluginUI(pluginID: plugin.id) },
+                                onMove: { sourceID in projectState.movePlugin(sourceID, before: plugin.id, onFX: channel.id) },
+                                onRemove: { projectState.removePlugin(plugin.id, fromFX: channel.id) }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 3)
+                }
+            }
+        } sends: {
+            VStack {
+                SectionHeader(title: "RETURN") { EmptyView() }
+                Spacer(minLength: 0)
+            }
+        } controls: {
+            VStack(spacing: 4) {
+                PanBlock(pan: $channel.pan, tint: channel.color, onChange: applyLevels)
+                HStack {
+                    Text("FX")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(channel.color)
+                    Button {
+                        projectState.removeFXChannel(id: channel.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 10))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .help("Remove FX channel")
+                }
+                .frame(height: 20)
+                FaderColumn(gain: $channel.volume, peak: channel.outputStereoPeak, tint: channel.color, onChange: applyLevels)
+                StripFooter(name: channel.name, color: channel.color) { newName in
+                    projectState.renameFXChannel(id: channel.id, to: newName)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+}
+
+private struct MasterStripView: View {
+    @ObservedObject var projectState: ProjectState
+    @ObservedObject var audioEngine: AudioEngineManager
+    let layout: MixerSectionLayout
+
+    private var isBusy: Bool { audioEngine.isPlaying || audioEngine.isRecording }
+
+    var body: some View {
+        StripSections(
+            layout: layout,
+            background: Color(red: 0.17, green: 0.17, blue: 0.18),
+            border: Color.white.opacity(0.55)
+        ) {
+            VStack(spacing: 2) {
+                SectionHeader(title: "POST") {
+                    InsertMenu(plugins: projectState.pluginManager.availablePlugins, disabled: isBusy) { plugin in
                         projectState.insertMasterPlugin(plugin)
                     }
                 }
-            } label: {
-                Label("Insert", systemImage: "plus.circle.fill")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .menuStyle(BorderlessButtonMenuStyle())
-            .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
-
-            ScrollView(.vertical, showsIndicators: true) {
-                ForEach(projectState.masterPlugins) { plugin in
-                    HStack(spacing: 4) {
-                        Button {
-                            projectState.toggleMasterPlugin(plugin.id)
-                        } label: {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 8))
-                                .foregroundColor(plugin.enabled ? .green : .gray)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                        PluginNameButton(
-                            name: plugin.menuDisplayName,
-                            pluginID: plugin.id,
-                            isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
-                            canReorder: !projectState.audioEngine.isPlaying && !projectState.audioEngine.isRecording,
-                            onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
-                            onMove: { sourceID in
-                                projectState.moveMasterPlugin(sourceID, before: plugin.id)
-                            }
-                        )
-                        Button {
-                            DispatchQueue.main.async {
-                                projectState.removeMasterPlugin(plugin.id)
-                            }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 9))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                }
-            }
-            .frame(maxHeight: 90)
-            .scrollIndicators(.visible)
-            Spacer(minLength: 0)
-        }
-        .padding(8)
-        .frame(width: 185, height: 320, alignment: .top)
-        .background(Color(red: 0.18, green: 0.18, blue: 0.19))
-        .overlay(
-            RoundedRectangle(cornerRadius: 3)
-                .stroke(Color.white.opacity(0.65), lineWidth: 1)
-        )
-    }
-}
-
-private struct MixerChannelView: View {
-    @ObservedObject var track: AudioTrack
-    @ObservedObject var projectState: ProjectState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Rectangle()
-                    .fill(track.color)
-                    .frame(width: 3, height: 16)
-                Text(track.name)
-                    .font(.system(size: 10, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-
-            MixerLevelMeter(
-                peak: track.isRecordArmed ? track.currentInputPeak : track.currentOutputPeak,
-                label: track.isRecordArmed ? "REC IN" : "OUT"
-            )
-
-            HStack(spacing: 4) {
-                Button("M") { projectState.toggleMute(for: track) }
-                    .buttonStyle(MixerButtonStyle(active: track.isMuted, color: .cyan))
-                Button("S") { projectState.toggleSolo(for: track) }
-                    .buttonStyle(MixerButtonStyle(active: track.isSoloed, color: .yellow))
-            }
-
-            HStack(spacing: 6) {
-                Text("Vol")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                Slider(value: $track.volume, in: 0.0...1.5)
-                    .accentColor(.cyan)
-                    .onChange(of: track.volume) { _ in
-                        projectState.audioEngine.updateMixerLevels(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels
-                        )
-                    }
-            }
-
-            HStack(spacing: 6) {
-                Text("Pan")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                Slider(value: $track.pan, in: -1.0...1.0)
-                    .accentColor(.green)
-                    .onChange(of: track.pan) { _ in
-                        projectState.audioEngine.updateMixerLevels(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels
-                        )
-                    }
-            }
-
-            Menu {
-                ForEach(projectState.pluginManager.availablePlugins) { plugin in
-                    Button {
-                        projectState.insertPlugin(plugin, into: track.id)
-                    } label: {
-                        HStack {
-                            Text(plugin.menuDisplayName)
-                        }
-                    }
-                }
-            } label: {
-                Label("Insert", systemImage: "plus.circle.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.8))
-            }
-            .menuStyle(BorderlessButtonMenuStyle())
-            .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
-
-            if !track.plugins.isEmpty {
                 ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(track.plugins) { plugin in
-                            HStack(spacing: 4) {
-                                Button {
-                                    projectState.togglePlugin(plugin.id, on: track.id)
-                                } label: {
-                                    Image(systemName: "circle.fill")
-                                        .font(.system(size: 8))
-                                        .foregroundColor(plugin.enabled ? .green : .gray)
+                    VStack(spacing: 2) {
+                        ForEach(projectState.masterPlugins) { plugin in
+                            PluginRow(
+                                plugin: plugin,
+                                isUnavailable: audioEngine.isPluginUnavailable(plugin.id),
+                                canReorder: !isBusy,
+                                onToggle: { projectState.toggleMasterPlugin(plugin.id) },
+                                onOpen: { audioEngine.openPluginUI(pluginID: plugin.id) },
+                                onMove: { sourceID in projectState.moveMasterPlugin(sourceID, before: plugin.id) },
+                                onRemove: {
+                                    DispatchQueue.main.async { projectState.removeMasterPlugin(plugin.id) }
                                 }
-                                .buttonStyle(PlainButtonStyle())
-                                .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                                PluginNameButton(
-                                    name: plugin.menuDisplayName,
-                                    pluginID: plugin.id,
-                                    isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
-                                    canReorder: !projectState.audioEngine.isPlaying && !projectState.audioEngine.isRecording,
-                                    onOpen: { projectState.openPluginUI(plugin.id, on: track.id) },
-                                    onMove: { sourceID in
-                                        projectState.movePlugin(sourceID, before: plugin.id, on: track.id)
-                                    }
-                                )
-                                .help("Open AU plugin window")
-
-                                Button {
-                                    projectState.removePlugin(plugin.id, from: track.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 9))
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            }
+                            )
                         }
                     }
+                    .padding(.horizontal, 3)
                 }
-                .frame(maxHeight: 90)
-                .scrollIndicators(.visible)
             }
-
-            if !projectState.fxChannels.isEmpty {
-                Divider()
-                Text("Sends")
+        } sends: {
+            Color.clear
+        } controls: {
+            VStack(spacing: 4) {
+                Text("STEREO OUT")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(projectState.fxChannels) { fxChannel in
-                            let send = track.fxSends.first(where: { $0.fxChannelID == fxChannel.id })
-                            HStack(spacing: 3) {
-                                Text(fxChannel.name)
-                                    .font(.system(size: 8))
-                                    .lineLimit(1)
-                                Slider(
-                                    value: Binding(
-                                        get: { send?.level ?? 0.0 },
-                                        set: { projectState.setSend(trackID: track.id, fxChannelID: fxChannel.id, level: $0) }
-                                    ),
-                                    in: 0.0...1.0
-                                )
-                                .accentColor(.purple)
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 90)
-                .scrollIndicators(.visible)
+                    .foregroundColor(.white.opacity(0.45))
+                    .frame(height: 30)
+                Color.clear.frame(height: 20)
+                FaderColumn(
+                    gain: Binding(
+                        get: { audioEngine.masterVolume },
+                        set: { audioEngine.masterVolume = $0 }
+                    ),
+                    peak: audioEngine.masterStereoPeak,
+                    tint: Color(white: 0.9),
+                    onChange: {}
+                )
+                StripFooter(name: "MASTER", color: .white)
             }
-
-            Spacer(minLength: 0)
-        }
-        .padding(8)
-        .frame(width: 185, height: 320, alignment: .top)
-        .background(
-            track.id == projectState.selectedTrackId
-                ? Color(red: 0.18, green: 0.20, blue: 0.24)
-                : Color(red: 0.13, green: 0.14, blue: 0.16)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 3)
-                .stroke(track.color.opacity(0.45), lineWidth: 1)
-        )
-        .onTapGesture {
-            projectState.selectedTrackId = track.id
+            .padding(.top, 4)
         }
     }
 }
@@ -332,8 +575,29 @@ struct MixerLevelMeter: View {
         peak > 0.001 ? 20.0 * log10(Double(peak)) : -60.0
     }
 
+    // Logic Pro-style scale (measured from its meter): the top 24 dB get
+    // almost half the length, lower levels are progressively compressed.
+    private static let scale: [(db: Double, fraction: Double)] = [
+        (-60, 0.0), (-50, 0.09), (-45, 0.16), (-40, 0.2267), (-35, 0.2967),
+        (-30, 0.3667), (-24, 0.4567), (-21, 0.5267), (-18, 0.5967), (-15, 0.6633),
+        (-12, 0.73), (-9, 0.7967), (-6, 0.8667), (-3, 0.93), (0, 1.0)
+    ]
+
+    static func fraction(forDecibels db: Double) -> CGFloat {
+        guard db > scale[0].db else { return 0 }
+        guard db < 0 else { return 1 }
+        for (lower, upper) in zip(scale, scale.dropFirst()) where db <= upper.db {
+            let t = (db - lower.db) / (upper.db - lower.db)
+            return CGFloat(lower.fraction + t * (upper.fraction - lower.fraction))
+        }
+        return 1
+    }
+
+    private static let yellowStart = fraction(forDecibels: -12)
+    private static let redStart = fraction(forDecibels: -6)
+
     private var meterFraction: CGFloat {
-        CGFloat(min(1.0, max(0.0, (decibels + 60.0) / 60.0)))
+        Self.fraction(forDecibels: decibels)
     }
 
     var body: some View {
@@ -354,9 +618,9 @@ struct MixerLevelMeter: View {
                         .fill(Color.black.opacity(0.7))
 
                     HStack(spacing: 1) {
-                        meterSegment(.green, fraction: 0.8, activeFraction: meterFraction, totalWidth: geometry.size.width)
-                        meterSegment(.yellow, fraction: 0.1, activeFraction: meterFraction, startFraction: 0.8, totalWidth: geometry.size.width)
-                        meterSegment(.red, fraction: 0.1, activeFraction: meterFraction, startFraction: 0.9, totalWidth: geometry.size.width)
+                        meterSegment(.green, fraction: Self.yellowStart, activeFraction: meterFraction, totalWidth: geometry.size.width)
+                        meterSegment(.yellow, fraction: Self.redStart - Self.yellowStart, activeFraction: meterFraction, startFraction: Self.yellowStart, totalWidth: geometry.size.width)
+                        meterSegment(.red, fraction: 1 - Self.redStart, activeFraction: meterFraction, startFraction: Self.redStart, totalWidth: geometry.size.width)
                     }
                     .frame(width: geometry.size.width)
                 }
@@ -381,119 +645,6 @@ struct MixerLevelMeter: View {
                 .animation(.easeOut(duration: 0.06), value: activeFraction)
         }
         .frame(width: totalWidth * fraction, height: 7)
-    }
-}
-
-private struct FXChannelView: View {
-    @ObservedObject var channel: FXChannel
-    @ObservedObject var projectState: ProjectState
-    @ObservedObject var audioEngine: AudioEngineManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Rectangle()
-                    .fill(channel.color)
-                    .frame(width: 3, height: 16)
-                Text(channel.name)
-                    .font(.system(size: 10, weight: .semibold))
-                Spacer()
-                Button {
-                    projectState.removeFXChannel(id: channel.id)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-
-            Text("STEREO RETURN")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundColor(.purple.opacity(0.8))
-
-            HStack(spacing: 6) {
-                Text("Vol")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                Slider(value: $channel.volume, in: 0.0...1.5)
-                    .accentColor(.purple)
-                    .onChange(of: channel.volume) { _ in
-                        projectState.audioEngine.updateMixerLevels(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels
-                        )
-                    }
-            }
-            HStack(spacing: 6) {
-                Text("Pan")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                Slider(value: $channel.pan, in: -1.0...1.0)
-                    .accentColor(.purple)
-                    .onChange(of: channel.pan) { _ in
-                        projectState.audioEngine.updateMixerLevels(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels
-                        )
-                    }
-            }
-
-            Menu {
-                ForEach(projectState.pluginManager.availablePlugins) { plugin in
-                    Button(plugin.menuDisplayName) {
-                        projectState.insertPlugin(plugin, intoFX: channel.id)
-                    }
-                }
-            } label: {
-                Label("Insert FX", systemImage: "plus.circle.fill")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .menuStyle(BorderlessButtonMenuStyle())
-            .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-
-            ScrollView(.vertical, showsIndicators: true) {
-                ForEach(channel.plugins) { plugin in
-                    HStack(spacing: 4) {
-                        Button {
-                            projectState.togglePlugin(plugin.id, onFX: channel.id)
-                        } label: {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 8))
-                                .foregroundColor(plugin.enabled ? .green : .gray)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .accessibilityLabel(plugin.enabled ? "Disable plugin" : "Enable plugin")
-                        PluginNameButton(
-                            name: plugin.menuDisplayName,
-                            pluginID: plugin.id,
-                            isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
-                            canReorder: !audioEngine.isPlaying && !audioEngine.isRecording,
-                            onOpen: { projectState.audioEngine.openPluginUI(pluginID: plugin.id) },
-                            onMove: { sourceID in
-                                projectState.movePlugin(sourceID, before: plugin.id, onFX: channel.id)
-                            }
-                        )
-                        Button {
-                            projectState.removePlugin(plugin.id, fromFX: channel.id)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 9))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                }
-            }
-            .frame(maxHeight: 90)
-            .scrollIndicators(.visible)
-            Spacer(minLength: 0)
-        }
-        .padding(8)
-        .frame(width: 185, height: 320, alignment: .top)
-        .background(Color(red: 0.16, green: 0.12, blue: 0.20))
-        .overlay(
-            RoundedRectangle(cornerRadius: 3)
-                .stroke(channel.color.opacity(0.6), lineWidth: 1)
-        )
     }
 }
 

@@ -21,6 +21,7 @@ struct MyDAWApp: App {
     @StateObject private var projectState = ProjectState()
 
     init() {
+        PluginManager.runVST3ScanChildIfRequested()
         // Request microphone permission on app launch if needed
         requestAudioPermissions()
     }
@@ -41,7 +42,7 @@ struct MyDAWApp: App {
                 Button("About MyDAW") {
                     let version = Bundle.main.object(
                         forInfoDictionaryKey: "CFBundleShortVersionString"
-                    ) as? String ?? "1.2"
+                    ) as? String ?? "1.5"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationVersion: version
                     ])

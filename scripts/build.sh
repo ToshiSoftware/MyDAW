@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="1.3"
+BASE_VERSION="1.5"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -98,6 +98,8 @@ fi
 
 # Code signing with entitlements for audio input
 echo "Signing application bundle with entitlements..."
+# Google Drive attaches extended attributes that codesign rejects.
+xattr -cr "$APP_BUNDLE"
 codesign --force --deep --sign - --entitlements "MyDAW.entitlements" "$APP_BUNDLE"
 
 echo "========================================"

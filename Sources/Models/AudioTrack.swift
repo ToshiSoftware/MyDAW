@@ -1,6 +1,13 @@
 import Foundation
 import SwiftUI
 import AVFoundation
+import Combine
+
+/// Linear gain limits shared by every mixer fader and send.
+public enum MixerGain {
+    public static let unity: Float = 1.0
+    public static let maximum: Float = Float(pow(10.0, 6.0 / 20.0)) // +6 dB
+}
 
 public enum ChannelMode: String, CaseIterable, Identifiable, Codable {
     case mono = "Mono"
@@ -24,17 +31,24 @@ public final class AudioTrack: Identifiable, ObservableObject {
     @Published public var isRecordArmed: Bool    // Record mode vs Playback mode
     @Published public var isMuted: Bool
     @Published public var isSoloed: Bool
-    @Published public var volume: Float         // 0.0 ... 1.5 (1.0 = 0dB)
+    @Published public var isInputMonitoring: Bool // live input through the mixer while armed
+    @Published public var volume: Float         // 0.0 ... MixerGain.maximum (1.0 = 0dB)
     @Published public var pan: Float            // -1.0 ... 1.0 (0.0 = Center)
     @Published public var trackHeight: CGFloat
     @Published public var color: Color
     @Published public var audioFileURL: URL?
-    @Published public private(set) var clips: [AudioClip] = []
+    @Published public private(set) var clips: [AudioClip] = [] {
+        didSet { observeClips() }
+    }
+    // Overlap display of one clip depends on its neighbours, so any clip's
+    // change must re-render the whole lane.
+    private var clipObservers: [AnyCancellable] = []
     @Published public var plugins: [TrackPluginDescriptor] = []
     @Published public var fxSends: [FXSend] = []
     @Published public var selectedClipId: UUID?
     @Published public var currentInputPeak: Float = 0.0
     @Published public var currentOutputPeak: Float = 0.0
+    @Published public var outputStereoPeak: StereoPeak = .zero
 
     public init(
         id: UUID = UUID(),
@@ -44,6 +58,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         isRecordArmed: Bool = false,
         isMuted: Bool = false,
         isSoloed: Bool = false,
+        isInputMonitoring: Bool = false,
         volume: Float = 1.0,
         pan: Float = 0.0,
         trackHeight: CGFloat = 170.0,
@@ -59,6 +74,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         self.isRecordArmed = isRecordArmed
         self.isMuted = isMuted
         self.isSoloed = isSoloed
+        self.isInputMonitoring = isInputMonitoring
         self.volume = volume
         self.pan = pan
         self.trackHeight = max(120.0, trackHeight)
@@ -71,6 +87,15 @@ public final class AudioTrack: Identifiable, ObservableObject {
             let clip = AudioClip(startTime: 0.0, fileURL: audioFileURL)
             self.clips = [clip]
             clip.loadMetadata()
+        }
+        observeClips()
+    }
+
+    private func observeClips() {
+        clipObservers = clips.map { clip in
+            clip.objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
         }
     }
 

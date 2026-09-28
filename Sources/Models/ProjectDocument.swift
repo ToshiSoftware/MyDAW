@@ -125,6 +125,7 @@ public struct TrackDocument: Codable {
     public let isRecordArmed: Bool
     public let isMuted: Bool
     public let isSoloed: Bool
+    public let isInputMonitoring: Bool
     public let volume: Float
     public let pan: Float
     public let trackHeight: Double
@@ -135,7 +136,7 @@ public struct TrackDocument: Codable {
     public let fxSends: [FXSend]
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, channelMode, inputChannelIndex, isRecordArmed, isMuted, isSoloed
+        case id, name, channelMode, inputChannelIndex, isRecordArmed, isMuted, isSoloed, isInputMonitoring
         case volume, pan, trackHeight, color, selectedClipId, clips, plugins, fxSends
     }
 
@@ -147,6 +148,7 @@ public struct TrackDocument: Codable {
         isRecordArmed: Bool,
         isMuted: Bool,
         isSoloed: Bool,
+        isInputMonitoring: Bool = false,
         volume: Float,
         pan: Float,
         trackHeight: Double = 170.0,
@@ -163,6 +165,7 @@ public struct TrackDocument: Codable {
         self.isRecordArmed = isRecordArmed
         self.isMuted = isMuted
         self.isSoloed = isSoloed
+        self.isInputMonitoring = isInputMonitoring
         self.volume = volume
         self.pan = pan
         self.trackHeight = trackHeight
@@ -182,6 +185,7 @@ public struct TrackDocument: Codable {
         isRecordArmed = try values.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
         isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        isInputMonitoring = try values.decodeIfPresent(Bool.self, forKey: .isInputMonitoring) ?? false
         volume = try values.decodeIfPresent(Float.self, forKey: .volume) ?? 1.0
         pan = try values.decodeIfPresent(Float.self, forKey: .pan) ?? 0.0
         trackHeight = try values.decodeIfPresent(Double.self, forKey: .trackHeight) ?? 170.0

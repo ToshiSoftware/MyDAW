@@ -1,8 +1,8 @@
-# MyDAW - Audio Recording & Playback DAW Prototype (Mac / Apple Silicon)
+# MyDAW — Multitrack Audio DAW for Mac (Apple Silicon)
 
-A prototype of a Logic Pro-style multitrack audio recording and playback DAW (Digital Audio Workstation) with native support for Apple Silicon (Mac).
+**Version 1.5** · [日本語版 README](README_jp.md)
 
-It uses Core Audio (AVAudioEngine / CoreAudio HAL) as its backend and provides 24-bit 44.1 kHz / 48 kHz Direct-to-Disk recording, unlimited multitrack playback and mixing, real-time waveform rendering, and timeline/playhead control.
+MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
 [NOTE]
 This project was automatically generated using AI (Copilot, Antigravity). Please refer to the article below for details.
@@ -10,148 +10,114 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 * [Japanese, original] https://note.com/tokada375/n/n750bfe9ef3f7
 * [English, translated] https://note.com/tokada375/n/n750bfe9ef3f7?hl=en
 
+---
 
-## Main Features & Specifications
+## Documentation
 
-1. **Audio Specifications**
-   - **Sample Rate**: 44.1 kHz or 48.0 kHz (switchable instantly from the top of the screen)
-   - **Bit Depth**: 24-bit Linear PCM WAV (industry-standard format)
-   - **Track Format**: Mono (1ch) / Stereo (2ch)
-2. **Direct-to-Disk Recording**
-   - To prevent memory pressure and ensure stable operation during long recordings, audio is streamed immediately from the Core Audio input buffer to the SSD/HDD (the `Recordings/` folder) via a background I/O thread.
-3. **Core Audio Input Channel Selection**
-   - Detects the physical channels (Input 1, Input 2, Input 3...) of connected audio interfaces and built-in microphones.
-   - The input channel to be recorded can be individually assigned to each track from a drop-down menu.
-4. **Track Modes (Record Mode / Playback Mode)**
-   - **Record Mode (`[R]` button ON / lit red)**:
-     - Displays a real-time peak level meter for the input signal.
-     - When Start (Play/Record) is pressed, audio from the specified channel is recorded to disk as a 24-bit WAV file while the waveform is drawn in real time toward the right.
-   - **Playback Mode (`[R]` button OFF)**:
-     - Plays recorded audio files from the specified position.
-     - Audio from all playback tracks is mixed (summed) and played simultaneously through the master output.
-5. **Transport Controls**
-   - **Start (`▶` Play)**: Starts recording and playback.
-   - **Stop (`■` Stop)**: Finalizes the recording file and stops playback.
-   - **Rewind (`|<<` Rewind)**: Resets the playhead to `00:00.000`.
-   - **Ruler Click**: Seeks to the clicked timeline position.
-6. **Track Management (Unlimited Tracks)**
-   - Add unlimited mono or stereo tracks using the `+ Add Track` button.
-   - Each track includes track-name editing, mute (`[M]`), solo (`[S]`), a volume fader, and a pan pot.
-7. **Waveform Display & Playhead**
-   - Logic Pro-style dark-theme UI.
-   - Fast peak caching enables smooth scrolling and zooming of long audio using SwiftUI Canvas rendering.
-   - A vertical playhead bar (orange) fully synchronized with playback/recording.
-
-8. **Audio Plug-ins**
-   - Detects Audio Unit effects and VST3 audio effects in standard macOS plug-in locations.
-   - VST3 instruments are excluded from the effect list.
-   - AU and VST3 effects can be inserted on tracks, FX channels, and the master channel.
-   - VST3 track audio is processed in short blocks, so parameter changes during playback are applied without restarting transport.
-   - Plug-in state is saved in `.mydaw` project files and restored when the project is opened.
-   - The mixer displays inserted plug-ins with `AU:` or `VST:` prefixes.
-   - Relab LX480 AU uses Generic UI when multiple LX480 AU instances are present, because its custom editor has a known multi-instance limitation.
-
-9. **Startup**
-   - The main window appears while plug-ins are detected.
-   - A black, bordered startup log shows Audio Unit and VST3 detection progress and disappears when detection completes.
+| Document | Contents |
+| --- | --- |
+| [OperationManual_en.pdf](OperationManual_en.pdf) / [OperationManual_jp.pdf](OperationManual_jp.pdf) | User manual for first-time users |
+| [docs/PROJECT_ANALYSIS_en.md](docs/PROJECT_ANALYSIS_en.md) / [_jp](docs/PROJECT_ANALYSIS_jp.md) | System analysis: architecture, signal paths, threading, design decisions |
+| [docs/SOURCE_SPECIFICATION_en.md](docs/SOURCE_SPECIFICATION_en.md) / [_jp](docs/SOURCE_SPECIFICATION_jp.md) | Source specification per file and type |
 
 ---
 
-## Directory Structure
+## Features
 
-```text
+### Recording
+- 24-bit Linear PCM WAV, 44.1 / 48 kHz, mono or stereo tracks, written directly to disk.
+- Per-track input channel selection from any Core Audio interface.
+- Sample-accurate placement of takes, with automatic and manual latency compensation.
+- **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
+- **Input monitoring** (`I` button): hear the live input through the track's effects while it is armed (the recording stays dry).
+- Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume.
+
+### Editing
+- Move clips (also between tracks), trim both edges, clip gain, fade in/out, split, duplicate, delete, mute.
+- Undo / redo of clip edits, beat snap.
+- **Overlap layering**: the most recently added clip plays on top of older ones, with automatic equal-power crossfades at the boundaries. The fades of the upper clip drive the crossfades.
+- WAV import by drag and drop from Finder.
+
+### Mixing
+- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**.
+- dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
+- Tracks, FX channels (renamable) and a master channel. Sends are post-insert and post-pan.
+- Track colours selectable from a palette.
+
+### Plug-ins
+- Audio Unit and VST3 effects on tracks, FX channels and master; mixed in any order.
+- VST3 runs in real time inside the audio graph; GUI parameter changes are heard immediately.
+- VST3 discovery runs in a separate process with a cache; VST3s that also exist as an AU are hidden to avoid conflicts between the two builds.
+- Plug-in latency compensation and plug-in state saved with the project.
+
+### Project
+- One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
+- Master mix export to 24-bit WAV.
+
+---
+
+## Requirements
+
+- Apple Silicon Mac, macOS 13 or later
+- Xcode command line tools and CMake (for building)
+- A microphone or Core Audio audio interface; headphones or monitors
+
+---
+
+## Build and run
+
+The supported build is the shell script:
+
+```bash
+./scripts/build.sh      # builds the VST3 bridge (CMake) and the app
+open build/MyDAW.app    # launch
+
+./scripts/run.sh        # build and launch in one step
+```
+
+> You can also build with Xcode: open `MyDAW.xcodeproj` and choose Product > Build (⌘B), or run `xcodebuild -project MyDAW.xcodeproj -target MyDAW -configuration Release build`. The output goes to `build/Release/MyDAW.app`. The first build step compiles the VST3 bridge with CMake, which must be installed in `/opt/homebrew/bin` or `/usr/local/bin`. `Package.swift` is **not** kept in sync with the sources.
+
+When the project is inside a Google Drive folder, the script removes extended attributes before code signing.
+
+---
+
+## Quick start
+
+1. Launch MyDAW and choose **New Project** (pick a folder) or **Open Project**.
+2. Allow microphone access when macOS asks.
+3. Click the gear button and choose your input/output device and buffer size.
+4. Arm a track with **R**, choose its input channel, and check the meter moves.
+5. Press the red **Record** button to record and **Space** to stop.
+6. Press **Space** to play. Adjust levels in the mixer at the bottom.
+
+See the [Operation Manual](OperationManual_en.pdf) for step-by-step instructions.
+
+---
+
+## Directory layout
+
+```
 MyDAW/
-├── MyDAW.xcodeproj/          # Xcode project (can be launched by double-clicking)
-│   └── project.pbxproj
-├── Package.swift             # Swift Package Manager definition
-├── Info.plist                # App settings & microphone access permission definition (NSMicrophoneUsageDescription)
-├── MyDAW.entitlements        # macOS audio input & file access permissions
-├── Sources/
-│   ├── MyDAWApp.swift        # Application entry point (@main)
-│   ├── Models/
-│   │   ├── AudioTrack.swift  # Track data model (ID, name, R/M/S, volume, pan, etc.)
-│   │   ├── WaveformCache.swift # Fast peak calculation & real-time waveform cache
-│   │   └── ProjectState.swift # Project management (add/delete tracks, zoom, selection)
-│   ├── Audio/
-│   │   ├── AudioEngineManager.swift # Core Audio engine (AVAudioEngine)
-│   │   ├── AudioDiskWriter.swift    # 24-bit WAV Direct-to-Disk streamer
-│   │   └── AudioDeviceManager.swift # Core Audio hardware channel enumeration
-│   └── Views/
-│       ├── MainDAWView.swift        # Overall layout & status bar
-│       ├── TransportBarView.swift   # Transport controls & LCD display
-│       ├── ArrangerView.swift       # Arranger view (track headers + timeline)
-│       ├── TrackHeaderView.swift    # Track controls (R, M, S, input selection, meter, fader)
-│       ├── WaveformLaneView.swift   # Track waveform lane
-│       └── WaveformCanvas.swift     # SwiftUI Canvas waveform renderer
-├── VST3Host/                        # C++ VST3 hosting bridge and probe
-├── ThirdParty/vst3sdk/              # Steinberg VST3 SDK
-├── scripts/
-│   ├── build.sh              # One-click build script from the command line
-│   └── run.sh                # Build & launch script
-```
-
-The repository root does not require a `Recordings/` directory. MyDAW manages recordings inside the folder of the currently opened project. Any `Recordings/` directory left at the repository root is legacy recording data and is not part of the current project structure.
-
-### Project folders
-
-Each project is managed as a folder containing its `.mydaw` project file and its recording data. MyDAW creates and uses the recording folder for the project when a project is created or opened. To move a project to another Mac or environment, copy or ZIP the complete project folder so that the project file and its recordings stay together. Install required AU/VST3 plug-ins separately on the destination system.
-
----
-
-## How to Build & Run
-
-You can build and run the application from either **Xcode** or the **Terminal**, depending on your preference.
-
-### Method 1: Using Xcode (Recommended)
-
-1. Double-click `MyDAW.xcodeproj` in Finder to open it in Xcode.
-2. Confirm that the target at the top of the window is `MyDAW` (My Mac).
-3. Press `⌘R` (Product -> Run) to build and immediately launch the application.
-
-### Method 2: Build & Run from the Terminal
-
-Run the following script from the project's root directory.
-
-```bash
-# Build and launch
-./scripts/run.sh
-```
-
-
-```bash
-./scripts/build.sh
-# Launch the generated application
-open build/MyDAW.app
+├── Sources/            Swift sources (Models / Audio / Views)
+├── VST3Host/           C++ VST3 host bridge
+├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
+├── scripts/            build.sh, run.sh
+├── docs/               Analysis, specification, manual sources (docs/manual)
+├── OperationManual_*.pdf
+└── snapshots/          Source snapshots taken around each change
 ```
 
 ---
 
-## Basic Usage
+## Known limitations
 
-1. **Microphone Permission on First Launch**:
-   - When macOS displays the dialog saying `"MyDAW" would like to access the microphone`, click **OK**.
-2. **Arm a Track for Recording**:
-   - Click the `[R]` button on the track you want to record so that it lights up red.
-   - Select the interface input channel from the drop-down menu, such as `Input 1` or `Input 2`.
-   - Make a sound into the microphone and confirm that the level meter in the track header moves from green to yellow.
-3. **Start Recording**:
-   - Press the `▶` (Play) button in the top transport bar, or press the `Space` key.
-   - Recording starts, and the input waveform extends in real time along the timeline. At the same time, any previously recorded tracks are automatically played back (monitored).
-4. **Stop Recording**:
-   - Press the `■` (Stop) button or the `Space` key.
-   - The recorded audio is finalized and saved as a 24-bit WAV file in the `Recordings/` folder and displayed as a static waveform.
-5. **Rewind & Play All Tracks**:
-   - Press the `|<<` (Rewind) button to return the playback cursor to `00:00.000`.
-   - Turn the track's `[R]` button off to put that track into "Playback Mode."
-   - Press the `▶` (Play) button to mix and play all recorded tracks through the speakers/headphones.
-6. **Add & Delete Tracks**:
-   - Press the `+ Add Track` button at the top to add as many stereo or mono tracks as needed.
+- VST3 instruments are not supported (effects only).
+- Changing the device sample rate with a project open requires VST3 plug-ins to be re-inserted.
+- Plug-ins can be inserted, removed and reordered only while stopped.
+- Relab LX480 uses the Generic UI when several instances exist (known GUI limitation of the plug-in).
 
-7. **Insert Plug-ins**:
-   - Open the plug-in menu in a track, FX channel, or master channel.
-   - Click an inserted plug-in name in the mixer to open its editor.
-   - Removing a plug-in also closes its open editor window.
+---
 
 ## Version
 
-The current About dialog version is **1.2**.
+The About dialog shows version **1.5**.

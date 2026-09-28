@@ -9,6 +9,8 @@ public final class FXChannel: Identifiable, ObservableObject {
     @Published public var pan: Float
     @Published public var plugins: [TrackPluginDescriptor]
     @Published public var color: Color
+    @Published public var currentOutputPeak: Float = 0.0
+    @Published public var outputStereoPeak: StereoPeak = .zero
 
     public init(
         id: UUID = UUID(),
