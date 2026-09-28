@@ -274,7 +274,9 @@ private struct AudioClipView: View {
                                     topY: trackTopY(for: track.id) + 2.0,
                                     width: clipWidth,
                                     height: max(20.0, height),
-                                    color: track.color
+                                    color: track.color,
+                                    clip: clip,
+                                    isStereo: track.channelMode == .stereo
                                 )
                                 projectState.selectClip(trackId: track.id, clipId: clip.id)
                             }

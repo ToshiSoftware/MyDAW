@@ -12,6 +12,8 @@ public struct ClipDragPreview {
     public let width: CGFloat
     public let height: CGFloat
     public let color: Color
+    public let clip: AudioClip?
+    public let isStereo: Bool
 
     public init(
         clipID: UUID,
@@ -19,7 +21,9 @@ public struct ClipDragPreview {
         topY: CGFloat,
         width: CGFloat,
         height: CGFloat,
-        color: Color
+        color: Color,
+        clip: AudioClip? = nil,
+        isStereo: Bool = false
     ) {
         self.clipID = clipID
         self.startTime = startTime
@@ -27,6 +31,8 @@ public struct ClipDragPreview {
         self.width = width
         self.height = height
         self.color = color
+        self.clip = clip
+        self.isStereo = isStereo
     }
 }
 
@@ -682,7 +688,9 @@ public final class ProjectState: ObservableObject {
         topY: CGFloat,
         width: CGFloat,
         height: CGFloat,
-        color: Color
+        color: Color,
+        clip: AudioClip? = nil,
+        isStereo: Bool = false
     ) {
         clipDragPreview = ClipDragPreview(
             clipID: clipID,
@@ -690,7 +698,9 @@ public final class ProjectState: ObservableObject {
             topY: topY,
             width: width,
             height: height,
-            color: color
+            color: color,
+            clip: clip,
+            isStereo: isStereo
         )
     }
 
@@ -702,7 +712,9 @@ public final class ProjectState: ObservableObject {
             topY: topY,
             width: preview.width,
             height: preview.height,
-            color: preview.color
+            color: preview.color,
+            clip: preview.clip,
+            isStereo: preview.isStereo
         )
     }
 

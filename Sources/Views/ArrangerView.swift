@@ -27,6 +27,29 @@ public struct ArrangerView: View {
         self.audioEngine = audioEngine
     }
 
+    // Waveform drawn inside the drag preview so the clip content stays visible while moving
+    @ViewBuilder
+    private func clipDragPreviewWaveform(clip: AudioClip, isStereo: Bool, color: Color) -> some View {
+        let verticalScale = projectState.waveformVerticalScale * CGFloat(pow(10.0, clip.gainDB / 20.0))
+        let channels: [Int?] = isStereo ? [0, 1] : [nil]
+        VStack(spacing: 1) {
+            ForEach(channels.indices, id: \.self) { index in
+                WaveformCanvas(
+                    waveformCache: clip.waveformCache,
+                    trackColor: color,
+                    sampleRate: clip.sampleRate,
+                    pixelsPerSecond: projectState.pixelsPerSecond,
+                    sampleOffset: clip.sourceStartTime,
+                    visibleDuration: clip.duration,
+                    channelIndex: channels[index],
+                    verticalScale: verticalScale,
+                    fadeInDuration: clip.fadeInDuration,
+                    fadeOutDuration: clip.fadeOutDuration
+                )
+            }
+        }
+    }
+
     public var body: some View {
         GeometryReader { viewport in
             VStack(spacing: 0) {
@@ -103,6 +126,13 @@ public struct ArrangerView: View {
                                         RoundedRectangle(cornerRadius: 3)
                                             .fill(preview.color.opacity(0.18))
                                             .frame(width: preview.width, height: preview.height)
+                                            .overlay {
+                                                if let clip = preview.clip {
+                                                    clipDragPreviewWaveform(clip: clip, isStereo: preview.isStereo, color: preview.color)
+                                                        .opacity(clip.isMuted ? 0.35 : 0.85)
+                                                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                                                }
+                                            }
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 3)
                                                     .stroke(
