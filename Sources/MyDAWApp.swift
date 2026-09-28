@@ -37,6 +37,7 @@ struct MyDAWApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1400, height: 900)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About MyDAW") {
