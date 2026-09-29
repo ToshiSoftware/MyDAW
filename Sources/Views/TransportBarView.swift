@@ -174,8 +174,8 @@ public struct TransportBarView: View {
                         .cornerRadius(5)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .disabled(projectState.audioEngine.isRecording || !projectState.tracks.contains { $0.selectedClipId != nil })
-                .help("Delete Selected Recording")
+                .disabled(projectState.audioEngine.isRecording || !projectState.hasSelection)
+                .help("Delete Selected Recordings or Range")
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")
@@ -221,7 +221,7 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Audio Buffer Settings")
+                .help("Settings")
 
                 Button(action: { projectState.snapToGrid.toggle() }) {
                     Image(systemName: projectState.snapToGrid ? "square.grid.3x3.fill" : "square.grid.3x3")
@@ -315,26 +315,8 @@ public struct TransportBarView: View {
                     }
                 }
 
-                Divider()
-                    .frame(height: 24)
-                    .background(Color.white.opacity(0.15))
-
-                // Direct to Disk Indicator
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("STORAGE")
-                        .font(.system(size: 8, weight: .black))
-                        .foregroundColor(.white.opacity(0.4))
-                    HStack(spacing: 4) {
-                        Image(systemName: "internaldrive.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.green)
-                        Text("Direct to Disk")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
-                    }
-                }
             }
-            .frame(width: 520, height: 38, alignment: .leading)
+            .frame(height: 38, alignment: .leading)
             .layoutPriority(1)
             .fixedSize(horizontal: true, vertical: true)
             .padding(.horizontal, 14)
@@ -448,6 +430,12 @@ public struct TransportBarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+        // When the window is narrower than the bar, pin it to the left and
+        // cut off the right end, so the transport buttons stay visible
+        // (by default the overflow is centred, clipping both ends).
+        // minWidth 0: without it the frame grows to the bar's full width.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .clipped()
         .background(Color(red: 0.16, green: 0.17, blue: 0.20))
         .overlay(
             Rectangle()
@@ -457,7 +445,13 @@ public struct TransportBarView: View {
         .sheet(isPresented: $showingBufferSettings) {
             BufferSettingsView(
                 deviceManager: projectState.deviceManager,
-                audioEngine: audioEngine
+                audioEngine: audioEngine,
+                onAudioDevicesChanged: {
+                    // Let the sheet close before the modal alert appears.
+                    DispatchQueue.main.async {
+                        projectState.promptRestartForAudioSettings()
+                    }
+                }
             )
         }
     }
@@ -466,6 +460,9 @@ public struct TransportBarView: View {
 private struct BufferSettingsView: View {
     @ObservedObject var deviceManager: AudioDeviceManager
     @ObservedObject var audioEngine: AudioEngineManager
+    /// Called after a change that needs a restart (device, sample rate or
+    /// language) was applied.
+    let onAudioDevicesChanged: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedBufferSize: Int
     @State private var selectedInputDeviceID: AudioDeviceID
@@ -473,13 +470,19 @@ private struct BufferSettingsView: View {
     @State private var selectedSampleRate: Double
     @State private var recordingCompensationText: String
     @State private var clickTimingOffsetText: String
+    @State private var selectedLanguage = AppLanguage.current
 
     private let bufferSizes = [128, 256, 512, 1024, 2048, 4096]
     private let sampleRates = [44100.0, 48000.0, 88200.0, 96000.0]
 
-    init(deviceManager: AudioDeviceManager, audioEngine: AudioEngineManager) {
+    init(
+        deviceManager: AudioDeviceManager,
+        audioEngine: AudioEngineManager,
+        onAudioDevicesChanged: @escaping () -> Void
+    ) {
         self.deviceManager = deviceManager
         self.audioEngine = audioEngine
+        self.onAudioDevicesChanged = onAudioDevicesChanged
         _selectedBufferSize = State(initialValue: deviceManager.bufferFrameSize)
         _selectedInputDeviceID = State(initialValue: deviceManager.selectedInputDeviceID)
         _selectedOutputDeviceID = State(initialValue: deviceManager.selectedOutputDeviceID)
@@ -512,7 +515,7 @@ private struct BufferSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Audio Buffer Settings")
+            Text("Settings")
                 .font(.headline)
 
             Text("Input and output devices use the same Core Audio buffer size.")
@@ -530,6 +533,13 @@ private struct BufferSettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+
+            Picker("Language", selection: $selectedLanguage) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(verbatim: language.displayName).tag(language)
+                }
+            }
+            .pickerStyle(.menu)
 
             Picker("Input device", selection: $selectedInputDeviceID) {
                 ForEach(deviceManager.inputDevices) { device in
@@ -611,6 +621,11 @@ private struct BufferSettingsView: View {
                         selectedOutputDeviceID != deviceManager.selectedOutputDeviceID
                     let sampleRateChanged = abs(selectedSampleRate - audioEngine.hardwareSampleRate) > 0.5
                     let bufferChanged = selectedBufferSize != deviceManager.bufferFrameSize
+                    var needsRestart = false
+                    if selectedLanguage != AppLanguage.current {
+                        AppLanguage.select(selectedLanguage)
+                        needsRestart = true
+                    }
 
                     if devicesChanged || sampleRateChanged {
                         let applied = audioEngine.applyAudioDevices(
@@ -623,6 +638,7 @@ private struct BufferSettingsView: View {
                                 input: selectedInputDeviceID,
                                 output: selectedOutputDeviceID
                             )
+                            needsRestart = true
                         }
                     }
                     if bufferChanged,
@@ -630,6 +646,9 @@ private struct BufferSettingsView: View {
                         audioEngine.applyInputBufferFrameSize(selectedBufferSize)
                     }
                     dismiss()
+                    if needsRestart {
+                        onAudioDevicesChanged()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }

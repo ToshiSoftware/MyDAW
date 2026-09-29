@@ -50,12 +50,12 @@ struct WindowCloseHandler: NSViewRepresentable {
             }
 
             let alert = NSAlert()
-            alert.messageText = "Save changes to MyDAW?"
-            alert.informativeText = "保存してからMyDAWを終了しますか？"
+            alert.messageText = String(localized: "Save changes to MyDAW?")
+            alert.informativeText = String(localized: "Do you want to save the project before quitting MyDAW?")
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Don't Save")
-            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: String(localized: "Save"))
+            alert.addButton(withTitle: String(localized: "Don't Save"))
+            alert.addButton(withTitle: String(localized: "Cancel"))
 
             switch alert.runModal() {
             case .alertFirstButtonReturn:

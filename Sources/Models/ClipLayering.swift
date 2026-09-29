@@ -1,5 +1,65 @@
 import Foundation
 
+/// Shape of a clip's fade-in or fade-out.
+public enum FadeCurve: Codable, Equatable, Sendable {
+    /// Linear against silence, equal-power where it crosses a lower clip.
+    case auto
+    /// sin/cos quarter wave: constant power across a crossfade.
+    case equalPower
+    /// Power curve with the given gain at the fade's halfway point:
+    /// 0.5 is linear, above bows up (fast start), below sags (slow start).
+    case bend(midpoint: Double)
+
+    public static let linear = FadeCurve.bend(midpoint: 0.5)
+    public static let midpointRange: ClosedRange<Double> = 0.05...0.95
+
+    /// The concrete curve used for a fade; only `.auto` depends on whether
+    /// the fade crosses audio of a lower clip.
+    public func resolved(crossfade: Bool) -> FadeCurve {
+        self == .auto ? (crossfade ? .equalPower : .linear) : self
+    }
+
+    /// Gain at the halfway point of the fade (for a resolved curve).
+    public var midpointGain: Double {
+        switch self {
+        case .auto: return 0.5
+        case .equalPower: return sin(Double.pi / 4)
+        case .bend(let midpoint): return midpoint
+        }
+    }
+
+    /// The curve whose halfway gain is `midpoint`, snapping to linear and
+    /// equal power when close to them.
+    public static func withMidpoint(_ midpoint: Double) -> FadeCurve {
+        let value = min(midpointRange.upperBound, max(midpointRange.lowerBound, midpoint))
+        if abs(value - FadeCurve.equalPower.midpointGain) < 0.02 { return .equalPower }
+        if abs(value - 0.5) < 0.02 { return .linear }
+        return .bend(midpoint: value)
+    }
+
+    public var title: String {
+        switch self {
+        case .auto: return String(localized: "Auto")
+        case .equalPower: return String(localized: "Equal Power")
+        case .bend(let midpoint):
+            return midpoint == 0.5 ? String(localized: "Linear") : String(localized: "Custom")
+        }
+    }
+
+    /// Gain for fade progress `ramp` (0 = silent end, 1 = full level).
+    public func value(_ ramp: Double) -> Double {
+        let r = min(1.0, max(0.0, ramp))
+        switch self {
+        case .auto: return r
+        case .equalPower: return sin(r * .pi / 2)
+        case .bend(let midpoint):
+            // r^p passes through (0.5, midpoint).
+            let exponent = log(midpoint) / log(0.5)
+            return pow(r, exponent)
+        }
+    }
+}
+
 /// Timeline extent of one clip, in layer order (later clips are on top).
 public struct ClipLayerSpan: Sendable, Equatable {
     public let id: UUID
@@ -8,21 +68,35 @@ public struct ClipLayerSpan: Sendable, Equatable {
     public let fadeIn: Double
     public let fadeOut: Double
     public let isMuted: Bool
+    public let fadeInCurve: FadeCurve
+    public let fadeOutCurve: FadeCurve
 
-    public init(id: UUID, start: Double, end: Double, fadeIn: Double, fadeOut: Double, isMuted: Bool) {
+    public init(
+        id: UUID,
+        start: Double,
+        end: Double,
+        fadeIn: Double,
+        fadeOut: Double,
+        isMuted: Bool,
+        fadeInCurve: FadeCurve = .auto,
+        fadeOutCurve: FadeCurve = .auto
+    ) {
         self.id = id
         self.start = start
         self.end = end
         self.fadeIn = fadeIn
         self.fadeOut = fadeOut
         self.isMuted = isMuted
+        self.fadeInCurve = fadeInCurve
+        self.fadeOutCurve = fadeOutCurve
     }
 }
 
 /// Overlap rules shared by playback and drawing: where clips overlap, the
 /// upper (later) clip plays and the lower one is silenced. Across the upper
 /// clip's fades the lower clip gets the complementary fade, so the upper
-/// clip's fade handles act as crossfades. Nothing is stored; it is derived
+/// clip's fade handles act as crossfades. The fade's `FadeCurve` sets the
+/// shape of both sides. Nothing is stored; it is derived
 /// from clip positions, so moving or deleting the upper clip restores the
 /// lower one.
 public enum ClipLayering {
@@ -53,7 +127,9 @@ public enum ClipLayering {
                 end: clip.startTime + max(0.0, available),
                 fadeIn: clip.fadeInDuration,
                 fadeOut: clip.fadeOutDuration,
-                isMuted: clip.isMuted
+                isMuted: clip.isMuted,
+                fadeInCurve: clip.fadeInCurve,
+                fadeOutCurve: clip.fadeOutCurve
             )
         }
     }
@@ -72,8 +148,8 @@ public enum ClipLayering {
         span.fadeOut > 0 ? clamp01((span.end - t) / span.fadeOut) : 1.0
     }
 
-    /// A fade that crosses audio of a lower clip is an equal-power crossfade;
-    /// a fade against silence keeps the plain linear shape.
+    /// True when the fade crosses audio of a lower clip (a crossfade) rather
+    /// than silence; `.auto` curves pick their shape from this.
     private static func isCrossfade(_ spans: [ClipLayerSpan], _ index: Int, atStart: Bool) -> Bool {
         let span = spans[index]
         let from = atStart ? span.start : span.end - span.fadeOut
@@ -83,19 +159,29 @@ public enum ClipLayering {
         }
     }
 
-    private static func shaped(_ ramp: Double, equalPower: Bool) -> Double {
-        equalPower ? sin(ramp * .pi / 2) : ramp
+    private static func curve(_ spans: [ClipLayerSpan], _ index: Int, atStart: Bool) -> FadeCurve {
+        let span = spans[index]
+        return (atStart ? span.fadeInCurve : span.fadeOutCurve)
+            .resolved(crossfade: isCrossfade(spans, index, atStart: atStart))
     }
 
-    private static func complement(_ ramp: Double, equalPower: Bool) -> Double {
-        equalPower ? cos(ramp * .pi / 2) : 1.0 - ramp
+    /// Gain the lower clip keeps under an upper clip's fade: the same curve
+    /// mirrored in time (so equal power gives sin/cos, linear gives 1 - r).
+    private static func complement(_ ramp: Double, curve: FadeCurve) -> Double {
+        curve.value(1.0 - ramp)
+    }
+
+    /// The fade shape to draw for a clip edge, with `.auto` resolved.
+    public static func resolvedCurve(_ spans: [ClipLayerSpan], clip id: UUID, atStart: Bool) -> FadeCurve {
+        guard let index = spans.firstIndex(where: { $0.id == id }) else { return .linear }
+        return curve(spans, index, atStart: atStart)
     }
 
     /// The clip's own fade envelope at `t` (1 outside its fades).
     private static func ownGain(_ spans: [ClipLayerSpan], _ index: Int, _ t: Double) -> Double {
         let span = spans[index]
-        let fadeIn = shaped(fadeInRamp(span, t), equalPower: isCrossfade(spans, index, atStart: true))
-        let fadeOut = shaped(fadeOutRamp(span, t), equalPower: isCrossfade(spans, index, atStart: false))
+        let fadeIn = curve(spans, index, atStart: true).value(fadeInRamp(span, t))
+        let fadeOut = curve(spans, index, atStart: false).value(fadeOutRamp(span, t))
         return min(fadeIn, fadeOut)
     }
 
@@ -103,8 +189,8 @@ public enum ClipLayering {
     private static func mask(_ spans: [ClipLayerSpan], upper index: Int, _ t: Double) -> Double {
         let upper = spans[index]
         guard !upper.isMuted, t >= upper.start, t < upper.end else { return 1.0 }
-        let throughIn = complement(fadeInRamp(upper, t), equalPower: isCrossfade(spans, index, atStart: true))
-        let throughOut = complement(fadeOutRamp(upper, t), equalPower: isCrossfade(spans, index, atStart: false))
+        let throughIn = complement(fadeInRamp(upper, t), curve: curve(spans, index, atStart: true))
+        let throughOut = complement(fadeOutRamp(upper, t), curve: curve(spans, index, atStart: false))
         return max(throughIn, throughOut)
     }
 
@@ -119,6 +205,14 @@ public enum ClipLayering {
             if value == 0 { break }
         }
         return value
+    }
+
+    /// The clip's playback envelope as a function of seconds from its start,
+    /// or nil when it plays at unity throughout (no fades, nothing on top).
+    public static func envelope(_ spans: [ClipLayerSpan], clip id: UUID) -> ((Double) -> Double)? {
+        guard let span = spans.first(where: { $0.id == id }),
+              segments(spans, clip: id).contains(where: { $0.kind != .plain }) else { return nil }
+        return { offset in gain(spans, clip: id, at: span.start + offset) }
     }
 
     // MARK: - Segmentation

@@ -36,8 +36,13 @@ public struct StereoPeak: Sendable, Equatable {
         StereoPeak(left: max(left, other.left), right: max(right, other.right))
     }
 
-    /// Fast attack, exponential release, as used by the meter timers.
+    /// Fast attack, exponential release, as used by the meter timers. Levels
+    /// below -100 dB drop to exactly zero so an idle meter stops changing.
     public func falling(to new: StereoPeak, by factor: Float) -> StereoPeak {
-        StereoPeak(left: max(new.left, left * factor), right: max(new.right, right * factor))
+        func fall(_ current: Float, _ incoming: Float) -> Float {
+            let value = max(incoming, current * factor)
+            return value < 1e-5 ? 0 : value
+        }
+        return StereoPeak(left: fall(left, new.left), right: fall(right, new.right))
     }
 }

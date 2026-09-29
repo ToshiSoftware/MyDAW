@@ -38,7 +38,7 @@ public struct ClipDragPreview {
 
 @MainActor
 public final class ProjectState: ObservableObject {
-    private struct ClipSnapshot {
+    private struct ClipSnapshot: Equatable {
         let id: UUID
         let startTime: Double
         let sourceStartTime: Double
@@ -47,12 +47,15 @@ public final class ProjectState: ObservableObject {
         let gainDB: Double
         let fadeInDuration: Double
         let fadeOutDuration: Double
+        let fadeInCurve: FadeCurve
+        let fadeOutCurve: FadeCurve
+        let isMuted: Bool
         let fileURL: URL
     }
 
     private struct ClipEditSnapshot {
         let clipsByTrack: [UUID: [ClipSnapshot]]
-        let selectedClipIDs: [UUID: UUID?]
+        let selectedClipIDs: [UUID: Set<UUID>]
     }
 
     @Published public var tracks: [AudioTrack] = []
@@ -60,6 +63,17 @@ public final class ProjectState: ObservableObject {
     @Published public var masterPlugins: [TrackPluginDescriptor] = []
     @Published public var selectedTrackId: UUID?
     @Published public var clipDragPreview: ClipDragPreview?
+    /// Time range selected across one or more adjacent tracks. Exclusive with
+    /// clip selection: making one clears the other.
+    @Published public var timeSelection: TimeSelection?
+    /// Clips copied or cut with Cmd+C / Cmd+X, ready to paste.
+    @Published public internal(set) var clipboard: [ClipboardClip] = []
+    var timeSelectionAnchor: (time: Double, trackIndex: Int)?
+    /// Rubber-band rectangle (in the "timelineScroll" space) while dragging
+    /// over empty lane space.
+    @Published public internal(set) var marqueeRect: CGRect?
+    var marqueeBaseSelection: [UUID: Set<UUID>] = [:]
+    var groupDragStarts: [UUID: Double] = [:]
     @Published public var pixelsPerSecond: CGFloat = 80.0 // Horizontal zoom factor
     @Published public var timelineScrollTime: Double = 0.0
     @Published public var punchRange = PunchRangeDocument()
@@ -73,7 +87,7 @@ public final class ProjectState: ObservableObject {
         }
     }
     @Published public var pluginManager: PluginManager
-    @Published public private(set) var startupLog: [String] = ["MyDAWを起動しています..."]
+    @Published public private(set) var startupLog: [String] = [String(localized: "Starting MyDAW...")]
     @Published public private(set) var isShowingStartupLog = true
     @Published public var isShowingMasterExportDialog = false
     @Published public var isExportingMasterMix = false
@@ -218,12 +232,15 @@ public final class ProjectState: ObservableObject {
                         gainDB: clip.gainDB,
                         fadeInDuration: clip.fadeInDuration,
                         fadeOutDuration: clip.fadeOutDuration,
+                        fadeInCurve: clip.fadeInCurve,
+                        fadeOutCurve: clip.fadeOutCurve,
+                        isMuted: clip.isMuted,
                         fileURL: clip.fileURL
                     )
                 }
             },
             selectedClipIDs: tracks.reduce(into: [:]) { result, track in
-                result[track.id] = track.selectedClipId
+                result[track.id] = track.selectedClipIDs
             }
         )
     }
@@ -236,6 +253,9 @@ public final class ProjectState: ObservableObject {
     public func endClipEdit() {
         guard let snapshot = activeClipEditSnapshot else { return }
         activeClipEditSnapshot = nil
+        // A press on a handle without moving it leaves the clips unchanged;
+        // don't push an undo step for it.
+        guard snapshot.clipsByTrack != makeClipEditSnapshot().clipsByTrack else { return }
         undoStack.append(snapshot)
         redoStack.removeAll()
         updateHistoryAvailability()
@@ -265,10 +285,13 @@ public final class ProjectState: ObservableObject {
                 clip.setGainDB(item.gainDB)
                 clip.setFadeInDuration(item.fadeInDuration)
                 clip.setFadeOutDuration(item.fadeOutDuration)
+                clip.fadeInCurve = item.fadeInCurve
+                clip.fadeOutCurve = item.fadeOutCurve
+                clip.isMuted = item.isMuted
                 return clip
             }
             track.replaceClips(restoredClips)
-            track.selectedClipId = snapshot.selectedClipIDs[track.id] ?? nil
+            track.selectedClipIDs = snapshot.selectedClipIDs[track.id] ?? []
         }
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
@@ -361,30 +384,18 @@ public final class ProjectState: ObservableObject {
               let track = tracks.first(where: { $0.id == trackId }) else { return }
 
         do {
-            let file = try AVAudioFile(forReading: url)
-            let sampleRate = file.fileFormat.sampleRate
-            let expectedSampleRate = audioEngine.hardwareSampleRate
-            let bitDepth = (file.fileFormat.settings[AVLinearPCMBitDepthKey] as? NSNumber)?.intValue ?? 0
-            var errors: [String] = []
-
-            if abs(sampleRate - expectedSampleRate) > 0.5 {
-                errors.append("サンプルレート: \(Int(sampleRate)) Hz（必要: \(Int(expectedSampleRate)) Hz）")
-            }
-            if bitDepth != 24 {
-                errors.append("ビット深度: \(bitDepth > 0 ? "\(bitDepth)" : "不明") bit（必要: 24 bit）")
-            }
-            guard errors.isEmpty else {
-                presentProjectError("WAVファイルを追加できません。\n\n" + errors.joined(separator: "\n"))
-                return
-            }
-
-            let managedURL = try managedRecordingURL(for: url)
+            // Files at another sample rate or bit depth are converted to a
+            // 24-bit WAV at the current rate as they are copied in.
+            let targetSampleRate = audioEngine.hardwareSampleRate
+            let managedURL = try ClipAudioProcessing.is24BitPCM(url, sampleRate: targetSampleRate)
+                ? managedRecordingURL(for: url)
+                : convertedRecordingURL(for: url, sampleRate: targetSampleRate)
             let clip = track.addClip(startTime: audioEngine.currentTime, fileURL: managedURL)
             clip.loadMetadata()
             selectClip(trackId: trackId, clipId: clip.id)
             audioEngine.syncTracks(tracks, fxChannels: fxChannels)
         } catch {
-            presentProjectError("WAVファイルを読み込めませんでした。\n\n\(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not read the WAV file.\n\n\(error.localizedDescription)"))
         }
     }
 
@@ -394,7 +405,7 @@ public final class ProjectState: ObservableObject {
               let clip = track.clips.first(where: { $0.id == clipId }) else { return }
 
         let panel = NSOpenPanel()
-        panel.title = "Choose Recording File"
+        panel.title = String(localized: "Choose Recording File")
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -406,7 +417,7 @@ public final class ProjectState: ObservableObject {
             let sampleRate = file.fileFormat.sampleRate
             let expectedSampleRate = audioEngine.hardwareSampleRate
             guard abs(sampleRate - expectedSampleRate) <= 0.5 else {
-                presentProjectError("録音ファイルを指定できません。\n\nサンプルレート: \(Int(sampleRate)) Hz（必要: \(Int(expectedSampleRate)) Hz）")
+                presentProjectError(String(localized: "This recording file cannot be used.\n\nSample rate: \(Int(sampleRate)) Hz (required: \(Int(expectedSampleRate)) Hz)"))
                 return
             }
 
@@ -420,14 +431,14 @@ public final class ProjectState: ObservableObject {
             }
             audioEngine.syncTracks(tracks, fxChannels: fxChannels)
         } catch {
-            presentProjectError("録音ファイルを読み込めませんでした。\n\n\(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not read the recording file.\n\n\(error.localizedDescription)"))
         }
     }
 
     public func beginMasterExportDialog() {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSSavePanel()
-        panel.title = "Export Master Mix"
+        panel.title = String(localized: "Export Master Mix")
         panel.nameFieldStringValue = "MyDAW Master Mix.wav"
         panel.directoryURL = audioEngine.recordingsDirectory
         panel.allowedContentTypes = [.wav]
@@ -487,14 +498,33 @@ public final class ProjectState: ObservableObject {
             withIntermediateDirectories: true
         )
 
+        let destinationURL = importDestinationURL(for: sourceURL, in: recordingsURL)
+        try FileManager.default.copyItem(at: sourceStandardizedURL, to: destinationURL)
+        return destinationURL
+    }
+
+    /// Writes a 24-bit WAV copy of `sourceURL` at `sampleRate` into the
+    /// recordings folder and returns its URL.
+    private func convertedRecordingURL(for sourceURL: URL, sampleRate: Double) throws -> URL {
+        let recordingsURL = audioEngine.recordingsDirectory.standardizedFileURL
+        try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+        let destinationURL = importDestinationURL(for: sourceURL, in: recordingsURL)
+        do {
+            try ClipAudioProcessing.writeConverted(from: sourceURL, to: destinationURL, sampleRate: sampleRate)
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw error
+        }
+        return destinationURL
+    }
+
+    private func importDestinationURL(for sourceURL: URL, in recordingsURL: URL) -> URL {
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: " ", with: "_")
             .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
         let safeBaseName = baseName.isEmpty ? "Imported" : baseName
         let fileName = "Import_\(safeBaseName)_\(UUID().uuidString.prefix(8)).wav"
-        let destinationURL = recordingsURL.appendingPathComponent(fileName)
-        try FileManager.default.copyItem(at: sourceStandardizedURL, to: destinationURL)
-        return destinationURL
+        return recordingsURL.appendingPathComponent(fileName)
     }
 
     public func insertPlugin(_ descriptor: TrackPluginDescriptor, into trackID: UUID) {
@@ -684,6 +714,7 @@ public final class ProjectState: ObservableObject {
         for track in tracks {
             track.selectedClipId = track.id == trackId ? clipId : nil
         }
+        timeSelection = nil
         selectedTrackId = trackId
     }
 
@@ -747,11 +778,14 @@ public final class ProjectState: ObservableObject {
         return true
     }
 
+    /// Deletes the selected time range, or else every selected clip.
     public func deleteSelectedClip() {
-        guard !audioEngine.isRecording,
-              let track = tracks.first(where: { $0.selectedClipId != nil }),
-              let clipId = track.selectedClipId else { return }
-          deleteClip(trackId: track.id, clipId: clipId)
+        guard !audioEngine.isRecording else { return }
+        if timeSelection != nil {
+            deleteTimeSelection()
+        } else {
+            deleteSelectedClips()
+        }
     }
 
     public func deleteClip(trackId: UUID, clipId: UUID) {
@@ -813,7 +847,7 @@ public final class ProjectState: ObservableObject {
             try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
             audioEngine.recordingsDirectory = recordingsURL.standardizedFileURL
         } catch {
-            presentProjectError("Could not prepare project folder: \(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not prepare project folder: \(error.localizedDescription)"))
             return false
         }
 
@@ -857,6 +891,8 @@ public final class ProjectState: ObservableObject {
                             isMuted: clip.isMuted,
                             fadeInDuration: clip.fadeInDuration,
                             fadeOutDuration: clip.fadeOutDuration,
+                            fadeInCurve: clip.fadeInCurve,
+                            fadeOutCurve: clip.fadeOutCurve,
                             filePath: relativePath(for: clip.fileURL, to: projectFolderURL)
                         )
                     },
@@ -876,7 +912,7 @@ public final class ProjectState: ObservableObject {
             try encoder.encode(document).write(to: projectURL, options: .atomic)
             return true
         } catch {
-            presentProjectError("Could not save project: \(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not save project: \(error.localizedDescription)"))
             return false
         }
     }
@@ -884,7 +920,7 @@ public final class ProjectState: ObservableObject {
     public func saveProjectAndShowConfirmation() {
         guard saveProject() else { return }
         saveConfirmationTask?.cancel()
-        saveConfirmationMessage = "Project saved."
+        saveConfirmationMessage = String(localized: "Project saved.")
         saveConfirmationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
@@ -892,10 +928,59 @@ public final class ProjectState: ObservableObject {
         }
     }
 
+    /// After an audio device or sample-rate change: asks whether to save, then
+    /// relaunches MyDAW (reopening the current project) so every track path
+    /// and plugin is rebuilt for the new device.
+    public func promptRestartForAudioSettings() {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Restart MyDAW to apply the new settings?")
+        alert.informativeText = String(localized: "MyDAW needs to restart for the new audio device, sample rate or language to take effect. Save the project before restarting?")
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: String(localized: "Save and Restart"))
+        alert.addButton(withTitle: String(localized: "Restart Without Saving"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if isProjectOpen {
+                guard saveProject() else { return }
+            }
+        case .alertSecondButtonReturn:
+            break
+        default:
+            return
+        }
+        relaunch()
+    }
+
+    /// Starts a fresh copy of MyDAW once this process has exited, passing the
+    /// current project file so it opens again, then quits.
+    private func relaunch() {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        var arguments = [Bundle.main.bundleURL.path]
+        if isProjectOpen, let projectPath = currentProjectURL?.path,
+           FileManager.default.fileExists(atPath: projectPath) {
+            arguments += ["--args", projectPath]
+        }
+        let quoted = arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; open -n \(quoted.joined(separator: " "))"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        do {
+            try process.run()
+        } catch {
+            presentProjectError(String(localized: "MyDAW could not restart itself. Please quit and reopen it manually.\n\n\(error.localizedDescription)"))
+            return
+        }
+        NSApp.terminate(nil)
+    }
+
     public func loadProject() {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSOpenPanel()
-        panel.title = "Open MyDAW Project"
+        panel.title = String(localized: "Open MyDAW Project")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -907,7 +992,7 @@ public final class ProjectState: ObservableObject {
             options: [.skipsHiddenFiles]
         ))?.filter { $0.pathExtension.lowercased() == "mydaw" } ?? []
         guard let url = projectFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).first else {
-            presentProjectError("このフォルダーに .mydaw プロジェクトファイルがありません。")
+            presentProjectError(String(localized: "This folder does not contain a .mydaw project file."))
             return
         }
 
@@ -917,7 +1002,7 @@ public final class ProjectState: ObservableObject {
     public func createNewProject() -> Bool {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
         let panel = NSOpenPanel()
-        panel.title = "Choose New MyDAW Project Folder"
+        panel.title = String(localized: "Choose New MyDAW Project Folder")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
@@ -935,7 +1020,7 @@ public final class ProjectState: ObservableObject {
             isProjectOpen = true
             return saveProject()
         } catch {
-            presentProjectError("Could not create project folder: \(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not create project folder: \(error.localizedDescription)"))
             return false
         }
     }
@@ -987,6 +1072,8 @@ public final class ProjectState: ObservableObject {
                     clip.isMuted = clipDocument.isMuted
                     clip.setFadeInDuration(clipDocument.fadeInDuration)
                     clip.setFadeOutDuration(clipDocument.fadeOutDuration)
+                    clip.fadeInCurve = clipDocument.fadeInCurve
+                    clip.fadeOutCurve = clipDocument.fadeOutCurve
                     track.restoreClip(clip)
                 }
                 track.selectedClipId = trackDocument.selectedClipId
@@ -1041,7 +1128,7 @@ public final class ProjectState: ObservableObject {
             )
             audioEngine.prepareForPluginGraphRestore()
         } catch {
-            presentProjectError("Could not open project: \(error.localizedDescription)")
+            presentProjectError(String(localized: "Could not open project: \(error.localizedDescription)"))
         }
     }
 
@@ -1065,10 +1152,10 @@ public final class ProjectState: ObservableObject {
 
     private func presentProjectError(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "MyDAW Project"
+        alert.messageText = String(localized: "MyDAW Project")
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: String(localized: "OK"))
         alert.runModal()
     }
 
@@ -1079,6 +1166,18 @@ public final class ProjectState: ObservableObject {
 
     public func zoomOut() {
         setPixelsPerSecond(pixelsPerSecond / 1.25)
+    }
+
+    /// Zooms horizontally while keeping the timeline position under
+    /// `anchorOffset` (points from the left edge of the visible timeline) fixed.
+    public func setPixelsPerSecond(_ newValue: CGFloat, anchorOffset: CGFloat) {
+        let clampedValue = min(max(newValue, 20.0), 400.0)
+        guard clampedValue != pixelsPerSecond else { return }
+
+        let anchorTime = timelineScrollTime + Double(anchorOffset / pixelsPerSecond)
+        pixelsPerSecond = clampedValue
+        zoomRevision += 1
+        timelineScrollTime = max(0.0, anchorTime - Double(anchorOffset / clampedValue))
     }
 
     public func setPixelsPerSecond(_ newValue: CGFloat) {

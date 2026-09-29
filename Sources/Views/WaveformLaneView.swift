@@ -74,6 +74,15 @@ public struct WaveformLaneView: View {
             }
         }
         .frame(width: timelineWidth, height: rowHeight)
+        // Clips have their own gestures; these fire only on empty lane space.
+        .contentShape(Rectangle())
+        .gesture(timeSelectionGesture)
+        .onTapGesture {
+            projectState.clearSelection()
+        }
+        .contextMenu {
+            EditMenuItems(projectState: projectState)
+        }
         .coordinateSpace(name: "timeline")
         .overlay(
             Rectangle()
@@ -101,6 +110,100 @@ public struct WaveformLaneView: View {
             return true
         }
     }
+
+    /// Dragging across empty lane space selects the clips it touches
+    /// (Shift adds to the selection); Cmd-drag selects a time range instead.
+    private var timeSelectionGesture: some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("timelineScroll"))
+            .onChanged { value in
+                let pps = projectState.pixelsPerSecond
+                if projectState.timeSelectionAnchor == nil && projectState.marqueeRect == nil {
+                    let modifiers = NSEvent.modifierFlags
+                    if modifiers.contains(.command) {
+                        projectState.beginTimeSelection(
+                            atTime: Double(value.startLocation.x / pps),
+                            timelineY: value.startLocation.y
+                        )
+                    } else {
+                        projectState.beginMarquee(
+                            at: value.startLocation,
+                            additive: modifiers.contains(.shift)
+                        )
+                    }
+                }
+                if projectState.marqueeRect != nil {
+                    projectState.updateMarquee(from: value.startLocation, to: value.location)
+                } else {
+                    projectState.updateTimeSelection(
+                        toTime: Double(value.location.x / pps),
+                        timelineY: value.location.y
+                    )
+                }
+            }
+            .onEnded { _ in
+                projectState.endMarquee()
+                projectState.endTimeSelection()
+            }
+    }
+}
+
+/// Clipboard and time-range commands shared by the clip and lane menus.
+/// `prepare` runs before Cut/Copy (the clip menu uses it to select its clip,
+/// so Cut/Copy stay enabled there even with nothing selected yet).
+private struct EditMenuItems: View {
+    @ObservedObject var projectState: ProjectState
+    var prepare: (() -> Void)? = nil
+
+    var body: some View {
+        let isRecording = projectState.audioEngine.isRecording
+        let canCopy = prepare != nil || projectState.hasSelection
+        Button {
+            prepare?()
+            projectState.cutSelection()
+        } label: {
+            Label("Cut", systemImage: "scissors")
+        }
+        .disabled(isRecording || !canCopy)
+
+        Button {
+            prepare?()
+            projectState.copySelection()
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+        }
+        .disabled(!canCopy)
+
+        Button {
+            projectState.paste()
+        } label: {
+            Label("Paste at Playhead", systemImage: "doc.on.clipboard")
+        }
+        .disabled(isRecording || !projectState.canPaste)
+
+        if projectState.timeSelection != nil {
+            Divider()
+            Button {
+                projectState.deleteTimeSelection()
+            } label: {
+                Label("Delete Range", systemImage: "delete.left")
+            }
+            .disabled(isRecording)
+
+            Button {
+                projectState.cropToTimeSelection()
+            } label: {
+                Label("Crop to Range", systemImage: "crop")
+            }
+            .disabled(isRecording)
+
+            Button {
+                projectState.splitAtTimeSelection()
+            } label: {
+                Label("Split at Range Edges", systemImage: "square.split.2x1")
+            }
+            .disabled(isRecording)
+        }
+    }
 }
 
 private struct AudioClipView: View {
@@ -111,12 +214,16 @@ private struct AudioClipView: View {
     @State private var dragStartLocationX: CGFloat?
     @State private var dragGrabOffsetY: CGFloat?
     @State private var dragTargetTrackId: UUID?
+    @State private var isRangeDragging = false
     @State private var resizeStartTime: Double?
     @State private var resizeSourceStartTime: Double?
     @State private var resizeDuration: Double?
     @State private var gainStartDB: Double?
     @State private var fadeInStartDuration: Double?
     @State private var fadeOutStartDuration: Double?
+    /// Midpoint gain when a fade-curve handle drag began, and which fade.
+    @State private var curveDragStartMidpoint: Double?
+    @State private var curveDragIsFadeIn = true
     let height: CGFloat
 
     init(
@@ -148,11 +255,14 @@ private struct AudioClipView: View {
         let liveDuration = max(0.0, liveEndTime - clip.startTime)
         let displayDuration = max(clip.duration, isActiveClip ? liveDuration : 0.0)
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
-        let isSelected = track.selectedClipId == clip.id
+        let isSelected = track.selectedClipIDs.contains(clip.id)
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
         let layerSpans = ClipLayering.spans(for: track.clips)
         let fadeInLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: true)
         let fadeOutLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: false)
+        let fadeInCurve = ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: true)
+        let fadeOutCurve = ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: false)
+        let envelope = isActiveClip ? nil : ClipLayering.envelope(layerSpans, clip: clip.id)
 
         if clip.isFileMissing {
             missingFileView
@@ -164,7 +274,7 @@ private struct AudioClipView: View {
                 )
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                    selectOnClick()
                 }
                 .contextMenu {
                             locateFileButton
@@ -187,8 +297,7 @@ private struct AudioClipView: View {
                             visibleDuration: displayDuration,
                             channelIndex: 0,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                            fadeInDuration: clip.fadeInDuration,
-                            fadeOutDuration: clip.fadeOutDuration
+                            envelope: envelope
                         )
                         WaveformCanvas(
                             waveformCache: clip.waveformCache,
@@ -199,8 +308,7 @@ private struct AudioClipView: View {
                             visibleDuration: displayDuration,
                             channelIndex: 1,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                            fadeInDuration: clip.fadeInDuration,
-                            fadeOutDuration: clip.fadeOutDuration
+                            envelope: envelope
                         )
                     }
                 } else {
@@ -212,13 +320,20 @@ private struct AudioClipView: View {
                         sampleOffset: clip.sourceStartTime,
                         visibleDuration: displayDuration
                         , verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                        fadeInDuration: clip.fadeInDuration,
-                        fadeOutDuration: clip.fadeOutDuration
+                        envelope: envelope
                     )
                 }
             }
             .frame(width: clipWidth, height: max(20.0, height))
             .background(track.color.opacity(0.08))
+            .overlay {
+                FadeLinesOverlay(
+                    fadeInWidth: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond,
+                    fadeOutWidth: CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond,
+                    fadeInCurve: fadeInCurve,
+                    fadeOutCurve: fadeOutCurve
+                )
+            }
             .overlay {
                 if !isActiveClip {
                     coveredOverlay(spans: layerSpans, width: clipWidth)
@@ -254,7 +369,67 @@ private struct AudioClipView: View {
                         .gesture(fadeOutGesture)
                 }
             }
+            // Curve handles sit on the middle of each fade line; dragging one
+            // up or down bends the curve, double-click returns it to Auto.
+            .overlay(alignment: .topLeading) {
+                let fadeWidth = CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond
+                if !fadeInLocked && !isActiveClip && fadeWidth >= 16.0 {
+                    curveHandle
+                        .offset(
+                            x: fadeWidth / 2.0 - 10.0,
+                            y: max(20.0, height) * CGFloat(1.0 - fadeInCurve.midpointGain) - 10.0
+                        )
+                        .gesture(curveGesture(atStart: true, resolved: fadeInCurve))
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { resetCurve(atStart: true) })
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                let fadeWidth = CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond
+                if !fadeOutLocked && !isActiveClip && fadeWidth >= 16.0 {
+                    curveHandle
+                        .offset(
+                            x: -fadeWidth / 2.0 + 10.0,
+                            y: max(20.0, height) * CGFloat(1.0 - fadeOutCurve.midpointGain) - 10.0
+                        )
+                        .gesture(curveGesture(atStart: false, resolved: fadeOutCurve))
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { resetCurve(atStart: false) })
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 3))
+            // Value tooltips sit outside the clip shape so they are not cut off
+            // at the clip edge while a handle is being dragged.
+            .overlay(alignment: .topLeading) {
+                if fadeInStartDuration != nil {
+                    EditValueTooltip(text: String(localized: "Fade In \(Self.formatFadeTime(clip.fadeInDuration))"))
+                        .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond + 8.0, y: 2.0)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if fadeOutStartDuration != nil {
+                    EditValueTooltip(text: String(localized: "Fade Out \(Self.formatFadeTime(clip.fadeOutDuration))"))
+                        .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond - 8.0, y: 2.0)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if curveDragStartMidpoint != nil {
+                    let isFadeIn = curveDragIsFadeIn
+                    let curve = isFadeIn ? fadeInCurve : fadeOutCurve
+                    let fadeWidth = CGFloat(isFadeIn ? clip.fadeInDuration : clip.fadeOutDuration) * projectState.pixelsPerSecond
+                    let handleX = isFadeIn ? fadeWidth / 2.0 : clipWidth - fadeWidth / 2.0
+                    EditValueTooltip(text: Self.formatCurve(curve))
+                        .offset(
+                            x: handleX + 12.0,
+                            y: max(20.0, height) * CGFloat(1.0 - curve.midpointGain) - 8.0
+                        )
+                }
+            }
+            .overlay(alignment: .top) {
+                if gainStartDB != nil {
+                    EditValueTooltip(text: Self.formatGain(clip.gainDB))
+                        .offset(x: 50.0, y: 2.0)
+                }
+            }
+            .zIndex(fadeInStartDuration != nil || fadeOutStartDuration != nil || gainStartDB != nil || curveDragStartMidpoint != nil ? 1 : 0)
             .opacity(clip.isMuted ? 0.35 : 1.0)
             .opacity(projectState.clipDragPreview?.clipID == clip.id ? 0 : 1)
             .contentShape(Rectangle())
@@ -262,48 +437,77 @@ private struct AudioClipView: View {
                     DragGesture(coordinateSpace: .named("timelineScroll"))
                     .onChanged { value in
                             let pixelsPerSecond = projectState.pixelsPerSecond
-                            if dragStartTime == nil {
-                                projectState.beginClipEdit()
-                                dragStartTime = clip.startTime
-                                dragStartLocationX = value.startLocation.x
-                                dragTargetTrackId = track.id
-                                dragGrabOffsetY = value.startLocation.y - trackTopY(for: track.id)
-                                projectState.beginClipDragPreview(
-                                    clipID: clip.id,
-                                    startTime: clip.startTime,
-                                    topY: trackTopY(for: track.id) + 2.0,
-                                    width: clipWidth,
-                                    height: max(20.0, height),
-                                    color: track.color,
-                                    clip: clip,
-                                    isStereo: track.channelMode == .stereo
+                            if dragStartTime == nil && !isRangeDragging {
+                                let modifiers = NSEvent.modifierFlags
+                                if modifiers.contains(.command) {
+                                    // Cmd-drag on a clip selects a time range instead of moving.
+                                    isRangeDragging = true
+                                    projectState.beginTimeSelection(
+                                        atTime: Double(value.startLocation.x / pixelsPerSecond),
+                                        timelineY: value.startLocation.y
+                                    )
+                                } else {
+                                    projectState.beginClipEdit()
+                                    if !track.selectedClipIDs.contains(clip.id) {
+                                        if modifiers.contains(.shift) {
+                                            projectState.toggleClipSelection(trackId: track.id, clipId: clip.id)
+                                        } else {
+                                            projectState.selectClip(trackId: track.id, clipId: clip.id)
+                                        }
+                                    }
+                                    projectState.beginGroupDrag()
+                                    if modifiers.contains(.option) {
+                                        projectState.duplicateSelectedClipsInPlace()
+                                    }
+                                    dragStartTime = clip.startTime
+                                    dragStartLocationX = value.startLocation.x
+                                    dragTargetTrackId = track.id
+                                    dragGrabOffsetY = value.startLocation.y - projectState.trackTopY(for: track.id)
+                                    projectState.beginClipDragPreview(
+                                        clipID: clip.id,
+                                        startTime: clip.startTime,
+                                        topY: projectState.trackTopY(for: track.id) + 2.0,
+                                        width: clipWidth,
+                                        height: max(20.0, height),
+                                        color: track.color,
+                                        clip: clip,
+                                        isStereo: track.channelMode == .stereo
+                                    )
+                                }
+                            }
+                            if isRangeDragging {
+                                projectState.updateTimeSelection(
+                                    toTime: Double(value.location.x / pixelsPerSecond),
+                                    timelineY: value.location.y
                                 )
-                                projectState.selectClip(trackId: track.id, clipId: clip.id)
+                                return
                             }
                             let initialStartTime = dragStartTime ?? clip.startTime
                             let initialLocationX = dragStartLocationX ?? value.startLocation.x
                             let horizontalDelta = value.location.x - initialLocationX
                             let rawStartTime = initialStartTime + Double(horizontalDelta / pixelsPerSecond)
                             let newStartTime = projectState.snappedTimelineTime(rawStartTime)
-                            track.moveClip(id: clip.id, to: newStartTime)
-                            dragTargetTrackId = trackID(atTimelineY: value.location.y)
+                            projectState.updateGroupDrag(delta: newStartTime - initialStartTime)
+                            dragTargetTrackId = projectState.trackID(atTimelineY: value.location.y)
                             let grabOffsetY = dragGrabOffsetY ?? 0.0
                             projectState.updateClipDragPreview(
-                                startTime: newStartTime,
+                                startTime: clip.startTime,
                                 topY: value.location.y - grabOffsetY
                             )
                     }
                     .onEnded { _ in
-                            let destinationTrackId = dragTargetTrackId
-                            let finalStartTime = clip.startTime
-                            if let destinationTrackId,
-                               destinationTrackId != track.id {
-                                _ = projectState.moveClip(
-                                    clipId: clip.id,
-                                    from: track.id,
-                                    to: destinationTrackId,
-                                    startTime: finalStartTime
-                                )
+                            if isRangeDragging {
+                                isRangeDragging = false
+                                projectState.endTimeSelection()
+                                return
+                            }
+                            let tracks = projectState.tracks
+                            if let destinationTrackId = dragTargetTrackId,
+                               let from = tracks.firstIndex(where: { $0.id == track.id }),
+                               let to = tracks.firstIndex(where: { $0.id == destinationTrackId }) {
+                                projectState.endGroupDrag(trackDelta: to - from)
+                            } else {
+                                projectState.endGroupDrag(trackDelta: 0)
                             }
                             dragStartTime = nil
                             dragStartLocationX = nil
@@ -318,9 +522,28 @@ private struct AudioClipView: View {
                     }
             )
             .onTapGesture {
-                projectState.selectClip(trackId: track.id, clipId: clip.id)
+                selectOnClick()
             }
             .contextMenu {
+                EditMenuItems(projectState: projectState) {
+                    if projectState.timeSelection == nil && !track.selectedClipIDs.contains(clip.id) {
+                        projectState.selectClip(trackId: track.id, clipId: clip.id)
+                    }
+                }
+                Divider()
+                Button {
+                    projectState.normalizeClips(trackId: track.id, clipId: clip.id)
+                } label: {
+                    Label("Normalize", systemImage: "waveform.badge.plus")
+                }
+                .disabled(projectState.audioEngine.isRecording)
+                Button {
+                    projectState.reverseClips(trackId: track.id, clipId: clip.id)
+                } label: {
+                    Label("Reverse", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(projectState.audioEngine.isRecording)
+                Divider()
                 locateFileButton
                 Divider()
                 muteButton
@@ -356,50 +579,22 @@ private struct AudioClipView: View {
         }
     }
 
-    /// Darkens the parts of this clip silenced by clips layered above it,
-    /// following the crossfade envelope so the handover is visible.
+    /// Darkens the parts of this clip fully hidden by clips layered above it
+    /// (where its waveform is drawn flat, since nothing of it is heard).
     private func coveredOverlay(spans: [ClipLayerSpan], width: CGFloat) -> some View {
-        let clipID = clip.id
         let start = clip.startTime
         let pps = projectState.pixelsPerSecond
-        let segments = ClipLayering.segments(spans, clip: clipID)
+        let hidden = ClipLayering.segments(spans, clip: clip.id).filter { $0.kind == .hidden }
         return Canvas { context, size in
-            for segment in segments where segment.kind != .plain {
+            for segment in hidden {
                 let x0 = CGFloat(segment.start - start) * pps
                 let x1 = CGFloat(segment.end - start) * pps
                 guard x1 > x0 else { continue }
-                if segment.kind == .hidden {
-                    context.fill(Path(CGRect(x: x0, y: 0, width: x1 - x0, height: size.height)), with: .color(.black.opacity(0.55)))
-                    continue
-                }
-                var x = x0
-                while x < x1 {
-                    let step = min(2.0, x1 - x)
-                    let time = start + Double((x + step / 2) / pps)
-                    let covered = coverage(spans, clipID, time)
-                    if covered > 0.01 {
-                        context.fill(
-                            Path(CGRect(x: x, y: 0, width: step, height: size.height)),
-                            with: .color(.black.opacity(0.55 * covered))
-                        )
-                    }
-                    x += step
-                }
+                context.fill(Path(CGRect(x: x0, y: 0, width: x1 - x0, height: size.height)), with: .color(.black.opacity(0.55)))
             }
         }
         .frame(width: width)
         .allowsHitTesting(false)
-    }
-
-    /// 0 where this clip is fully audible, 1 where an upper clip fully hides it
-    /// (its own fades are not counted as "covered").
-    private func coverage(_ spans: [ClipLayerSpan], _ clipID: UUID, _ time: Double) -> Double {
-        guard let index = spans.firstIndex(where: { $0.id == clipID }) else { return 0 }
-        let own = spans[index]
-        let alone = ClipLayering.gain([ClipLayerSpan(id: own.id, start: own.start, end: own.end, fadeIn: own.fadeIn, fadeOut: own.fadeOut, isMuted: own.isMuted)], clip: clipID, at: time)
-        guard alone > 0 else { return 0 }
-        let layered = ClipLayering.gain(spans, clip: clipID, at: time)
-        return max(0, min(1, 1 - layered / alone))
     }
 
     private var missingFileView: some View {
@@ -452,27 +647,15 @@ private struct AudioClipView: View {
         .disabled(projectState.audioEngine.isRecording)
     }
 
-    private func trackTopY(for trackID: UUID) -> CGFloat {
-        var currentY: CGFloat = 0.0
-        for candidate in projectState.tracks {
-            if candidate.id == trackID {
-                return currentY
-            }
-            currentY += TrackHeaderView.rowHeight(for: candidate) * projectState.trackHeightScale + 1.0
+    /// Plain click selects only this clip; Shift- or Cmd-click adds it to or
+    /// removes it from the selection.
+    private func selectOnClick() {
+        let modifiers = NSEvent.modifierFlags
+        if modifiers.contains(.command) || modifiers.contains(.shift) {
+            projectState.toggleClipSelection(trackId: track.id, clipId: clip.id)
+        } else {
+            projectState.selectClip(trackId: track.id, clipId: clip.id)
         }
-        return currentY
-    }
-
-    private func trackID(atTimelineY y: CGFloat) -> UUID? {
-        var currentY: CGFloat = 0.0
-        for candidate in projectState.tracks {
-            let height = TrackHeaderView.rowHeight(for: candidate) * projectState.trackHeightScale
-            if y >= currentY && y < currentY + height {
-                return candidate.id
-            }
-            currentY += height + 1.0
-        }
-        return nil
     }
 
     private var trimHandle: some View {
@@ -507,8 +690,61 @@ private struct AudioClipView: View {
             .contentShape(Rectangle().size(width: 18, height: 24))
     }
 
+    // minimumDistance 0 so the value tooltip appears on mouse-down, before any movement.
+    private var curveHandle: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.95))
+            .frame(width: 8, height: 8)
+            .rotationEffect(.degrees(45))
+            .shadow(color: .black.opacity(0.5), radius: 2)
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
+    }
+
+    /// Vertical drag moves the fade's halfway point: up bows the curve up.
+    private func curveGesture(atStart: Bool, resolved: FadeCurve) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if curveDragStartMidpoint == nil {
+                    projectState.beginClipEdit()
+                    curveDragStartMidpoint = resolved.midpointGain
+                    curveDragIsFadeIn = atStart
+                    projectState.selectClip(trackId: track.id, clipId: clip.id)
+                }
+                let start = curveDragStartMidpoint ?? resolved.midpointGain
+                let curve = FadeCurve.withMidpoint(start - Double(value.translation.height / max(20.0, height)))
+                if atStart {
+                    clip.fadeInCurve = curve
+                } else {
+                    clip.fadeOutCurve = curve
+                }
+            }
+            .onEnded { _ in
+                curveDragStartMidpoint = nil
+                projectState.endClipEdit()
+                projectState.audioEngine.syncAfterClipEdit(
+                    projectState.tracks,
+                    fxChannels: projectState.fxChannels
+                )
+            }
+    }
+
+    private func resetCurve(atStart: Bool) {
+        projectState.beginClipEdit()
+        if atStart {
+            clip.fadeInCurve = .auto
+        } else {
+            clip.fadeOutCurve = .auto
+        }
+        projectState.endClipEdit()
+        projectState.audioEngine.syncAfterClipEdit(
+            projectState.tracks,
+            fxChannels: projectState.fxChannels
+        )
+    }
+
     private var gainGesture: some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if gainStartDB == nil {
                     projectState.beginClipEdit()
@@ -529,7 +765,7 @@ private struct AudioClipView: View {
     }
 
     private var fadeInGesture: some Gesture {
-        DragGesture(coordinateSpace: .named("timeline"))
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("timeline"))
             .onChanged { value in
                 if fadeInStartDuration == nil {
                     projectState.beginClipEdit()
@@ -554,7 +790,7 @@ private struct AudioClipView: View {
     }
 
     private var fadeOutGesture: some Gesture {
-        DragGesture(coordinateSpace: .named("timeline"))
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("timeline"))
             .onChanged { value in
                 if fadeOutStartDuration == nil {
                     projectState.beginClipEdit()
@@ -646,6 +882,22 @@ private struct AudioClipView: View {
             }
     }
 
+    private static func formatFadeTime(_ seconds: Double) -> String {
+        seconds < 1.0
+            ? String(format: "%.0f ms", seconds * 1000.0)
+            : String(format: "%.2f s", seconds)
+    }
+
+    /// Curve readout: gain at the fade's halfway point, plus its name.
+    private static func formatCurve(_ curve: FadeCurve) -> String {
+        let midpointDB = String(format: "%.1f", 20.0 * log10(curve.midpointGain))
+        return String(localized: "Mid \(midpointDB) dB  \(curve.title)")
+    }
+
+    private static func formatGain(_ gainDB: Double) -> String {
+        String(format: "%+.1f dB", abs(gainDB) < 0.05 ? 0.0 : gainDB)
+    }
+
     private func resetResizeState() {
         resizeStartTime = nil
         resizeSourceStartTime = nil
@@ -653,6 +905,29 @@ private struct AudioClipView: View {
         gainStartDB = nil
         fadeInStartDuration = nil
         fadeOutStartDuration = nil
+    }
+}
+
+/// Small value readout shown next to a handle while it is being dragged.
+private struct EditValueTooltip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .foregroundColor(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.black.opacity(0.8))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+            )
+            .fixedSize()
+            .allowsHitTesting(false)
     }
 }
 

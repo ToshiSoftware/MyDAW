@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="1.5"
+BASE_VERSION="1.6"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -91,6 +91,9 @@ echo "Copying Info.plist and app icon..."
 cp "Info.plist" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUILD_VERSION" "$CONTENTS_DIR/Info.plist"
 echo "Build version: $BUILD_VERSION"
+# GUI translations (en.lproj / ja.lproj)
+rm -rf "$RESOURCES_DIR"/*.lproj
+cp -R Resources/*.lproj "$RESOURCES_DIR/"
 if [ -f "AppIcon.icns" ]; then
     cp "AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
     echo "Installed AppIcon.icns"

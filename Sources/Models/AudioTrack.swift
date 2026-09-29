@@ -45,7 +45,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
     private var clipObservers: [AnyCancellable] = []
     @Published public var plugins: [TrackPluginDescriptor] = []
     @Published public var fxSends: [FXSend] = []
-    @Published public var selectedClipId: UUID?
+    @Published public var selectedClipIDs: Set<UUID> = []
     @Published public var currentInputPeak: Float = 0.0
     @Published public var currentOutputPeak: Float = 0.0
     @Published public var outputStereoPeak: StereoPeak = .zero
@@ -82,7 +82,6 @@ public final class AudioTrack: Identifiable, ObservableObject {
         self.audioFileURL = audioFileURL
         self.plugins = plugins
         self.fxSends = fxSends
-        self.selectedClipId = nil
         if let audioFileURL {
             let clip = AudioClip(startTime: 0.0, fileURL: audioFileURL)
             self.clips = [clip]
@@ -97,6 +96,13 @@ public final class AudioTrack: Identifiable, ObservableObject {
                 self?.objectWillChange.send()
             }
         }
+    }
+
+    /// The first selected clip in layer order; setting it selects only that
+    /// clip on this track.
+    public var selectedClipId: UUID? {
+        get { clips.first(where: { selectedClipIDs.contains($0.id) })?.id }
+        set { selectedClipIDs = newValue.map { [$0] } ?? [] }
     }
 
     public var isRecordingMode: Bool {
@@ -126,7 +132,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
     public func removeClipForTransfer(id: UUID) -> AudioClip? {
         guard let index = clips.firstIndex(where: { $0.id == id }) else { return nil }
         let clip = clips.remove(at: index)
-        selectedClipId = nil
+        selectedClipIDs.remove(id)
         audioFileURL = clips.last?.fileURL
         return clip
     }
@@ -138,7 +144,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         if removeFile && !fileIsStillReferenced {
             try? FileManager.default.removeItem(at: clip.fileURL)
         }
-        selectedClipId = nil
+        selectedClipIDs.remove(id)
         audioFileURL = clips.last?.fileURL
     }
 
@@ -169,6 +175,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         )
         rightClip.setGainDB(source.gainDB)
         rightClip.setFadeOutDuration(originalFadeOutDuration)
+        rightClip.fadeOutCurve = source.fadeOutCurve
         source.setTrim(
             startTime: source.startTime,
             sourceStartTime: source.sourceStartTime,
@@ -207,10 +214,79 @@ public final class AudioTrack: Identifiable, ObservableObject {
         clips.append(clip)
     }
 
+    /// Inserts `clip` directly below the clip with `id` in layer order
+    /// (on top of everything when `id` is not found).
+    public func insertClip(_ clip: AudioClip, below id: UUID) {
+        let index = clips.firstIndex(where: { $0.id == id }) ?? clips.count
+        clips.insert(clip, at: index)
+    }
+
     public func replaceClips(_ restoredClips: [AudioClip]) {
         clips = restoredClips
         audioFileURL = clips.last?.fileURL
-        selectedClipId = clips.contains { $0.id == selectedClipId } ? selectedClipId : nil
+        selectedClipIDs.formIntersection(clips.map(\.id))
+    }
+
+    /// Copies of the audio between two timeline times, in layer order.
+    public func clipPieces(from start: Double, to end: Double) -> [AudioClip] {
+        clips.compactMap { $0.piece(from: start, to: end) }
+    }
+
+    /// Removes the audio between two timeline times, cutting clips that
+    /// straddle the edges. Returns true when anything changed.
+    @discardableResult
+    public func removeAudio(from start: Double, to end: Double) -> Bool {
+        rebuildClips { clip, clipEnd in
+            [clip.piece(from: clip.startTime, to: start), clip.piece(from: end, to: clipEnd)].compactMap { $0 }
+        } overlapping: { clip, clipEnd in
+            clip.startTime < end && clipEnd > start
+        }
+    }
+
+    /// Keeps only the audio between two timeline times.
+    @discardableResult
+    public func cropAudio(from start: Double, to end: Double) -> Bool {
+        rebuildClips { clip, _ in
+            [clip.piece(from: start, to: end)].compactMap { $0 }
+        } overlapping: { clip, clipEnd in
+            clip.startTime < start || clipEnd > end
+        }
+    }
+
+    /// Splits every clip that spans any of `times`.
+    @discardableResult
+    public func splitAudio(at times: [Double]) -> Bool {
+        func cuts(_ clip: AudioClip, _ clipEnd: Double) -> [Double] {
+            times.filter { $0 > clip.startTime + 0.02 && $0 < clipEnd - 0.02 }.sorted()
+        }
+        return rebuildClips { clip, clipEnd in
+            let edges = [clip.startTime] + cuts(clip, clipEnd) + [clipEnd]
+            return zip(edges, edges.dropFirst()).compactMap { clip.piece(from: $0, to: $1) }
+        } overlapping: { clip, clipEnd in
+            !cuts(clip, clipEnd).isEmpty
+        }
+    }
+
+    /// Replaces each clip matching `overlapping` with `pieces` of it, keeping
+    /// layer order. Returns true when any clip was replaced.
+    private func rebuildClips(
+        _ pieces: (AudioClip, Double) -> [AudioClip],
+        overlapping: (AudioClip, Double) -> Bool
+    ) -> Bool {
+        var changed = false
+        var rebuilt: [AudioClip] = []
+        for clip in clips {
+            let clipEnd = clip.startTime + clip.duration
+            if overlapping(clip, clipEnd) {
+                changed = true
+                rebuilt.append(contentsOf: pieces(clip, clipEnd))
+            } else {
+                rebuilt.append(clip)
+            }
+        }
+        guard changed else { return false }
+        replaceClips(rebuilt)
+        return true
     }
 }
 

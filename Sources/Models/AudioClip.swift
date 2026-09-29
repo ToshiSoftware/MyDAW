@@ -11,6 +11,8 @@ public final class AudioClip: Identifiable, ObservableObject {
     @Published public var isMuted: Bool
     @Published public private(set) var fadeInDuration: Double
     @Published public private(set) var fadeOutDuration: Double
+    @Published public var fadeInCurve: FadeCurve = .auto
+    @Published public var fadeOutCurve: FadeCurve = .auto
     @Published public private(set) var sampleRate: Double = 48000.0
     @Published public private(set) var fileURL: URL
     @Published public private(set) var duration: Double
@@ -84,6 +86,34 @@ public final class AudioClip: Identifiable, ObservableObject {
         fadeOutDuration = min(max(0.0, value.isFinite ? value : 0.0), duration)
     }
 
+    /// A new clip holding the part of this clip between two timeline times, or
+    /// nil when that part is shorter than 20 ms. Fades are kept only on the
+    /// edges the piece shares with this clip.
+    public func piece(from timelineStart: Double, to timelineEnd: Double) -> AudioClip? {
+        let clipEnd = startTime + duration
+        let start = max(startTime, timelineStart)
+        let end = min(clipEnd, timelineEnd)
+        guard end - start >= 0.02 else { return nil }
+        let copy = AudioClip(startTime: start, fileURL: fileURL)
+        copy.loadMetadata()
+        copy.setTrim(
+            startTime: start,
+            sourceStartTime: sourceStartTime + (start - startTime),
+            duration: end - start
+        )
+        copy.gainDB = gainDB
+        copy.isMuted = isMuted
+        if start == startTime {
+            copy.setFadeInDuration(fadeInDuration)
+            copy.fadeInCurve = fadeInCurve
+        }
+        if end == clipEnd {
+            copy.setFadeOutDuration(fadeOutDuration)
+            copy.fadeOutCurve = fadeOutCurve
+        }
+        return copy
+    }
+
     public func duplicate(at newStartTime: Double) -> AudioClip {
         let copy = AudioClip(startTime: newStartTime, fileURL: fileURL)
         copy.loadMetadata()
@@ -96,6 +126,8 @@ public final class AudioClip: Identifiable, ObservableObject {
         copy.isMuted = isMuted
         copy.setFadeInDuration(fadeInDuration)
         copy.setFadeOutDuration(fadeOutDuration)
+        copy.fadeInCurve = fadeInCurve
+        copy.fadeOutCurve = fadeOutCurve
         return copy
     }
 }

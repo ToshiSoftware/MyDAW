@@ -162,18 +162,18 @@ public final class PluginManager: ObservableObject {
                 }
             }
 
-            log("Audio Unitプラグインを検出中...")
+            log(String(localized: "Scanning Audio Unit plug-ins..."))
             let audioUnits = self.discoverAUComponents()
-            log("Audio Unit: \(audioUnits.count)件")
+            log(String(localized: "Audio Unit: \(audioUnits.count) found"))
 
-            log("VST3プラグインを検出中...")
+            log(String(localized: "Scanning VST3 plug-ins..."))
             // A plug-in's AU and VST3 builds share code and global state, and
             // crash or corrupt each other when both are loaded in one process
             // (seen with Relab LX480 and UADx). Offer only the AU when both exist.
             let auNames = Set(audioUnits.map { Self.comparablePluginName($0.name) })
             let allVST3Plugins = self.discoverVST3Bundles(onLog: log)
             let vst3Plugins = allVST3Plugins.filter { !auNames.contains(Self.comparablePluginName($0.name)) }
-            log("VST3: \(vst3Plugins.count)件（AU版があるため非表示: \(allVST3Plugins.count - vst3Plugins.count)件）")
+            log(String(localized: "VST3: \(vst3Plugins.count) found (\(allVST3Plugins.count - vst3Plugins.count) hidden because an AU version exists)"))
 
             let discovered = audioUnits + vst3Plugins
             let unique = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
@@ -183,7 +183,7 @@ public final class PluginManager: ObservableObject {
 
             DispatchQueue.main.async {
                 self.availablePlugins = sorted
-                onLog("プラグイン検出完了: \(sorted.count)件")
+                onLog(String(localized: "Plug-in scan complete: \(sorted.count) found"))
                 completion()
             }
         }

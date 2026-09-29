@@ -86,9 +86,11 @@ public struct MainDAWView: View {
             MasterExportDialog(projectState: projectState)
         }
         .overlay {
-            StartupLogDialog(logs: projectState.startupLog)
-                .opacity(projectState.isShowingStartupLog ? 1.0 : 0.0)
-                .allowsHitTesting(projectState.isShowingStartupLog)
+            // Removed (not just hidden) when done, so it cannot sit over the
+            // controls and affect their tooltips.
+            if projectState.isShowingStartupLog {
+                StartupLogDialog(logs: projectState.startupLog)
+            }
         }
         .overlay {
             if let message = projectState.saveConfirmationMessage {
@@ -123,6 +125,16 @@ public struct MainDAWView: View {
                 )
             }
         }
+        // SwiftUI registers tooltip areas when the layout changes. Removing a
+        // full-window overlay (start screen, plug-in scan log) leaves the
+        // controls' layout unchanged, so their tooltips stay inactive until
+        // the window is resized. Do the equivalent of a resize at those points.
+        .onChange(of: projectState.isProjectOpen) { isOpen in
+            if isOpen { refreshToolTips() }
+        }
+        .onChange(of: projectState.isShowingStartupLog) { isShowing in
+            if !isShowing { refreshToolTips() }
+        }
         .background(
             SpacebarHandler {
                 guard !projectState.isShowingMasterExportDialog else { return }
@@ -155,6 +167,15 @@ public struct MainDAWView: View {
             } redo: {
                 guard !projectState.isShowingMasterExportDialog else { return }
                 projectState.redo()
+            } edit: { command in
+                guard !projectState.isShowingMasterExportDialog else { return }
+                switch command {
+                case .cut: projectState.cutSelection()
+                case .copy: projectState.copySelection()
+                case .paste: projectState.paste()
+                case .selectAll: projectState.selectAllClips()
+                case .clearSelection: projectState.clearSelection()
+                }
             }
         )
         .onAppear {
@@ -172,6 +193,23 @@ public struct MainDAWView: View {
     }
 }
 
+extension MainDAWView {
+    /// Nudges the window width by one point and back, which makes AppKit and
+    /// SwiftUI re-register the tooltip areas just as a manual resize does.
+    fileprivate func refreshToolTips() {
+        DispatchQueue.main.async {
+            // Only the main window (plug-in windows are titled after the plug-in).
+            for window in NSApp.windows where window.isVisible && window.title.hasPrefix("MyDAW") {
+                let frame = window.frame
+                var nudged = frame
+                nudged.size.width += 1
+                window.setFrame(nudged, display: false)
+                window.setFrame(frame, display: true)
+            }
+        }
+    }
+}
+
 private struct StartupLogDialog: View {
     let logs: [String]
 
@@ -180,7 +218,7 @@ private struct StartupLogDialog: View {
                 HStack {
                     ProgressView()
                         .controlSize(.small)
-                    Text("プラグインを検出しています")
+                    Text("Scanning for plug-ins")
                         .font(.headline)
                 }
 
@@ -242,7 +280,7 @@ private struct MasterExportDialog: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Output file")
                     .font(.caption.weight(.semibold))
-                Text(projectState.masterExportURL?.path ?? "No output file selected")
+                Text(projectState.masterExportURL?.path ?? String(localized: "No output file selected"))
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
                     .lineLimit(2)
@@ -303,29 +341,37 @@ private struct MasterExportDialog: View {
     }
 }
 
+/// Clip-editing keys handled in the arranger (outside text fields).
+private enum EditCommand {
+    case cut, copy, paste, selectAll, clearSelection
+}
+
 private struct SpacebarHandler: NSViewRepresentable {
     let action: () -> Void
     let rewind: () -> Void
     let record: () -> Void
     let undo: () -> Void
     let redo: () -> Void
+    let edit: (EditCommand) -> Void
 
     init(
         action: @escaping () -> Void,
         rewind: @escaping () -> Void,
         record: @escaping () -> Void,
         undo: @escaping () -> Void,
-        redo: @escaping () -> Void
+        redo: @escaping () -> Void,
+        edit: @escaping (EditCommand) -> Void
     ) {
         self.action = action
         self.rewind = rewind
         self.record = record
         self.undo = undo
         self.redo = redo
+        self.edit = edit
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(action: action, rewind: rewind, record: record, undo: undo, redo: redo)
+        Coordinator(action: action, rewind: rewind, record: record, undo: undo, redo: redo, edit: edit)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -340,6 +386,7 @@ private struct SpacebarHandler: NSViewRepresentable {
         context.coordinator.record = record
         context.coordinator.undo = undo
         context.coordinator.redo = redo
+        context.coordinator.edit = edit
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -352,6 +399,7 @@ private struct SpacebarHandler: NSViewRepresentable {
         var record: () -> Void
         var undo: () -> Void
         var redo: () -> Void
+        var edit: (EditCommand) -> Void
         private var monitor: Any?
         private var mouseMonitor: Any?
 
@@ -360,13 +408,15 @@ private struct SpacebarHandler: NSViewRepresentable {
             rewind: @escaping () -> Void,
             record: @escaping () -> Void,
             undo: @escaping () -> Void,
-            redo: @escaping () -> Void
+            redo: @escaping () -> Void,
+            edit: @escaping (EditCommand) -> Void
         ) {
             self.action = action
             self.rewind = rewind
             self.record = record
             self.undo = undo
             self.redo = redo
+            self.edit = edit
         }
 
         func startMonitoring() {
@@ -396,6 +446,13 @@ private struct SpacebarHandler: NSViewRepresentable {
                         self.redo()
                         return nil
                     }
+                    let editCommands: [UInt16: EditCommand] = [
+                        7: .cut, 8: .copy, 9: .paste, 0: .selectAll
+                    ]
+                    if !hasShift, let command = editCommands[event.keyCode] {
+                        self.edit(command)
+                        return nil
+                    }
                 }
 
                 guard modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
@@ -405,6 +462,10 @@ private struct SpacebarHandler: NSViewRepresentable {
                 case 123:
                     self.rewind()
                     return nil
+                case 53:
+                    // Pass Escape on so dialogs can still use it to cancel.
+                    self.edit(.clearSelection)
+                    return event
                 default:
                     return event
                 }

@@ -185,7 +185,7 @@ public struct TrackHeaderView: View {
                             }
                         }
                     } label: {
-                        let selectedName = channelOptions.first(where: { $0.channelOffset == track.inputChannelIndex })?.name ?? "In \(track.inputChannelIndex + 1)"
+                        let selectedName = channelOptions.first(where: { $0.channelOffset == track.inputChannelIndex })?.name ?? String(localized: "In \(track.inputChannelIndex + 1)")
                         HStack(spacing: 2) {
                             Image(systemName: "mic.fill")
                                 .font(.system(size: 8))

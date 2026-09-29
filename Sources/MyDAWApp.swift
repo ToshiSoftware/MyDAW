@@ -43,7 +43,7 @@ struct MyDAWApp: App {
                 Button("About MyDAW") {
                     let version = Bundle.main.object(
                         forInfoDictionaryKey: "CFBundleShortVersionString"
-                    ) as? String ?? "1.5"
+                    ) as? String ?? "1.6"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationVersion: version
                     ])

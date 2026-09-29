@@ -9,8 +9,9 @@ public struct WaveformCanvas: View {
     public let visibleDuration: Double?
     public let channelIndex: Int?
     public let verticalScale: CGFloat
-    public let fadeInDuration: Double
-    public let fadeOutDuration: Double
+    /// Playback gain by seconds from the first visible sample; the waveform
+    /// is drawn at the level it will actually be heard.
+    public let envelope: ((Double) -> Double)?
 
     public init(
         waveformCache: WaveformCache,
@@ -21,8 +22,7 @@ public struct WaveformCanvas: View {
         visibleDuration: Double? = nil,
         channelIndex: Int? = nil,
         verticalScale: CGFloat = 1.0,
-        fadeInDuration: Double = 0.0,
-        fadeOutDuration: Double = 0.0
+        envelope: ((Double) -> Double)? = nil
     ) {
         self.waveformCache = waveformCache
         self.trackColor = trackColor
@@ -32,8 +32,7 @@ public struct WaveformCanvas: View {
         self.visibleDuration = visibleDuration
         self.channelIndex = channelIndex
         self.verticalScale = verticalScale
-        self.fadeInDuration = max(0.0, fadeInDuration)
-        self.fadeOutDuration = max(0.0, fadeOutDuration)
+        self.envelope = envelope
     }
 
     public var body: some View {
@@ -70,8 +69,9 @@ public struct WaveformCanvas: View {
                 let x = CGFloat(Double(i - startIndex) * pixelsPerPeak)
                 if x > size.width { break }
 
-                let topY = centerY - max(1.0, CGFloat(peak.max) * maxAmplitude)
-                let bottomY = centerY - min(-1.0, CGFloat(peak.min) * maxAmplitude)
+                let gain = envelope.map { CGFloat($0(Double(i - startIndex) * secondsPerPeak)) } ?? 1.0
+                let topY = centerY - max(1.0, CGFloat(peak.max) * maxAmplitude * gain)
+                let bottomY = centerY - min(-1.0, CGFloat(peak.min) * maxAmplitude * gain)
 
                 if i == startIndex {
                     topPath.move(to: CGPoint(x: x, y: centerY))
@@ -104,22 +104,52 @@ public struct WaveformCanvas: View {
 
             // Crisp stroke contour
             context.stroke(topPath, with: .color(trackColor.opacity(0.95)), lineWidth: 1.0)
-
-            let fadeInX = min(size.width, CGFloat(fadeInDuration * Double(pixelsPerSecond)))
-            let fadeOutX = max(0.0, size.width - CGFloat(fadeOutDuration * Double(pixelsPerSecond)))
-            if fadeInDuration > 0.0 {
-                var fadeInPath = Path()
-                fadeInPath.move(to: CGPoint(x: 0.0, y: size.height))
-                fadeInPath.addLine(to: CGPoint(x: fadeInX, y: 0.0))
-                context.stroke(fadeInPath, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
-            }
-            if fadeOutDuration > 0.0 {
-                var fadeOutPath = Path()
-                fadeOutPath.move(to: CGPoint(x: fadeOutX, y: 0.0))
-                fadeOutPath.addLine(to: CGPoint(x: size.width, y: size.height))
-                context.stroke(fadeOutPath, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
-            }
         }
     }
 }
 
+/// Fade-in and fade-out lines across a clip's full height, following each
+/// fade's curve (gain 0 at the bottom, 1 at the top).
+public struct FadeLinesOverlay: View {
+    let fadeInWidth: CGFloat
+    let fadeOutWidth: CGFloat
+    let fadeInCurve: FadeCurve
+    let fadeOutCurve: FadeCurve
+
+    public init(fadeInWidth: CGFloat, fadeOutWidth: CGFloat, fadeInCurve: FadeCurve, fadeOutCurve: FadeCurve) {
+        self.fadeInWidth = fadeInWidth
+        self.fadeOutWidth = fadeOutWidth
+        self.fadeInCurve = fadeInCurve
+        self.fadeOutCurve = fadeOutCurve
+    }
+
+    public var body: some View {
+        Canvas { context, size in
+            let steps = 32
+            if fadeInWidth > 0.0 {
+                let width = min(size.width, fadeInWidth)
+                var path = Path()
+                for step in 0...steps {
+                    let ramp = Double(step) / Double(steps)
+                    let point = CGPoint(x: width * CGFloat(ramp), y: size.height * CGFloat(1.0 - fadeInCurve.value(ramp)))
+                    step == 0 ? path.move(to: point) : path.addLine(to: point)
+                }
+                context.stroke(path, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
+            }
+            if fadeOutWidth > 0.0 {
+                let startX = max(0.0, size.width - fadeOutWidth)
+                var path = Path()
+                for step in 0...steps {
+                    let progress = Double(step) / Double(steps)
+                    let point = CGPoint(
+                        x: startX + (size.width - startX) * CGFloat(progress),
+                        y: size.height * CGFloat(1.0 - fadeOutCurve.value(1.0 - progress))
+                    )
+                    step == 0 ? path.move(to: point) : path.addLine(to: point)
+                }
+                context.stroke(path, with: .color(Color.white.opacity(0.85)), lineWidth: 1.5)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}

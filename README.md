@@ -1,6 +1,6 @@
 # MyDAW — Multitrack Audio DAW for Mac (Apple Silicon)
 
-**Version 1.5** · [日本語版 README](README_jp.md)
+**Version 1.6** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -25,7 +25,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ## Features
 
 ### Recording
-- 24-bit Linear PCM WAV, 44.1 / 48 kHz, mono or stereo tracks, written directly to disk.
+- 24-bit Linear PCM WAV, 44.1 / 48 / 88.2 / 96 kHz, mono or stereo tracks, written directly to disk.
 - Per-track input channel selection from any Core Audio interface.
 - Sample-accurate placement of takes, with automatic and manual latency compensation.
 - **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
@@ -34,9 +34,16 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 
 ### Editing
 - Move clips (also between tracks), trim both edges, clip gain, fade in/out, split, duplicate, delete, mute.
+- **Multiple selection**: shift/cmd-click, marquee (shift to add), cmd+A. Selected clips move and delete together.
+- **Range selection** (cmd-drag) across tracks: delete (leave silence), crop, split at both edges.
+- **Cut / copy / paste** (cmd+X / C / V, pasted at the playhead) and option-drag to duplicate.
+- **Fade curves**: drag the handle in the middle of a fade line to bend it continuously (snaps to linear and equal power; double-click for Auto).
+- **Normalize** (clip gain to 0 dBFS) and **Reverse** (writes a reversed WAV and switches the clip to it).
+- Tooltips show fade length, gain (dB) and curve while dragging. Waveforms are drawn at the level heard, including fades and crossfades.
 - Undo / redo of clip edits, beat snap.
-- **Overlap layering**: the most recently added clip plays on top of older ones, with automatic equal-power crossfades at the boundaries. The fades of the upper clip drive the crossfades.
-- WAV import by drag and drop from Finder.
+- **Overlap layering**: the most recently added clip plays on top of older ones, with automatic crossfades (equal power by default) at the boundaries. The fades of the upper clip drive the crossfades.
+- WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
+- View: mouse wheel over the ruler or a pinch zooms horizontally, option+wheel sets track height, option+shift+wheel sets waveform height.
 
 ### Mixing
 - Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**.
@@ -53,6 +60,14 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Project
 - One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
 - Master mix export to 24-bit WAV.
+
+### Audio devices
+- Separate input and output devices (for example, an audio interface for input and a monitor's speakers for output). While MyDAW runs, the chosen devices become the macOS default input and output; the previous defaults are restored on quit.
+- Changing a device or the sample rate offers to save and restart, and reopens the project after the restart.
+
+### Languages
+- The GUI is available in English and Japanese. It follows the macOS language at first and can be switched under Language in Settings (after a restart).
+- Translations live in `Localizable.strings` under `Resources/en.lproj` and `Resources/ja.lproj`; an English/Japanese table is in [docs/UI_Strings_en_ja.csv](docs/UI_Strings_en_ja.csv). After adding GUI strings, run `./scripts/extract-strings.sh` to find missing translations.
 
 ---
 
@@ -101,7 +116,8 @@ MyDAW/
 ├── Sources/            Swift sources (Models / Audio / Views)
 ├── VST3Host/           C++ VST3 host bridge
 ├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
-├── scripts/            build.sh, run.sh
+├── Resources/          Translations (en.lproj, ja.lproj)
+├── scripts/            build.sh, run.sh, extract-strings.sh (translation check)
 ├── docs/               Analysis, specification, manual sources (docs/manual)
 ├── OperationManual_*.pdf
 └── snapshots/          Source snapshots taken around each change
@@ -111,13 +127,15 @@ MyDAW/
 
 ## Known limitations
 
-- VST3 instruments are not supported (effects only).
-- Changing the device sample rate with a project open requires VST3 plug-ins to be re-inserted.
+- Instruments are not supported, neither AU nor VST3 (effects only). AU effects driven by MIDI (music effects) are not listed either.
+- Device, sample-rate and language changes take effect after MyDAW restarts (it offers to restart when you change them).
+- Switching input monitoring (I) during playback takes effect after you stop: when turned on, the input is heard once effect tails have faded; when turned off, the input stays audible until you stop (monitoring cannot be rewired while playing).
+- While MyDAW runs, the chosen devices are the macOS defaults, so other apps use them too. If MyDAW crashes the defaults are not restored; reset them in System Settings → Sound.
 - Plug-ins can be inserted, removed and reordered only while stopped.
-- Relab LX480 uses the Generic UI when several instances exist (known GUI limitation of the plug-in).
+- If a plug-in's own editor does not respond within 3 seconds, MyDAW shows a generic parameter view (Generic UI) instead.
 
 ---
 
 ## Version
 
-The About dialog shows version **1.5**.
+The About dialog shows version **1.6**.

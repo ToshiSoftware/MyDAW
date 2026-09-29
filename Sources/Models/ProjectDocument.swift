@@ -226,10 +226,13 @@ public struct ClipDocument: Codable {
     public let isMuted: Bool
     public let fadeInDuration: Double
     public let fadeOutDuration: Double
+    public let fadeInCurve: FadeCurve
+    public let fadeOutCurve: FadeCurve
     public let filePath: String
 
     private enum CodingKeys: String, CodingKey {
-        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, isMuted, fadeInDuration, fadeOutDuration, filePath
+        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, isMuted, fadeInDuration, fadeOutDuration
+        case fadeInCurve, fadeOutCurve, filePath
     }
 
     public init(
@@ -242,6 +245,8 @@ public struct ClipDocument: Codable {
         isMuted: Bool = false,
         fadeInDuration: Double = 0.0,
         fadeOutDuration: Double = 0.0,
+        fadeInCurve: FadeCurve = .auto,
+        fadeOutCurve: FadeCurve = .auto,
         filePath: String
     ) {
         self.id = id
@@ -253,6 +258,8 @@ public struct ClipDocument: Codable {
         self.isMuted = isMuted
         self.fadeInDuration = max(0.0, fadeInDuration)
         self.fadeOutDuration = max(0.0, fadeOutDuration)
+        self.fadeInCurve = fadeInCurve
+        self.fadeOutCurve = fadeOutCurve
         self.filePath = filePath
     }
 
@@ -267,6 +274,8 @@ public struct ClipDocument: Codable {
         isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
         fadeInDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeInDuration) ?? 0.0)
         fadeOutDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeOutDuration) ?? 0.0)
+        fadeInCurve = (try? values.decodeIfPresent(FadeCurve.self, forKey: .fadeInCurve)) ?? .auto
+        fadeOutCurve = (try? values.decodeIfPresent(FadeCurve.self, forKey: .fadeOutCurve)) ?? .auto
         filePath = try values.decode(String.self, forKey: .filePath)
     }
 }

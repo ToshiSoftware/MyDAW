@@ -32,7 +32,7 @@ public final class AudioDeviceManager: ObservableObject {
     private static let savedInputDeviceUIDKey = "MyDAW.inputDeviceUID"
     private static let savedOutputDeviceUIDKey = "MyDAW.outputDeviceUID"
 
-    @Published public var deviceName: String = "Default Audio Interface"
+    @Published public var deviceName: String = String(localized: "Default Audio Interface")
     @Published public var availableMonoChannels: [AudioInputChannelOption] = []
     @Published public var availableStereoChannels: [AudioInputChannelOption] = []
     @Published public var hardwareInputChannelCount: Int = 2
@@ -65,7 +65,7 @@ public final class AudioDeviceManager: ObservableObject {
         }
         persistSelectedDevices()
 
-        var detectedName = "Default Input"
+        var detectedName = String(localized: "Default Input")
         var detectedChannels = 2
         var detectedSampleRate = 48000.0
 
@@ -134,7 +134,7 @@ public final class AudioDeviceManager: ObservableObject {
                 AudioInputChannelOption(
                     id: i,
                     channelOffset: i,
-                    name: "Input \(i + 1)",
+                    name: String(localized: "Input \(i + 1)"),
                     isStereo: false
                 )
             )
@@ -148,7 +148,7 @@ public final class AudioDeviceManager: ObservableObject {
                 AudioInputChannelOption(
                     id: i,
                     channelOffset: i,
-                    name: "Input \(i + 1)-\(i + 2)",
+                    name: String(localized: "Input \(i + 1)-\(i + 2)"),
                     isStereo: true
                 )
             )
@@ -158,7 +158,7 @@ public final class AudioDeviceManager: ObservableObject {
                 AudioInputChannelOption(
                     id: 0,
                     channelOffset: 0,
-                    name: "Input 1-2",
+                    name: String(localized: "Input 1-2"),
                     isStereo: true
                 )
             )
@@ -281,7 +281,7 @@ public final class AudioDeviceManager: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &nameSize, &cName) == noErr else {
-            return "Audio Device \(deviceID)"
+            return String(localized: "Audio Device \(deviceID)")
         }
         return String(cString: cName)
     }

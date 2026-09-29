@@ -107,8 +107,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     @Published public private(set) var selectedInputDeviceID: AudioDeviceID = 0
     @Published public private(set) var selectedOutputDeviceID: AudioDeviceID = 0
     @Published public private(set) var unavailablePluginIDs: Set<UUID> = []
-    // Private aggregate device used when input and output are different devices.
-    private var aggregateIODeviceID: AudioObjectID = 0
+    /// macOS default input/output found before MyDAW replaced them.
+    private var originalDefaultDevices: (input: AudioDeviceID, output: AudioDeviceID)?
 
     // Player node and file mapping per track ID
     private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
@@ -234,6 +234,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var inputMonitorNodes: [UUID: AVAudioUnitEffect] = [:]
     private var desiredInputMonitors: [UUID: InputMonitorConfig] = [:]
     private var appliedInputMonitors: [UUID: InputMonitorConfig] = [:]
+    private var inputMonitorApplyTask: Task<Void, Never>?
+    private var quietRewireGeneration = 0
+    private var isWaitingForQuietRewire = false
+    /// The FX input each send's gain mixer is currently connected to.
+    private var wiredSendTargets: [UUID: AVAudioMixerNode] = [:]
     private var punchPlaybackState: Int = 0
     private var pendingRecordingClipStartTime: Double?
     private var hasLoggedFirstRecordingInput = false
@@ -334,7 +339,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     public func chooseRecordingsDirectory() -> Bool {
         guard !isPlaying && !isRecording else { return false }
         let panel = NSOpenPanel()
-        panel.title = "Choose Recordings Folder"
+        panel.title = String(localized: "Choose Recordings Folder")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -700,9 +705,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
         }
 
-        // Rebinding the I/O unit after the engine has run with input enabled
-        // leaves AVAudioEngine with stale 0-channel node formats, so only
-        // rebind when the device pair actually changes.
+        // Only switch the defaults when the device pair actually changes; the
+        // running engine keeps its old devices until MyDAW restarts.
         let devicesChanged = inputDeviceID != selectedInputDeviceID ||
             outputDeviceID != selectedOutputDeviceID
         if devicesChanged && !bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID) {
@@ -718,95 +722,78 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         return true
     }
 
-    /// Binds the engine's I/O unit to the given devices. On macOS,
-    /// AVAudioEngine's inputNode and outputNode share a single AUHAL, so it
-    /// can only be bound to one device. Separate input/output devices (e.g. a
-    /// MacBook's built-in mic and speakers) are combined into a private
-    /// aggregate device clocked by the output; binding an input-only or
-    /// output-only device leaves the engine without a valid output format.
-    /// Call before the engine first starts.
+    /// Points the engine at the given devices by making them the macOS
+    /// default input and output. With input in use, AVAudioEngine ignores a
+    /// device set on its I/O unit (a private aggregate included) and always
+    /// runs on an aggregate of the system default input and output,
+    /// so the defaults are the only handle that works. The defaults found at
+    /// launch are put back by `shutdown()`. Call before the engine first
+    /// starts; a change while running takes effect after a restart.
     @discardableResult
     private func bindIODevice(inputDeviceID: AudioDeviceID, outputDeviceID: AudioDeviceID) -> Bool {
-        guard let ioUnit = engine.outputNode.audioUnit else { return false }
-        let previousAggregateID = aggregateIODeviceID
-        var newAggregateID = AudioObjectID(0)
-
-        var deviceID: AudioDeviceID
-        if inputDeviceID == 0 || inputDeviceID == outputDeviceID {
-            deviceID = outputDeviceID
-        } else if outputDeviceID == 0 {
-            deviceID = inputDeviceID
-        } else {
-            guard let aggregateID = Self.makeAggregateDevice(
-                inputDeviceID: inputDeviceID,
-                outputDeviceID: outputDeviceID
-            ) else { return false }
-            newAggregateID = aggregateID
-            deviceID = aggregateID
+        if originalDefaultDevices == nil {
+            originalDefaultDevices = (
+                Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice),
+                Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+            )
         }
-        guard deviceID != 0 else { return false }
-
-        let status = AudioUnitSetProperty(
-            ioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &deviceID,
-            UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        guard status == noErr else {
-            print("Failed to set audio device \(deviceID): \(status)")
-            if newAggregateID != 0 {
-                AudioHardwareDestroyAggregateDevice(newAggregateID)
-            }
-            return false
+        var succeeded = true
+        if inputDeviceID != 0 {
+            succeeded = Self.setDefaultDevice(kAudioHardwarePropertyDefaultInputDevice, to: inputDeviceID) && succeeded
         }
-        if previousAggregateID != 0 {
-            AudioHardwareDestroyAggregateDevice(previousAggregateID)
+        if outputDeviceID != 0 {
+            succeeded = Self.setDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, to: outputDeviceID) && succeeded
         }
-        aggregateIODeviceID = newAggregateID
+        guard succeeded else { return false }
         selectedInputDeviceID = inputDeviceID
         selectedOutputDeviceID = outputDeviceID
         return true
     }
 
-    private static func makeAggregateDevice(
-        inputDeviceID: AudioDeviceID,
-        outputDeviceID: AudioDeviceID
-    ) -> AudioObjectID? {
-        guard let inputUID = deviceUID(for: inputDeviceID),
-              let outputUID = deviceUID(for: outputDeviceID) else { return nil }
-
-        let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "MyDAW I/O",
-            kAudioAggregateDeviceUIDKey: "com.mydaw.aggregate.\(UUID().uuidString)",
-            kAudioAggregateDeviceIsPrivateKey: 1,
-            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
-            kAudioAggregateDeviceSubDeviceListKey: [
-                [kAudioSubDeviceUIDKey: outputUID],
-                [kAudioSubDeviceUIDKey: inputUID, kAudioSubDeviceDriftCompensationKey: 1],
-            ],
-        ]
-        var aggregateID = AudioObjectID(0)
-        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID)
-        guard status == noErr, aggregateID != 0 else {
-            print("Failed to create aggregate audio device: \(status)")
-            return nil
+    /// Puts back the macOS default devices MyDAW replaced at launch.
+    private func restoreOriginalDefaultDevices() {
+        guard let original = originalDefaultDevices else { return }
+        if original.input != 0 {
+            Self.setDefaultDevice(kAudioHardwarePropertyDefaultInputDevice, to: original.input)
         }
-        return aggregateID
+        if original.output != 0 {
+            Self.setDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, to: original.output)
+        }
+        originalDefaultDevices = nil
     }
 
-    private static func deviceUID(for deviceID: AudioDeviceID) -> String? {
+    private static func defaultDevice(_ selector: AudioObjectPropertySelector) -> AudioDeviceID {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var uid: Unmanaged<CFString>?
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid) == noErr,
-              let uid else { return nil }
-        return uid.takeUnretainedValue() as String
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        return deviceID
+    }
+
+    @discardableResult
+    private static func setDefaultDevice(_ selector: AudioObjectPropertySelector, to deviceID: AudioDeviceID) -> Bool {
+        var value = deviceID
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &value
+        )
+        if status != noErr {
+            print("Failed to set default audio device \(deviceID): \(status)")
+        }
+        return status == noErr
     }
 
     private func updateEstimatedRecordingLatency() {
@@ -1161,8 +1148,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     self.masterOutputPeak = .zero
                     return peak
                 }
-                self.masterStereoPeak = self.masterStereoPeak.falling(to: outputMasterPeak, by: 0.82)
-                self.masterPeak = max(self.masterPeak * 0.85, outputMasterPeak.maximum)
+                // Assign only on change: every assignment republishes the
+                // engine, and a 30 Hz republish keeps views observing it
+                // (e.g. the transport bar) from ever showing tooltips.
+                let stereoPeak = self.masterStereoPeak.falling(to: outputMasterPeak, by: 0.82)
+                if stereoPeak != self.masterStereoPeak {
+                    self.masterStereoPeak = stereoPeak
+                }
+                let decayedPeak = max(self.masterPeak * 0.85, outputMasterPeak.maximum)
+                let masterPeak = decayedPeak < 1e-5 ? 0 : decayedPeak
+                if masterPeak != self.masterPeak {
+                    self.masterPeak = masterPeak
+                }
 
                 let outputPeaks = self.peakLock.withLock {
                     let values = self.trackOutputPeaks
@@ -1216,14 +1213,20 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         syncVST3Instances(for: allPlugins)
         syncMasterPlugins(configuredMasterPlugins)
         syncFXChannels(fxChannels)
-        for input in fxInputNodes.values {
-            engine.disconnectNodeInput(input)
+        // Sends stay wired between syncs; only new or retargeted ones are
+        // connected below. Rewiring every send on each sync (as this once
+        // did) makes AVAudioEngine throw "required condition is false:
+        // mixingDest" while input monitoring feeds the live input through
+        // those sends.
+        wiredSendTargets = wiredSendTargets.filter { _, target in
+            fxInputNodes.values.contains { $0 === target }
         }
         let activeSendIDs = Set(tracks.flatMap { $0.fxSends.filter { $0.enabled && $0.level > 0 }.map(\.id) })
         for (sendID, gainNode) in sendGainNodes where !activeSendIDs.contains(sendID) {
             engine.disconnectNodeOutput(gainNode)
             engine.detach(gainNode)
             sendGainNodes.removeValue(forKey: sendID)
+            wiredSendTargets.removeValue(forKey: sendID)
         }
         let currentTrackIDs = Set(tracks.map { $0.id })
         let currentClipIDs = Set(tracks.flatMap { $0.clips.map(\.id) })
@@ -1400,7 +1403,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     sendGainNodes[send.id] = gainNode
                 }
                 setMixerVolume(gainNode, send.level)
-                engine.connect(gainNode, to: fxInput, fromBus: 0, toBus: fxInput.nextAvailableInputBus, format: format)
+                wireSend(send.id, gainNode: gainNode, to: fxInput, format: format)
                 sendIDs.append(send.id)
             }
             trackSendIDs[track.id] = sendIDs
@@ -1454,7 +1457,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 isStereo: track.channelMode == .stereo
             )
         }
-        applyInputMonitoringIfNeeded()
+        // While a stop is still waiting for effect tails to fade, leave the
+        // rewiring to that wait instead of cutting the tails now.
+        if isWaitingForQuietRewire {
+            applyDeferredRewiresWhenQuiet()
+        } else {
+            applyInputMonitoringIfNeeded()
+        }
 
         let newConfigs = tracks.map { track in
             TrackCaptureConfig(
@@ -1519,6 +1528,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    /// Connects a send's gain mixer to an FX input unless it already feeds it.
+    private func wireSend(_ sendID: UUID, gainNode: AVAudioMixerNode, to fxInput: AVAudioMixerNode, format: AVAudioFormat) {
+        guard wiredSendTargets[sendID] !== fxInput else { return }
+        if wiredSendTargets[sendID] != nil {
+            engine.disconnectNodeOutput(gainNode)
+        }
+        engine.connect(gainNode, to: fxInput, fromBus: 0, toBus: fxInput.nextAvailableInputBus, format: format)
+        wiredSendTargets[sendID] = fxInput
+    }
+
     public func updateSendLevel(
         track: AudioTrack,
         send: FXSend,
@@ -1542,13 +1561,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         setMixerVolume(gainNode, send.enabled ? send.level : 0.0)
 
         guard !(trackSendIDs[track.id] ?? []).contains(send.id) else { return }
-        engine.connect(
-            gainNode,
-            to: fxInput,
-            fromBus: 0,
-            toBus: fxInput.nextAvailableInputBus,
-            format: format
-        )
+        wireSend(send.id, gainNode: gainNode, to: fxInput, format: format)
         trackSendIDs[track.id, default: []].append(send.id)
         if let tail = trackChainTails[track.id] {
             connectTrackChainTail(track.id, from: tail, format: format)
@@ -3317,6 +3330,44 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // track's fader, pan, inserts and sends like clip playback does.
     // Rewiring the input node needs the engine stopped; while the transport
     // runs the change is deferred to stop().
+    /// Used on transport stop for the rewiring deferred during playback
+    /// (track fan-out, input monitors). It needs the engine stopped, which
+    /// cuts effect tails still ringing (an FX reverb, say) and replays a
+    /// stale block on restart. So wait until the master output has decayed
+    /// below -60 dB (at most 8 s) first — not lower: plug-in dither and armed
+    /// inputs keep an idle master around -64 dB. If the transport starts
+    /// again before that, the next stop tries again.
+    private func applyDeferredRewiresWhenQuiet() {
+        guard !pendingSplitterRewires.isEmpty || desiredInputMonitors != appliedInputMonitors else { return }
+        inputMonitorApplyTask?.cancel()
+        quietRewireGeneration += 1
+        let generation = quietRewireGeneration
+        isWaitingForQuietRewire = true
+        inputMonitorApplyTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.quietRewireGeneration == generation {
+                    self?.isWaitingForQuietRewire = false
+                }
+            }
+            let deadline = Date().addingTimeInterval(8)
+            while let self, !Task.isCancelled, Date() < deadline {
+                if self.isPlaying || self.isRecording || self.isStartingPlayback { return }
+                if self.masterPeak < 0.001 { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, !Task.isCancelled,
+                  !self.isPlaying, !self.isRecording, !self.isStartingPlayback else { return }
+            let rewires = self.pendingSplitterRewires
+            self.pendingSplitterRewires.removeAll()
+            for (trackID, format) in rewires {
+                if let tail = self.trackChainTails[trackID] {
+                    self.connectTrackChainTail(trackID, from: tail, format: format)
+                }
+            }
+            self.applyInputMonitoringIfNeeded()
+        }
+    }
+
     private func applyInputMonitoringIfNeeded() {
         guard desiredInputMonitors != appliedInputMonitors,
               !isPlaying, !isRecording else { return }
@@ -3592,7 +3643,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
             // Newly recorded clips are added after the previous graph sync.
             // Refresh the playback file cache after their files are finalized.
+            // (Only after a recording: a plain stop needs no sync, and one
+            // here would rewire at once while effect tails still ring.)
             if let self,
+               !writersToFinalize.isEmpty,
                !self.isPlaying,
                !self.isRecording {
                 self.syncTracks(tracks, fxChannels: self.syncedFXChannels)
@@ -3608,14 +3662,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         isPlaying = false
         isRecording = false
-        let rewires = pendingSplitterRewires
-        pendingSplitterRewires.removeAll()
-        for (trackID, format) in rewires {
-            if let tail = trackChainTails[trackID] {
-                connectTrackChainTail(trackID, from: tail, format: format)
-            }
-        }
-        applyInputMonitoringIfNeeded()
+        applyDeferredRewiresWhenQuiet()
     }
 
     public func shutdown() {
@@ -3636,6 +3683,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         for player in playerNodes.values { player.stop() }
         for player in clipPlayerNodes.values { player.stop() }
         releaseVST3Instances()
+        restoreOriginalDefaultDevices()
 
         isPlaying = false
         isRecording = false
@@ -3662,20 +3710,20 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         fxChannels: [FXChannel]
     ) async throws {
         guard !isPlaying && !isRecording else {
-            throw NSError(domain: "MyDAW.Export", code: 1, userInfo: [NSLocalizedDescriptionKey: "Stop playback before exporting."])
+            throw NSError(domain: "MyDAW.Export", code: 1, userInfo: [NSLocalizedDescriptionKey: String(localized: "Stop playback before exporting.")])
         }
         let start = max(0.0, startTime)
         let end = max(start + 0.01, endTime)
         syncTracks(tracks, fxChannels: fxChannels)
         guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
-            throw NSError(domain: "MyDAW.Export", code: 2, userInfo: [NSLocalizedDescriptionKey: "Audio plug-ins are still loading. Try again in a moment."])
+            throw NSError(domain: "MyDAW.Export", code: 2, userInfo: [NSLocalizedDescriptionKey: String(localized: "Audio plug-ins are still loading. Try again in a moment.")])
         }
         guard let captureNode = masterPluginNodes.last ?? masterOutputNode,
               let format = AVAudioFormat(
                   standardFormatWithSampleRate: hardwareSampleRate,
                   channels: 2
               ) else {
-            throw NSError(domain: "MyDAW.Export", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not prepare the master output."])
+            throw NSError(domain: "MyDAW.Export", code: 3, userInfo: [NSLocalizedDescriptionKey: String(localized: "Could not prepare the master output.")])
         }
 
         let settings: [String: Any] = [

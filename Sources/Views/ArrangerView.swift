@@ -31,6 +31,8 @@ public struct ArrangerView: View {
     @ViewBuilder
     private func clipDragPreviewWaveform(clip: AudioClip, isStereo: Bool, color: Color) -> some View {
         let verticalScale = projectState.waveformVerticalScale * CGFloat(pow(10.0, clip.gainDB / 20.0))
+        let layerSpans = projectState.tracks.first(where: { $0.clips.contains { $0.id == clip.id } })
+            .map { ClipLayering.spans(for: $0.clips) } ?? []
         let channels: [Int?] = isStereo ? [0, 1] : [nil]
         VStack(spacing: 1) {
             ForEach(channels.indices, id: \.self) { index in
@@ -43,11 +45,92 @@ public struct ArrangerView: View {
                     visibleDuration: clip.duration,
                     channelIndex: channels[index],
                     verticalScale: verticalScale,
-                    fadeInDuration: clip.fadeInDuration,
-                    fadeOutDuration: clip.fadeOutDuration
+                    envelope: ClipLayering.envelope(layerSpans, clip: clip.id)
                 )
             }
         }
+        .overlay {
+            FadeLinesOverlay(
+                fadeInWidth: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond,
+                fadeOutWidth: CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond,
+                fadeInCurve: ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: true),
+                fadeOutCurve: ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: false)
+            )
+        }
+    }
+
+    /// Trackpad pinch zooms the timeline horizontally around the pointer.
+    /// `location` is in the arranger's coordinates (x from its left edge).
+    private func handleMagnify(_ event: NSEvent, at location: CGPoint) -> Bool {
+        let anchorOffset = max(0.0, location.x - 230.0)
+        projectState.setPixelsPerSecond(
+            projectState.pixelsPerSecond * (1.0 + event.magnification),
+            anchorOffset: anchorOffset
+        )
+        return true
+    }
+
+    /// Plain wheel over the ruler zooms the timeline horizontally around the
+    /// pointer; Option + wheel changes the track height; Option + Shift + wheel
+    /// changes the waveform vertical scale. `location` is in the arranger's
+    /// coordinates, measured from its top-left corner. Returns true when the
+    /// event was consumed.
+    private func handleWheel(_ event: NSEvent, at location: CGPoint) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers.isEmpty {
+            let isOverRuler = location.y < 32.0 && location.x >= 230.0
+            guard isOverRuler else { return false }
+            var delta = event.scrollingDeltaY
+            if event.hasPreciseScrollingDeltas {
+                delta /= 10.0
+            }
+            // Leave horizontal swipes alone.
+            guard delta != 0 else { return false }
+            projectState.setPixelsPerSecond(
+                projectState.pixelsPerSecond * pow(1.1, delta),
+                anchorOffset: location.x - 230.0
+            )
+            return true
+        }
+        guard modifiers == [.option] || modifiers == [.option, .shift] else { return false }
+        // macOS turns Shift + vertical wheel into horizontal scrolling.
+        var delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+            ? event.scrollingDeltaY
+            : event.scrollingDeltaX
+        if event.hasPreciseScrollingDeltas {
+            delta /= 10.0
+        }
+        guard delta != 0 else { return true }
+
+        if modifiers == [.option] {
+            projectState.trackHeightScale += delta * 0.1
+        } else {
+            projectState.waveformVerticalScale *= pow(1.1, delta)
+        }
+        return true
+    }
+
+    /// Shaded band over each track in the time selection.
+    private func timeSelectionHighlight(_ selection: TimeSelection) -> some View {
+        let x = CGFloat(selection.start) * projectState.pixelsPerSecond
+        let width = max(1.0, CGFloat(selection.end - selection.start) * projectState.pixelsPerSecond)
+        let selectedTracks = projectState.tracks.filter { selection.trackIDs.contains($0.id) }
+        return ZStack(alignment: .topLeading) {
+            ForEach(selectedTracks) { track in
+                Rectangle()
+                    .fill(Color.white.opacity(0.14))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Color.white.opacity(0.6), lineWidth: 1)
+                    )
+                    .frame(
+                        width: width,
+                        height: TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
+                    )
+                    .offset(x: x, y: projectState.trackTopY(for: track.id))
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     public var body: some View {
@@ -120,6 +203,22 @@ public struct ArrangerView: View {
                                                 timelineWidth: timelineWidth
                                             )
                                         }
+                                    }
+
+                                    if let selection = projectState.timeSelection {
+                                        timeSelectionHighlight(selection)
+                                    }
+
+                                    if let marquee = projectState.marqueeRect {
+                                        Rectangle()
+                                            .fill(Color.white.opacity(0.08))
+                                            .overlay(
+                                                Rectangle()
+                                                    .stroke(Color.white.opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                            )
+                                            .frame(width: marquee.width, height: marquee.height)
+                                            .offset(x: marquee.minX, y: marquee.minY)
+                                            .allowsHitTesting(false)
                                     }
 
                                     if let preview = projectState.clipDragPreview {
@@ -288,6 +387,9 @@ public struct ArrangerView: View {
             .background(Color(red: 0.12, green: 0.13, blue: 0.15))
 
                 }
+                // Covers the ruler row as well as the tracks, so the ruler
+                // wheel zoom can see events there.
+                .background(ArrangerWheelMonitor(onWheel: handleWheel, onMagnify: handleMagnify))
             }
         }
     }
@@ -465,6 +567,76 @@ private struct PunchRangeOverlay: View {
                         dragStartTime = nil
                     }
             )
+    }
+}
+
+/// Watches scroll-wheel and trackpad pinch events that land inside the
+/// arranger and hands them to `onWheel` / `onMagnify`; events they consume do
+/// not reach the scroll views.
+private struct ArrangerWheelMonitor: NSViewRepresentable {
+    let onWheel: (NSEvent, CGPoint) -> Bool
+    let onMagnify: (NSEvent, CGPoint) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onWheel: onWheel, onMagnify: onMagnify)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        context.coordinator.startMonitoring()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onWheel = onWheel
+        context.coordinator.onMagnify = onMagnify
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stopMonitoring()
+    }
+
+    final class Coordinator {
+        var onWheel: (NSEvent, CGPoint) -> Bool
+        var onMagnify: (NSEvent, CGPoint) -> Bool
+        weak var view: NSView?
+        private var monitor: Any?
+
+        init(onWheel: @escaping (NSEvent, CGPoint) -> Bool, onMagnify: @escaping (NSEvent, CGPoint) -> Bool) {
+            self.onWheel = onWheel
+            self.onMagnify = onMagnify
+        }
+
+        func startMonitoring() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+                guard let self,
+                      let view = self.view,
+                      let window = view.window,
+                      event.window === window else {
+                    return event
+                }
+                let point = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(point) else { return event }
+                // Hand the handlers a top-left origin, matching SwiftUI.
+                let topLeftPoint = CGPoint(
+                    x: point.x,
+                    y: view.isFlipped ? point.y : view.bounds.height - point.y
+                )
+                let consumed = event.type == .magnify
+                    ? self.onMagnify(event, topLeftPoint)
+                    : self.onWheel(event, topLeftPoint)
+                return consumed ? nil : event
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
     }
 }
 

@@ -166,7 +166,7 @@ private struct StripSections<Plugins: View, Sends: View, Controls: View>: View {
 }
 
 private struct SectionHeader<Accessory: View>: View {
-    let title: String
+    let title: LocalizedStringKey
     @ViewBuilder let accessory: () -> Accessory
 
     var body: some View {
@@ -474,10 +474,9 @@ private struct FXStripView: View {
                 }
             }
         } sends: {
-            VStack {
-                SectionHeader(title: "RETURN") { EmptyView() }
-                Spacer(minLength: 0)
-            }
+            // Nothing to show here for an FX channel; the section stays so
+            // the strips line up with the track strips.
+            Spacer(minLength: 0)
         } controls: {
             VStack(spacing: 4) {
                 PanBlock(pan: $channel.pan, tint: channel.color, onChange: applyLevels)
