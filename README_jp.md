@@ -1,4 +1,4 @@
-# MyDAW — Mac 用マルチトラック・オーディオ DAW（Apple Silicon）
+# MyDAW — プロフェッショナル オーディオ ワークステーション for Mac（Apple Silicon）
 
 **バージョン 1.6** ・ [English README](README.md)
 

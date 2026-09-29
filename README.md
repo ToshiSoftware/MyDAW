@@ -1,4 +1,4 @@
-# MyDAW — Multitrack Audio DAW for Mac (Apple Silicon)
+# MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
 **Version 1.6** · [日本語版 README](README_jp.md)
 
