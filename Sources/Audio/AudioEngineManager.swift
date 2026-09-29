@@ -1202,6 +1202,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let removedPluginIDs = Set(pluginDescriptors.keys).subtracting(activePluginIDs)
         for pluginID in removedPluginIDs {
             closePluginWindow(pluginID: pluginID)
+            pluginViewControllers.removeValue(forKey: pluginID)
             pluginUIRequests.remove(pluginID)
             pendingPluginUIRequests.remove(pluginID)
         }
@@ -1325,9 +1326,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     }.compactMap { $0 }) == Set(desiredSignature)
 
                 if canReuseNodes {
+                    let reusableSet = Set(reusableNodes.map { ObjectIdentifier($0) })
                     for pluginNode in previousNodes {
                         safeDisconnectNodeOutput(pluginNode)
                         safeDisconnectNodeInput(pluginNode)
+                        // Removed plug-ins must be detached to be released.
+                        if !reusableSet.contains(ObjectIdentifier(pluginNode)) {
+                            safeDetach(pluginNode)
+                        }
                     }
                     safeDisconnectNodeOutput(outputNode)
                     trackPluginNodes[track.id] = reusableNodes
@@ -2170,9 +2176,15 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     pluginAudioUnits.first(where: { $0.value === node })?.key
                 }.compactMap { $0 }) == Set(plugins.map(\.id))
             if canReuseNodes {
+                let reusableSet = Set(reusableNodes.map { ObjectIdentifier($0) })
                 for node in previousNodes {
                     safeDisconnectNodeOutput(node)
                     safeDisconnectNodeInput(node)
+                    // A removed plug-in left attached stays alive, and its
+                    // threads crash in the plug-in's static destructors at exit.
+                    if !reusableSet.contains(ObjectIdentifier(node)) {
+                        safeDetach(node)
+                    }
                 }
                 fxPluginNodes[channel.id] = reusableNodes
                 reconnectPluginChain(
@@ -2209,6 +2221,42 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 generation: generation
             )
         }
+        connectFXOutputsToMainMixer(format: format)
+    }
+
+    private func fxOutputsMissingMainMixer() -> [AVAudioMixerNode] {
+        fxOutputNodes.values.filter { output in
+            !engine.outputConnectionPoints(for: output, outputBus: 0)
+                .contains { $0.node === engine.mainMixerNode }
+        }
+    }
+
+    // A connect to the main mixer made while the engine runs is only queued
+    // until the next stop, and every queued connect targets the same "next
+    // available" bus, so a later one silently replaces an earlier one. That
+    // left an FX channel's output unconnected: the channel was never rendered
+    // and all sends to it were silent. So FX outputs are connected with the
+    // engine stopped, and re-checked on every sync; during transport this
+    // waits for stop().
+    private func connectFXOutputsToMainMixer(format: AVAudioFormat) {
+        let missing = fxOutputsMissingMainMixer()
+        guard !missing.isEmpty, !isPlaying, !isRecording else { return }
+        let wasRunning = engine.isRunning
+        if wasRunning {
+            engine.stop()
+        }
+        for output in missing {
+            engine.connect(
+                output,
+                to: engine.mainMixerNode,
+                fromBus: 0,
+                toBus: engine.mainMixerNode.nextAvailableInputBus,
+                format: format
+            )
+        }
+        if wasRunning {
+            try? engine.start()
+        }
     }
 
     private func connectFXOutput(
@@ -2227,9 +2275,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         if let existing = fxOutputNodes[channelID] {
             return existing
         }
+        // Connected to the main mixer by connectFXOutputsToMainMixer(), with
+        // the engine stopped.
         let output = AVAudioMixerNode()
         engine.attach(output)
-        engine.connect(output, to: engine.mainMixerNode, format: format)
         let panNode = AVAudioMixerNode()
         engine.attach(panNode)
         engine.connect(panNode, to: output, format: format)
@@ -3338,7 +3387,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// inputs keep an idle master around -64 dB. If the transport starts
     /// again before that, the next stop tries again.
     private func applyDeferredRewiresWhenQuiet() {
-        guard !pendingSplitterRewires.isEmpty || desiredInputMonitors != appliedInputMonitors else { return }
+        guard !pendingSplitterRewires.isEmpty ||
+            desiredInputMonitors != appliedInputMonitors ||
+            !fxOutputsMissingMainMixer().isEmpty else { return }
         inputMonitorApplyTask?.cancel()
         quietRewireGeneration += 1
         let generation = quietRewireGeneration
@@ -3363,6 +3414,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 if let tail = self.trackChainTails[trackID] {
                     self.connectTrackChainTail(trackID, from: tail, format: format)
                 }
+            }
+            if let format = AVAudioFormat(standardFormatWithSampleRate: self.hardwareSampleRate, channels: 2) {
+                self.connectFXOutputsToMainMixer(format: format)
             }
             self.applyInputMonitoringIfNeeded()
         }
@@ -3683,6 +3737,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         for player in playerNodes.values { player.stop() }
         for player in clipPlayerNodes.values { player.stop() }
         releaseVST3Instances()
+        releaseAudioUnits()
         restoreOriginalDefaultDevices()
 
         isPlaying = false
@@ -3700,6 +3755,31 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             (unit.auAudioUnit as? VST3AudioUnit)?.detachInstance()
         }
         vst3Instances.removeAll()
+    }
+
+    // AU plug-ins must also be disposed before exit(): plug-ins that run
+    // their own threads (JUCE timers, UADx services) otherwise crash in their
+    // static destructors while those threads are still running.
+    private func releaseAudioUnits() {
+        for pluginID in Array(pluginWindows.keys) {
+            closePluginWindow(pluginID: pluginID)
+        }
+        pluginViewControllers.removeAll()
+        pluginStateRestoreTasks.values.forEach { $0.cancel() }
+        pluginStateRestoreTasks.removeAll()
+        let nodes: [AVAudioNode] = Array(pluginAudioUnits.values) +
+            trackPluginNodes.values.flatMap { $0 } +
+            fxPluginNodes.values.flatMap { $0 } +
+            masterPluginNodes
+        for node in nodes {
+            safeDisconnectNodeOutput(node)
+            safeDisconnectNodeInput(node)
+            safeDetach(node)
+        }
+        pluginAudioUnits.removeAll()
+        trackPluginNodes.removeAll()
+        fxPluginNodes.removeAll()
+        masterPluginNodes.removeAll()
     }
 
     public func exportMasterMix(
