@@ -480,25 +480,31 @@ private struct FXStripView: View {
         } controls: {
             VStack(spacing: 4) {
                 PanBlock(pan: $channel.pan, tint: channel.color, onChange: applyLevels)
-                HStack {
-                    Text("FX")
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundColor(channel.color)
-                    Button {
-                        projectState.removeFXChannel(id: channel.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").font(.system(size: 10))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .help("Remove FX channel")
-                }
-                .frame(height: 20)
+                Text("FX")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(channel.color)
+                    .frame(height: 20)
                 FaderColumn(gain: $channel.volume, peak: channel.outputStereoPeak, tint: channel.color, onChange: applyLevels)
                 StripFooter(name: channel.name, color: channel.color) { newName in
                     projectState.renameFXChannel(id: channel.id, to: newName)
                 }
             }
             .padding(.top, 4)
+        }
+        // Replaces the mixer-wide menu on this strip, so it repeats Add FX.
+        .contextMenu {
+            Button {
+                projectState.addFXChannel()
+            } label: {
+                Label("Add FX", systemImage: "plus.circle")
+            }
+            Divider()
+            Button(role: .destructive) {
+                // Let the context menu close before the modal alert opens.
+                DispatchQueue.main.async { projectState.confirmRemoveFXChannel(id: channel.id) }
+            } label: {
+                Label("Remove FX channel", systemImage: "trash")
+            }
         }
     }
 }

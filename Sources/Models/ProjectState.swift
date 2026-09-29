@@ -672,6 +672,40 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    /// Asks before deleting, since removing a track cannot be undone.
+    public func confirmDeleteTrack(id: UUID) {
+        guard let track = tracks.first(where: { $0.id == id }),
+              confirmDeletion(
+                  name: track.name,
+                  detail: String(localized: "The track's clips, plug-ins and sends will be removed. This cannot be undone.")
+              ) else { return }
+        deleteTrack(id: id)
+    }
+
+    /// Asks before removing, since removing an FX channel cannot be undone.
+    public func confirmRemoveFXChannel(id: UUID) {
+        guard let channel = fxChannels.first(where: { $0.id == id }),
+              confirmDeletion(
+                  name: channel.name,
+                  detail: String(localized: "The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone.")
+              ) else { return }
+        removeFXChannel(id: id)
+    }
+
+    /// Return and Escape both cancel, so a stray key press never deletes.
+    private func confirmDeletion(name: String, detail: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Delete “\(name)”?")
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        let deleteButton = alert.addButton(withTitle: String(localized: "Delete"))
+        deleteButton.hasDestructiveAction = true
+        deleteButton.keyEquivalent = ""
+        let cancelButton = alert.addButton(withTitle: String(localized: "Cancel"))
+        cancelButton.keyEquivalent = "\r"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     public func toggleRecordArm(for track: AudioTrack) {
         track.isRecordArmed.toggle()
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
@@ -953,6 +987,32 @@ public final class ProjectState: ObservableObject {
         relaunch()
     }
 
+    /// Set while relaunching: the project was already saved or discarded.
+    private var skipsQuitConfirmation = false
+
+    /// Asked for every quit (menu, ⌘Q, closing the window). Returns false
+    /// when the user cancels or saving fails.
+    public func confirmQuit() -> Bool {
+        guard isProjectOpen, !skipsQuitConfirmation else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Save changes to MyDAW?")
+        alert.informativeText = String(localized: "Do you want to save the project before quitting MyDAW?")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: String(localized: "Save"))
+        alert.addButton(withTitle: String(localized: "Don't Save"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return saveProject()
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Starts a fresh copy of MyDAW once this process has exited, passing the
     /// current project file so it opens again, then quits.
     private func relaunch() {
@@ -974,6 +1034,7 @@ public final class ProjectState: ObservableObject {
             presentProjectError(String(localized: "MyDAW could not restart itself. Please quit and reopen it manually.\n\n\(error.localizedDescription)"))
             return
         }
+        skipsQuitConfirmation = true
         NSApp.terminate(nil)
     }
 

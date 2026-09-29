@@ -80,7 +80,7 @@ public struct TrackHeaderView: View {
 
                     // Delete Track Button
                     Button(action: {
-                        projectState.deleteTrack(id: track.id)
+                        projectState.confirmDeleteTrack(id: track.id)
                     }) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .bold))

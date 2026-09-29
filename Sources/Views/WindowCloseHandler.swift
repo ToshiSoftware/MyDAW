@@ -24,10 +24,11 @@ struct WindowCloseHandler: NSViewRepresentable {
         Coordinator(projectState: projectState)
     }
 
+    /// Closing the window quits MyDAW; the save prompt lives in
+    /// `applicationShouldTerminate` so the menu and ⌘Q ask too.
     final class Coordinator: NSObject, NSWindowDelegate {
         private let projectState: ProjectState
         private weak var window: NSWindow?
-        private var isClosing = false
 
         init(projectState: ProjectState) {
             self.projectState = projectState
@@ -40,42 +41,10 @@ struct WindowCloseHandler: NSViewRepresentable {
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
-            if isClosing {
-                return true
-            }
-
-            guard projectState.isProjectOpen else {
-                closeWindow()
-                return false
-            }
-
-            let alert = NSAlert()
-            alert.messageText = String(localized: "Save changes to MyDAW?")
-            alert.informativeText = String(localized: "Do you want to save the project before quitting MyDAW?")
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: String(localized: "Save"))
-            alert.addButton(withTitle: String(localized: "Don't Save"))
-            alert.addButton(withTitle: String(localized: "Cancel"))
-
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                guard projectState.saveProject() else { return false }
-                closeWindow()
-            case .alertSecondButtonReturn:
-                closeWindow()
-            default:
-                break
-            }
-            return false
-        }
-
-        private func closeWindow() {
-            guard let window else { return }
-            isClosing = true
-            window.close()
             DispatchQueue.main.async {
                 NSApp.terminate(nil)
             }
+            return false
         }
     }
 }

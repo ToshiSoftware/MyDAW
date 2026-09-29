@@ -3,9 +3,15 @@ import AVFoundation
 
 final class MyDAWApplicationDelegate: NSObject, NSApplicationDelegate {
     var shutdownAudioEngine: (() -> Void)?
+    /// Asks whether to save the project; false cancels the quit.
+    var confirmQuit: (() -> Bool)?
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        (confirmQuit?() ?? true) ? .terminateNow : .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -33,6 +39,9 @@ struct MyDAWApp: App {
                 .onAppear {
                     applicationDelegate.shutdownAudioEngine = {
                         projectState.audioEngine.shutdown()
+                    }
+                    applicationDelegate.confirmQuit = {
+                        projectState.confirmQuit()
                     }
                 }
         }
