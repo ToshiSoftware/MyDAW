@@ -61,7 +61,7 @@ struct MyDAWApp: App {
                 Button("About MyDAW") {
                     let version = Bundle.main.object(
                         forInfoDictionaryKey: "CFBundleShortVersionString"
-                    ) as? String ?? "1.7"
+                    ) as? String ?? "1.8"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationVersion: version
                     ])
@@ -90,6 +90,8 @@ struct MyDAWApp: App {
                     projectState.beginMasterExportDialog()
                 }
                 .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
+
+                Divider()
 
                 Button("Move Unused Recordings to Unused Folder") {
                     projectState.moveUnusedRecordings()

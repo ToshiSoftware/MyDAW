@@ -24,14 +24,9 @@ public final class AudioDiskWriter: @unchecked Sendable {
         self.channelCount = channelCount
         self.is24Bit = is24Bit
 
-        let cleanName = trackName
-            .replacingOccurrences(of: " ", with: "_")
-            .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let sampleRateLabel = String(format: "%.0fHz", sampleRate)
-        let bitDepth = is24Bit ? 24 : 16
-        let fileName = "Rec_\(cleanName.isEmpty ? "Track" : cleanName)_\(trackId.uuidString.prefix(6))_\(channelCount)ch_\(sampleRateLabel)_\(bitDepth)bit_\(timestamp).wav"
-        self.fileURL = destinationDirectory.appendingPathComponent(fileName)
+        // "<track name>_<take number>.wav". The file is created below, so a
+        // second writer for a same-named track takes the next number.
+        self.fileURL = RecordingFileName.nextURL(in: destinationDirectory, trackName: trackName)
 
         self.writeQueue = DispatchQueue(
             label: "com.mydaw.diskwriter.\(trackId.uuidString)",
@@ -104,5 +99,68 @@ public final class AudioDiskWriter: @unchecked Sendable {
             }
         }
         return self.fileURL
+    }
+}
+
+/// Names for files MyDAW writes into Recordings: "<name>_<number>.wav" —
+/// "Bass_001.wav" for a take, "Reverse_Bass_001.wav" for a reversed clip,
+/// "Import_001.wav" for an import. Channel count, rate and bit depth are in
+/// the WAV header.
+enum RecordingFileName {
+    static let maximumNameLength = 40
+
+    /// The track name made safe for a file name: whitespace (half- and
+    /// full-width, and "_") becomes a single "_", other symbols and emoji are
+    /// dropped, letters of any script are kept, in one Unicode form (NFC),
+    /// at most `maximumNameLength` characters. "Track" if nothing is left.
+    static func cleanTrackName(_ name: String) -> String {
+        var result = ""
+        var pendingSeparator = false
+        for character in name.precomposedStringWithCanonicalMapping {
+            if character.isWhitespace || character == "_" {
+                pendingSeparator = !result.isEmpty
+                continue
+            }
+            guard character.isLetter || character.isNumber || character == "-" else { continue }
+            if pendingSeparator {
+                result.append("_")
+                pendingSeparator = false
+            }
+            result.append(character)
+            if result.count >= maximumNameLength { break }
+        }
+        return result.isEmpty ? "Track" : result
+    }
+
+    /// The next free "<track name>_NNN.wav" in `directory`.
+    static func nextURL(in directory: URL, trackName: String) -> URL {
+        nextURL(in: directory, stem: cleanTrackName(trackName))
+    }
+
+    /// The next free "<stem>_NNN.wav" in `directory`: one past the highest
+    /// number used there or in its Unused folder, so a file moved away and
+    /// back never collides.
+    static func nextURL(in directory: URL, stem: String) -> URL {
+        let name = stem.precomposedStringWithCanonicalMapping
+        let prefix = name + "_"
+        var highest = 0
+        for folder in [directory, directory.appendingPathComponent("Unused", isDirectory: true)] {
+            let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            for url in files where url.pathExtension.lowercased() == "wav" {
+                let stem = url.deletingPathExtension().lastPathComponent.precomposedStringWithCanonicalMapping
+                guard stem.hasPrefix(prefix) else { continue }
+                let number = stem.dropFirst(prefix.count)
+                guard number.count >= 3, number.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let value = Int(number) else { continue }
+                highest = max(highest, value)
+            }
+        }
+        var take = highest + 1
+        var url: URL
+        repeat {
+            url = directory.appendingPathComponent("\(name)_\(String(format: "%03d", take)).wav")
+            take += 1
+        } while FileManager.default.fileExists(atPath: url.path)
+        return url
     }
 }

@@ -12,6 +12,9 @@ private final class VST3RenderKernel {
     // twice (its state would advance at double speed); replay the output.
     var lastSampleTime: Float64 = -1
     var lastFrames = 0
+    /// Always fed with the input, so bypass can output it delayed by the
+    /// plug-in's latency: the compensation for that latency stays right.
+    let bypassDelay = StereoDelayLine()
     private(set) var capacity = 0
     private(set) var inputLeft = UnsafeMutablePointer<Float>.allocate(capacity: 1)
     private(set) var inputRight = UnsafeMutablePointer<Float>.allocate(capacity: 1)
@@ -125,6 +128,10 @@ final class VST3AudioUnit: AUAudioUnit {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioUnitErr_FormatNotSupported))
         }
         kernel.allocate(frames: Int(maximumFramesToRender))
+        let latencySamples = kernel.instance?.latencySamples ?? 0
+        kernel.bypassDelay.allocate(
+            frames: max(latencySamples + 1, Int(outputBusArray[0].format.sampleRate.rounded()))
+        )
     }
 
     override var internalRenderBlock: AUInternalRenderBlock {
@@ -183,10 +190,15 @@ final class VST3AudioUnit: AUAudioUnit {
                 outputRight: outRight,
                 frames: frames
             ) ?? false)
-            if !processed {
-                outLeft.update(from: inLeft, count: frames)
-                outRight.update(from: inRight, count: frames)
-            }
+            // Bypassed (or failed): the input, delayed as the plug-in would.
+            kernel.bypassDelay.process(
+                inputLeft: inLeft,
+                inputRight: inRight,
+                outputLeft: processed ? nil : outLeft,
+                outputRight: processed ? nil : outRight,
+                frames: frames,
+                delay: kernel.instance?.latencySamples ?? 0
+            )
             if hasSampleTime {
                 kernel.cacheLeft.update(from: outLeft, count: frames)
                 kernel.cacheRight.update(from: outRight, count: frames)

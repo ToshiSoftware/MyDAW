@@ -202,3 +202,5 @@
 "Save Project and Continue" = "プロジェクトを保存して実行";
 "The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z)." = "実行前にプロジェクトを保存します。\n直前の録音クリップの移動は、取り消せません（⌘Z）。";
 "The Undo history was cleared, since it referred to moved files." = "移動したファイルを取り消しの履歴が使っていたため、取り消しの履歴を消去しました。";
+"The export ended before the whole range was captured." = "書き出しが、指定した範囲をすべて取り込む前に終了しました。";
+"Show in Finder" = "Finder で表示";

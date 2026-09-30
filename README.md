@@ -1,14 +1,14 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 1.7** · [日本語版 README](README_jp.md)
+**Version 1.8** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
 [NOTE]
 This project was automatically generated using AI (Copilot, Antigravity). Please refer to the article below for details.
 
-* [Japanese, original] https://note.com/tokada375/n/n750bfe9ef3f7
-* [English, translated] https://note.com/tokada375/n/n750bfe9ef3f7?hl=en
+* [Japanese, original] https://note.com/tokada375/n/n8582557559d5
+* [English, translated] https://note.com/tokada375/n/n8582557559d5?hl=en
 
 ---
 
@@ -58,11 +58,13 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Audio Unit and VST3 effects on tracks, FX channels and master; mixed in any order.
 - VST3 runs in real time inside the audio graph; GUI parameter changes are heard immediately.
 - VST3 discovery runs in a separate process with a cache; VST3s that also exist as an AU are hidden to avoid conflicts between the two builds.
-- Plug-in latency compensation and plug-in state saved with the project.
+- **Plug-in latency compensation** for track inserts and FX channels: dry and effect sounds stay in time, even with a high-latency plug-in (such as a mastering suite) on an FX channel. Bypassing a plug-in keeps its compensation, and a plug-in that changes its latency is followed.
+- The sound right at the play position is heard from the first sample; the metronome's first click too.
+- Plug-in state saved with the project.
 
 ### Project
 - One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
-- Master mix export to 24-bit WAV.
+- Master mix export to 24-bit WAV, cut to the sample at the start and end positions (plug-in latency included).
 - **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`.
 
 ### Audio devices
@@ -132,6 +134,8 @@ MyDAW/
 ## Known limitations
 
 - Instruments are not supported, neither AU nor VST3 (effects only). AU effects driven by MIDI (music effects) are not listed either.
+- A high-latency plug-in on an FX channel also delays input monitoring by that amount, and playback takes that much longer to start (the recording itself is not affected).
+- A VST3 plug-in that changes its latency after it is loaded is not followed (AU plug-ins are).
 - Device, sample-rate and language changes take effect after MyDAW restarts (it offers to restart when you change them).
 - Switching input monitoring (I) during playback takes effect after you stop: when turned on, the input is heard once effect tails have faded; when turned off, the input stays audible until you stop (monitoring cannot be rewired while playing).
 - While MyDAW runs, the chosen devices are the macOS defaults, so other apps use them too. If MyDAW crashes the defaults are not restored; reset them in System Settings → Sound.
@@ -142,4 +146,4 @@ MyDAW/
 
 ## Version
 
-The About dialog shows version **1.7**.
+The About dialog shows version **1.8**.

@@ -59,10 +59,12 @@ public struct ProjectDocument: Codable {
     public let pluginStates: [PluginStateDocument]
     public let punchRange: PunchRangeDocument
     public let songRange: SongRangeDocument
+    /// File name last used for the master export (nil: the default).
+    public let masterExportFileName: String?
 
     private enum CodingKeys: String, CodingKey {
         case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
-        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange, songRange
+        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName
     }
 
     public init(
@@ -84,7 +86,8 @@ public struct ProjectDocument: Codable {
         masterPlugins: [TrackPluginDescriptor] = [],
         pluginStates: [PluginStateDocument] = [],
         punchRange: PunchRangeDocument = PunchRangeDocument(),
-        songRange: SongRangeDocument = SongRangeDocument()
+        songRange: SongRangeDocument = SongRangeDocument(),
+        masterExportFileName: String? = nil
     ) {
         self.version = 4
         self.pixelsPerSecond = pixelsPerSecond
@@ -106,6 +109,7 @@ public struct ProjectDocument: Codable {
         self.pluginStates = pluginStates
         self.punchRange = punchRange
         self.songRange = songRange
+        self.masterExportFileName = masterExportFileName
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +134,7 @@ public struct ProjectDocument: Codable {
         pluginStates = try values.decodeIfPresent([PluginStateDocument].self, forKey: .pluginStates) ?? []
         punchRange = try values.decodeIfPresent(PunchRangeDocument.self, forKey: .punchRange) ?? PunchRangeDocument()
         songRange = try values.decodeIfPresent(SongRangeDocument.self, forKey: .songRange) ?? SongRangeDocument()
+        masterExportFileName = try values.decodeIfPresent(String.self, forKey: .masterExportFileName)
     }
 }
 

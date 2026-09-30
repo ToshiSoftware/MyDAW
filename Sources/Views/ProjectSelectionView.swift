@@ -5,7 +5,7 @@ struct ProjectSelectionView: View {
     let onOpen: () -> Void
 
     private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.7"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.8"
     }
 
     var body: some View {

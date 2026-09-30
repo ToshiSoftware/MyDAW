@@ -99,6 +99,8 @@ public final class ProjectState: ObservableObject {
     @Published public private(set) var saveConfirmationMessage: String?
     @Published public private(set) var isProjectOpen = false
     public var masterExportURL: URL?
+    /// The master export's file name as last chosen; saved with the project.
+    public var masterExportFileName: String?
     private var masterExportTask: Task<Void, Never>?
     private var saveConfirmationTask: Task<Void, Never>?
     @Published public private(set) var canUndo = false
@@ -255,6 +257,7 @@ public final class ProjectState: ObservableObject {
     private var undoStack: [ClipEditSnapshot] = []
     private var redoStack: [ClipEditSnapshot] = []
     private var activeClipEditSnapshot: ClipEditSnapshot?
+    private var transportStateObservation: AnyCancellable?
 
     public init(audioEngine: AudioEngineManager? = nil, deviceManager: AudioDeviceManager? = nil, pluginManager: PluginManager? = nil) {
         let deviceManager = deviceManager ?? AudioDeviceManager()
@@ -278,6 +281,16 @@ public final class ProjectState: ObservableObject {
         }
 
         setupPeakObserver()
+        // Menu items enabled by transport state observe this object only, so
+        // a stop that nothing else reports (the song end flag) must reach them.
+        transportStateObservation = Publishers.CombineLatest3(
+            self.audioEngine.$isPlaying.removeDuplicates(),
+            self.audioEngine.$isRecording.removeDuplicates(),
+            self.audioEngine.$hasPendingRecording.removeDuplicates()
+        )
+        .dropFirst()
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in self?.objectWillChange.send() }
         self.audioEngine.onReachSongEnd = { [weak self] in
             guard let self else { return }
             self.audioEngine.stop(tracks: self.tracks)
@@ -525,14 +538,23 @@ public final class ProjectState: ObservableObject {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSSavePanel()
         panel.title = String(localized: "Export Master Mix")
-        panel.nameFieldStringValue = "MyDAW Master Mix.wav"
-        panel.directoryURL = audioEngine.recordingsDirectory
+        panel.nameFieldStringValue = masterExportFileName ?? defaultMasterExportFileName
+        panel.directoryURL = projectFolderURL ?? audioEngine.recordingsDirectory.deletingLastPathComponent()
         panel.allowedContentTypes = [.wav]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         masterExportURL = url
+        masterExportFileName = url.lastPathComponent
         masterExportCompleted = false
         masterExportError = nil
         isShowingMasterExportDialog = true
+    }
+
+    /// "<project name>_Master_Mix.wav".
+    private var defaultMasterExportFileName: String {
+        let projectName = currentProjectURL?.deletingPathExtension().lastPathComponent
+            ?? projectFolderURL?.lastPathComponent
+            ?? "MyDAW"
+        return "\(projectName)_Master_Mix.wav"
     }
 
     public func exportMasterMix(startTime: Double, endTime: Double) {
@@ -604,13 +626,9 @@ public final class ProjectState: ObservableObject {
         return destinationURL
     }
 
+    /// "Import_001.wav", "Import_002.wav", …
     private func importDestinationURL(for sourceURL: URL, in recordingsURL: URL) -> URL {
-        let baseName = sourceURL.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: " ", with: "_")
-            .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
-        let safeBaseName = baseName.isEmpty ? "Imported" : baseName
-        let fileName = "Import_\(safeBaseName)_\(UUID().uuidString.prefix(8)).wav"
-        return recordingsURL.appendingPathComponent(fileName)
+        RecordingFileName.nextURL(in: recordingsURL, stem: "Import")
     }
 
     public func insertPlugin(_ descriptor: TrackPluginDescriptor, into trackID: UUID) {
@@ -1046,7 +1064,8 @@ public final class ProjectState: ObservableObject {
             masterPlugins: masterPlugins,
             pluginStates: audioEngine.capturePluginStates(),
             punchRange: punchRange,
-            songRange: songRange
+            songRange: songRange,
+            masterExportFileName: masterExportFileName
         )
 
         do {
@@ -1187,6 +1206,8 @@ public final class ProjectState: ObservableObject {
             currentProjectURL = projectURL
             projectFolderURL = folderURL.standardizedFileURL
             audioEngine.recordingsDirectory = recordingsURL.standardizedFileURL
+            // A new project starts from its own default export name.
+            masterExportFileName = nil
             isProjectOpen = true
             return saveProject()
         } catch {
@@ -1266,6 +1287,7 @@ public final class ProjectState: ObservableObject {
             masterPlugins = uniquePluginInstances(document.masterPlugins)
             punchRange = document.punchRange
             songRange = document.songRange
+            masterExportFileName = document.masterExportFileName
             audioEngine.setSavedPluginStates(document.pluginStates)
             let beatDuration = 60.0 / max(20.0, min(400.0, document.bpm))
             audioEngine.setPunchRange(

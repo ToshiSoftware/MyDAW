@@ -12,14 +12,26 @@ public struct ArrangerView: View {
     @ObservedObject public var projectState: ProjectState
     @ObservedObject public var audioEngine: AudioEngineManager
 
-    // Dynamic timeline width (minimum 2000pt or extends with zoom & duration)
-    private var timelineWidth: CGFloat {
+    // Dynamic timeline width (minimum 2500 pt, extends with zoom & duration).
+    // It always reaches a screen past the playhead, where auto-scroll puts
+    // the view: the ruler is offset by `timelineScrollTime` while the tracks
+    // scroll for real, and a scroll clamped at the content's end would leave
+    // the ruler (flags, playhead ball) drawn ahead of the tracks.
+    private func timelineWidth(viewportWidth: CGFloat) -> CGFloat {
         let clipEndTime = projectState.tracks
             .flatMap { $0.clips }
             .map { $0.startTime + $0.duration }
             .max() ?? 0.0
-        let maxDuration = max(60.0, audioEngine.currentTime + 30.0, clipEndTime + 5.0)
-        return max(2500.0, CGFloat(maxDuration) * projectState.pixelsPerSecond)
+        let pixelsPerSecond = max(0.001, projectState.pixelsPerSecond)
+        let visibleDuration = Double(max(1.0, viewportWidth - 230.0) / pixelsPerSecond)
+        let maxDuration = max(
+            60.0,
+            audioEngine.currentTime + 30.0,
+            clipEndTime + 5.0,
+            (projectState.songEndTime ?? 0.0) + 5.0,
+            audioEngine.currentTime + visibleDuration + 5.0
+        )
+        return max(2500.0, CGFloat(maxDuration) * pixelsPerSecond)
     }
 
     public init(projectState: ProjectState, audioEngine: AudioEngineManager) {
@@ -135,6 +147,7 @@ public struct ArrangerView: View {
 
     public var body: some View {
         GeometryReader { viewport in
+            let timelineWidth = timelineWidth(viewportWidth: viewport.size.width)
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
                     HStack {

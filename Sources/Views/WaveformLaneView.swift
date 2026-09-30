@@ -241,19 +241,28 @@ private struct AudioClipView: View {
     var body: some View {
         let audioEngine = projectState.audioEngine
         let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-        let hasPassedPunchOut = projectState.punchRange.enabled &&
-            audioEngine.currentTime >= projectState.punchRange.endBeat * beatDuration
+        // The take being recorded: from the record start (also before a
+        // punch-in, when the engine is not yet "recording") until its file
+        // is finalized after stop.
         let isActiveClip = track.isRecordArmed &&
             clip.id == track.clips.last?.id &&
-            (audioEngine.isRecording ||
-             (audioEngine.hasPendingRecording && audioEngine.isPlaying && hasPassedPunchOut))
+            (audioEngine.isRecording || audioEngine.hasPendingRecording)
         let liveEndTime = audioEngine.isPunchRecording
             ? audioEngine.currentTime
             : min(audioEngine.currentTime, projectState.punchRange.enabled
                 ? projectState.punchRange.endBeat * beatDuration
                 : audioEngine.currentTime)
-        let liveDuration = max(0.0, liveEndTime - clip.startTime)
-        let displayDuration = max(clip.duration, isActiveClip ? liveDuration : 0.0)
+        // A punch take records the whole pass and is cut to the punch range
+        // on stop; while it records, only the part inside the range is shown
+        // (nothing before punch-in).
+        let punchStartTime = projectState.punchRange.enabled
+            ? projectState.punchRange.startBeat * beatDuration
+            : nil
+        let hiddenLead = isActiveClip ? max(0.0, (punchStartTime ?? clip.startTime) - clip.startTime) : 0.0
+        let displayStartTime = clip.startTime + hiddenLead
+        let liveDuration = max(0.0, liveEndTime - displayStartTime)
+        let displayDuration = isActiveClip ? max(clip.duration - hiddenLead, liveDuration) : clip.duration
+        let isHiddenBeforePunchIn = isActiveClip && hiddenLead > 0 && liveEndTime <= displayStartTime
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipIDs.contains(clip.id)
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
@@ -277,14 +286,16 @@ private struct AudioClipView: View {
                     selectOnClick()
                 }
                 .contextMenu {
-                            locateFileButton
+                    fileNameMenuItem
+                    Divider()
+                    locateFileButton
                     Divider()
                     muteButton
                     Divider()
                     deleteButton
                 }
                 .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
-        } else if !clip.waveformCache.peaks.isEmpty || isActiveClip {
+        } else if (!clip.waveformCache.peaks.isEmpty || isActiveClip) && !isHiddenBeforePunchIn {
             Group {
                 if track.channelMode == .stereo {
                     VStack(spacing: 1) {
@@ -293,7 +304,7 @@ private struct AudioClipView: View {
                             trackColor: track.color,
                             sampleRate: clip.sampleRate,
                             pixelsPerSecond: projectState.pixelsPerSecond,
-                            sampleOffset: clip.sourceStartTime,
+                            sampleOffset: clip.sourceStartTime + hiddenLead,
                             visibleDuration: displayDuration,
                             channelIndex: 0,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
@@ -304,7 +315,7 @@ private struct AudioClipView: View {
                             trackColor: track.color,
                             sampleRate: clip.sampleRate,
                             pixelsPerSecond: projectState.pixelsPerSecond,
-                            sampleOffset: clip.sourceStartTime,
+                            sampleOffset: clip.sourceStartTime + hiddenLead,
                             visibleDuration: displayDuration,
                             channelIndex: 1,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
@@ -317,7 +328,7 @@ private struct AudioClipView: View {
                         trackColor: track.color,
                         sampleRate: clip.sampleRate,
                         pixelsPerSecond: projectState.pixelsPerSecond,
-                        sampleOffset: clip.sourceStartTime,
+                        sampleOffset: clip.sourceStartTime + hiddenLead,
                         visibleDuration: displayDuration
                         , verticalScale: projectState.waveformVerticalScale * clipGainScale,
                         envelope: envelope
@@ -525,6 +536,8 @@ private struct AudioClipView: View {
                 selectOnClick()
             }
             .contextMenu {
+                fileNameMenuItem
+                Divider()
                 EditMenuItems(projectState: projectState) {
                     if projectState.timeSelection == nil && !track.selectedClipIDs.contains(clip.id) {
                         projectState.selectClip(trackId: track.id, clipId: clip.id)
@@ -575,7 +588,28 @@ private struct AudioClipView: View {
                 }
                 .disabled(projectState.audioEngine.isRecording)
             }
-            .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
+            .offset(x: CGFloat(displayStartTime) * projectState.pixelsPerSecond)
+        }
+    }
+
+    /// The clip's file name (no path) at the top of its menu. A menu shows
+    /// plain text greyed out, so it is a button: it reveals the file in the
+    /// Finder. A missing file has nothing to reveal and stays greyed out.
+    @ViewBuilder
+    private var fileNameMenuItem: some View {
+        if clip.isFileMissing {
+            Text(verbatim: clip.fileURL.lastPathComponent)
+        } else {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([clip.fileURL])
+            } label: {
+                Label {
+                    Text(verbatim: clip.fileURL.lastPathComponent)
+                } icon: {
+                    Image(systemName: "doc")
+                }
+            }
+            .help("Show in Finder")
         }
     }
 

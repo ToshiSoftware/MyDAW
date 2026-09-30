@@ -342,9 +342,10 @@ extension ProjectState {
     /// in place, so Undo simply points the clip back at it.
     public func reverseClips(trackId: UUID, clipId: UUID) {
         editMenuTargets(trackId: trackId, clipId: clipId) { clip in
-            let baseName = clip.fileURL.deletingPathExtension().lastPathComponent
-            let destination = audioEngine.recordingsDirectory.appendingPathComponent(
-                "Reverse_\(baseName)_\(UUID().uuidString.prefix(8)).wav"
+            let trackName = tracks.first { $0.clips.contains { $0 === clip } }?.name ?? ""
+            let destination = RecordingFileName.nextURL(
+                in: audioEngine.recordingsDirectory,
+                stem: "Reverse_" + RecordingFileName.cleanTrackName(trackName)
             )
             do {
                 try FileManager.default.createDirectory(

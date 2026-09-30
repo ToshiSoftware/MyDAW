@@ -37,6 +37,7 @@
 		DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00280000000000000001 /* VST3AudioUnit.swift */; };
 		DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */; };
 		DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */; };
+		DAWB00940000000000000001 /* DelayCompensationAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */; };
 		DAWB00920000000000000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = DAWF00920000000000000001 /* AppIcon.icns */; };
 /* End PBXBuildFile section */
 
@@ -72,6 +73,7 @@
 		DAWF00280000000000000001 /* VST3AudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3AudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMonitorAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonoDownmixAudioUnit.swift; sourceTree = "<group>"; };
+		DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DelayCompensationAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00900000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		DAWF00910000000000000001 /* MyDAW.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyDAW.entitlements; sourceTree = "<group>"; };
 		DAWF00920000000000000001 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 				DAWF00240000000000000001 /* GenericAUParameterView.swift */,
 				DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */,
 				DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */,
+				DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */,
 				DAWF00170000000000000001 /* PluginManager.swift */,
 				DAWF00280000000000000001 /* VST3AudioUnit.swift */,
 				DAWF00180000000000000001 /* VST3Host.swift */,
@@ -304,6 +307,7 @@
 				DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */,
 				DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */,
 				DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */,
+				DAWB00940000000000000001 /* DelayCompensationAudioUnit.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -379,7 +383,7 @@
 					"$(HOME)/Library/Caches/MyDAW/vst3-build",
 					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lMyDAWVST3Bridge",
@@ -420,7 +424,7 @@
 					"$(HOME)/Library/Caches/MyDAW/vst3-build",
 					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lMyDAWVST3Bridge",

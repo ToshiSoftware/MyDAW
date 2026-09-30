@@ -202,3 +202,5 @@
 "Save Project and Continue" = "Save Project and Continue";
 "The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z)." = "The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z).";
 "The Undo history was cleared, since it referred to moved files." = "The Undo history was cleared, since it referred to moved files.";
+"The export ended before the whole range was captured." = "The export ended before the whole range was captured.";
+"Show in Finder" = "Show in Finder";
