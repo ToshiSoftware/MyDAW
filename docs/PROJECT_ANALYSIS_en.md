@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v1.7)
+# MyDAW Project Analysis (v1.8)
 
-> Version covered: **1.7** (source as of 2026-09-30, v1.7 release)
+> Version covered: **1.8** (source as of 2026-09-30, v1.8 release)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -24,18 +24,19 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 
 ### 1.1 Main features
 
-- **Recording**: per-track input channel assignment (mono/stereo), 24-bit WAV written directly to disk, sample-accurate placement.
-- **Punch in/out**: records only inside the punch range on the ruler. The whole pass is kept on disk and the take is trimmed to the range on stop (leaving handles).
+- **Recording**: per-track input channel assignment (mono/stereo), 24-bit WAV written directly to disk, sample-accurate placement. Mono/stereo can also be switched on recorded tracks, without rewriting files (a mono track plays stereo clips as (L+R)/2).
+- **Punch in/out**: records only inside the punch range on the ruler. The whole pass is kept on disk and the take is trimmed to the range on stop (leaving handles); while recording, only the part inside the range is shown.
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
 - **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
 - **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate.
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
-- **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S, direct numeric entry.
-- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation.
+- **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry.
+- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
-- **Other**: BPM / bars-and-beats ruler, metronome, master export (24-bit WAV), project save/load, WAV import (with sample-rate / bit-depth conversion), track colours.
+- **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome, master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours.
 
 ---
 
@@ -65,6 +66,7 @@ MyDAW/
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
+│   │   ├── DelayCompensationAudioUnit.swift In-app AUv3 delay for FX latency compensation
 │   │   ├── VST3NativeInstance.swift  Swift wrapper around the C++ VST3 instance
 │   │   ├── VST3HostBridge.swift      Swift wrapper around the VST3 enumeration API
 │   │   ├── VST3Host.swift            VST3 host abstraction (protocols)
@@ -124,7 +126,7 @@ flowchart TD
 
 - **UI → ProjectState**: views call `ProjectState` methods; `ProjectState` updates the model and pushes changes to the engine (`AudioEngineManager.syncTracks` etc.).
 - **ProjectState**: owns track/FX/master configuration, undo/redo, save/load, import and export. Editing operations (selection, range selection, clipboard) live in the `ProjectState+Editing.swift` extension.
-- **AudioEngineManager**: the central class (~3,800 lines) for the AVAudioEngine node graph, playback scheduling, recording, meters and plug-in creation.
+- **AudioEngineManager**: the central class (~4,500 lines) for the AVAudioEngine node graph, playback scheduling, recording, meters and plug-in creation.
 - **ClipLayering**: overlap and fade-curve maths extracted as pure functions so playback and drawing (waveform amplitude) use exactly the same calculation.
 
 ### 3.2 Audio signal paths
@@ -149,14 +151,16 @@ Pan mixer (applies pan)
       │
       ▼
 Splitter mixer (★ meter point: post-insert, post-fader, post-pan)
-      ├──► mainMixer ──► MASTER
+      ├──► DelayCompensationAudioUnit (dry: delay D; also mutes the dry sound for an FX solo) ──► mainMixer ──► MASTER
       └──► Send gain mixers ──► FX channel inputs
 ```
+
+Plug-in latency compensation: clips are scheduled early by the track's insert latency plus D, where D is the largest FX channel latency. The dry path is delayed by D and each FX return by D minus its own latency, so dry, wet and the metronome all line up with the timeline. Bypassed plug-ins still count (bypass keeps the delay; the VST3 wrapper delays its bypass signal), and every FX channel counts, fed or not. Latencies are re-read on a plug-in's kAudioUnitProperty_Latency change.
 
 #### FX channel
 
 ```
-FX input mixer (FX volume) → inserts → pan mixer → FX output mixer (★ meter) → mainMixer
+FX input mixer (FX volume) → inserts → pan mixer → DelayCompensationAudioUnit (return: D − own latency) → FX output mixer (★ meter; mute / solo) → mainMixer
 ```
 
 #### Master
@@ -215,18 +219,18 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 ### 4.1 Starting playback
 
 1. `startPlayOrRecord` waits until the plug-in graph is ready (`isPluginGraphReady`).
-2. A shared start time (now + 50 ms, as host time) is chosen.
-3. For each track, `scheduleClips`:
+2. For each track, `scheduleClips` (player-relative sample times, so no start time is needed yet):
    - splits every clip with `ClipLayering.segments` into plain / hidden / shaped pieces;
    - plain pieces are streamed with `scheduleSegment`, shaped pieces are rendered with gain, fades and crossfades and scheduled with `scheduleBuffer`, hidden pieces are not scheduled;
    - times are explicit sample times so adjacent pieces join seamlessly;
-   - everything is scheduled early by the track's plug-in latency.
-4. Only clip nodes that received audio are started with `play(at:)`, which keeps transport start fast.
-5. The metronome and playhead timer start at the same shared time.
+   - each track is scheduled `P − (its insert latency + D)` after the players start, where P is the transport pre-roll and D the FX compensation (3.2).
+3. The start time is chosen only now: past what the engine has already rendered (`lastRenderTime` + two IO buffers, at least 50 ms), plus enough time to start the players. Each `play(at:)` blocks for one render cycle, and a player started after its time drops its opening, so the players are started in the order their audio begins and the start leaves each of them its cycle before its first sound.
+4. Things that must be ready at the start (the metronome, a recording) are started before the clip players (`beforePlayersStart`).
+5. Only clip nodes that received audio are started with `play(at:)`. The playhead timer, metronome and recording use the transport start, P after the players.
 
 ### 4.2 Recording
 
-1. Record button → an `AudioDiskWriter` and a new clip per armed track.
+1. Record button → clips are scheduled and the start time chosen as in 4.1; then, before any player starts, an `AudioDiskWriter` and a new clip per armed track are created and capture is armed.
 2. For every input tap buffer (~100 ms), the timeline position of each sample is derived from the buffer's host time; audio captured before the transport started is trimmed sample-accurately before writing.
 3. While recording, the armed track's existing clips are muted (only inside the range when punching).
 4. Stop → writers are finalised and clip metadata loaded. Punch takes are trimmed to the range and get 10 ms fades.
@@ -286,7 +290,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 ## 5. Design decisions and lessons learned
 
-AVAudioEngine and plug-in pitfalls found while building v1.4–1.7, and how they were solved. Keep these in mind when changing the engine.
+AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they were solved. Keep these in mind when changing the engine.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -299,6 +303,9 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.7, and how they
 | Recordings land ~100 ms late | The pre-start part of the first tap buffer was written as-is | Trim sample-accurately using the buffer's host time |
 | Pan ignored by meters and on tracks with inserts | AVAudioMixing pan only applies on connections into a mixer | Dedicated pan mixer after the inserts |
 | Guitar Rig 7 crashes on quit | `exit()` ran without the VST3 module's `bundleExit` | Destroy VST3 instances on shutdown |
+| Quit crashes now and then (Deelay, UAD) | Plug-in threads (JUCE timers, UAD services) outlive their instances and use statics that `exit()` destroys | After `shutdown()`, leave with `_exit(0)` (no C++ static destructors) |
+| Attack at the play position often missing | Each `AVAudioPlayerNode.play(at:)` blocks for one render cycle; with many clip players the later calls pass the start time, and a late player drops its opening to keep time | Start players in the order their audio begins, and pick the start time after scheduling so each gets its cycle before its first sound |
+| Opening lost after an FX plug-in with latency was added | Audio right after the start position was not scheduled (it would have to start before the transport) | Transport pre-roll: players start the largest latency earlier than the playhead / metronome / recording |
 | Chosen input/output devices ignored; audio plays and records on the defaults | With input in use, AVAudioEngine rejects a device or app-made aggregate set on its I/O unit and substitutes an aggregate of the default devices (`CADefaultDeviceAggregate`); setting one later leaves a stale 0-channel input format and installing the tap throws | Switch the macOS default input/output to the chosen devices before building the engine and restore them on quit; changes apply after a restart |
 | Transport bar tooltips never appear | The meter timer assigned `masterPeak` / `masterStereoPeak` at 30 Hz even when stopped, so views observing `AudioEngineManager` redrew constantly | Assign only on change; decayed meter values below -100 dB become 0 |
 | No tooltips right after opening a project (they appear after resizing the window) | When a full-window overlay (start screen, the plug-in scan log left in place but transparent) goes away the layout below is unchanged, so SwiftUI does not re-register tooltip areas | Remove the scan log from the view hierarchy when hidden; when an overlay goes away, widen the window by 1 pt and back (`refreshToolTips`) |
@@ -320,6 +327,11 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.7, and how they
 - **Instruments**: not supported in AU or VST3 (effects only). AU discovery looks only for `kAudioUnitType_Effect`, so music effects (`aumf`) are not listed either.
 - **Input monitoring latency**: depends on buffer size (about 25–30 ms round trip at 48 kHz / 512 frames). Use 128–256 for guitar. Using the interface's direct monitoring at the same time makes the signal sound doubled.
 - **Graph changes while playing**: inserting, removing and reordering plug-ins is only allowed while stopped.
+- **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
+- **Plug-in latency changes**: AU latency changes are followed (property listener); a VST3's latency is read once when it is created.
+- **Bypass and latency**: a bypassed plug-in keeps counting its latency. MyDAW's VST3 wrapper delays its bypass signal to match; an AU's bypass relies on the plug-in keeping its delay.
+- **Restarts during playback**: after a clip edit or a latency change, the affected clips restart at a time chosen beforehand; with many clips restarting at once their openings can be cut briefly.
+- **Many clips starting at once**: each clip player costs a render cycle (~12 ms at 512 frames) to start, so playback starts later when many clips begin right at the play position.
 
 ---
 
@@ -332,7 +344,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.7, and how they
 4. Run import conversion and Reverse in the background with progress.
 
 ### Medium priority
-1. Split `AudioEngineManager` (~3,800 lines) into graph building, playback scheduling, recording and metering types.
+1. Split `AudioEngineManager` (~4,500 lines) into graph building, playback scheduling, recording and metering types.
 2. More robust saving (atomic writes, autosave, tracking unsaved changes).
 3. Track reordering; integration with the system clipboard.
 4. Unify conversion of shaped pieces to remove joins in mismatched-rate audio.

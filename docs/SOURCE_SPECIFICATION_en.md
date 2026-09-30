@@ -1,6 +1,6 @@
-# MyDAW Source Code Specification (v1.7)
+# MyDAW Source Code Specification (v1.8)
 
-> Version covered: **1.7** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
+> Version covered: **1.8** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 > System structure, signal paths and design decisions: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 
 For every file under `Sources/` and `VST3Host/`, this document describes responsibilities, types, the contracts of the main properties and methods, threading assumptions and side effects. Private methods are listed only where they are needed to follow the processing flow.
@@ -25,7 +25,7 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 #### `MyDAWApp: App` (`@main`)
 - **`init()`**: first calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
 - **`body`**: a `WindowGroup` with `MainDAWView`, plus menus:
-  - About (shows the version; falls back to `1.7` without Info.plist)
+  - About (shows the version; falls back to `1.8` without Info.plist)
   - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), Export Master Mix…
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
 - **`requestAudioPermissions()`**: calls the microphone permission API appropriate for the OS version.
@@ -132,6 +132,7 @@ L/R peak values. `init(buffer:)` computes each channel's maximum absolute sample
 | `PluginStateDocument` | `pluginID`, `stateData`, `format` (plist for AU, `"vst3-state"` for VST3) |
 | `PunchRangeDocument` | `startBeat`, `endBeat`, `enabled` |
 | `SongRangeDocument` | Song start / end flags: optional `startBeat`, `endBeat` |
+| `ProjectDocument.masterExportFileName` | File name last chosen for the master export (optional). The export panel opens in the project folder with this name, or `<project name>_Master_Mix.wav` |
 | `ColorDocument` | RGBA |
 
 Every decoder uses `decodeIfPresent` with defaults, so files from older versions load.
@@ -174,7 +175,7 @@ An extension of `ProjectState` that gathers selection and editing operations.
 | `deleteTimeSelection`, `cropToTimeSelection`, `splitAtTimeSelection` | Range edits (one undo step each) |
 | `deleteSelectedClips` | Deletes all selected clips |
 | `copySelection`, `cutSelection`, `paste()` | Clipboard. Paste is relative to the playhead and the selected track (tracks beyond the last fold onto it) |
-| `normalizeClips`, `reverseClips` | Act on the right-clicked clip, or the whole selection if it is part of one. Normalize sets the gain that brings the whole file's peak to 0 dBFS; Reverse writes `Reverse_*.wav`, switches the clip to it and swaps the fades |
+| `normalizeClips`, `reverseClips` | Act on the right-clicked clip, or the whole selection if it is part of one. Normalize sets the gain that brings the whole file's peak to 0 dBFS; Reverse writes `Reverse_<track name>_NNN.wav` (`RecordingFileName`), switches the clip to it and swaps the fades |
 | `beginGroupDrag`, `updateGroupDrag(delta:)`, `endGroupDrag(trackDelta:)` | Moves the selected clips together (never before zero; across tracks only when every clip has a destination) |
 | `duplicateSelectedClipsInPlace` | At the start of an option-drag, leaves copies at the original positions (directly below each original) |
 
@@ -196,6 +197,7 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 | `clipPlayerNodes` | One `AVAudioPlayerNode` per clip |
 | `trackOutputNodes` | Track output mixer (fader volume, solo, mute). Mute and solo come from `audibility(tracks:fxChannels:)`: soloing a track keeps the FX channels it sends to; soloing an FX channel plays only its return (the sending tracks keep feeding their sends, but their splitter → mainMixer connection volume is set to 0 via `setTrackDryAudible`) |
 | `trackDownmixNodes` | `MonoDownmixAudioUnit` at the head of every track chain (before the inserts) |
+| `trackDryDelayNodes` / `fxReturnDelayNodes` | `DelayCompensationAudioUnit` on each track's dry path (splitter → mainMixer, delay D; mutes the dry sound for an FX solo) and on each FX return (pan → output, delay D − own latency). Set by `updateLatencyCompensation()` |
 | `trackPluginNodes` | Inserts (AU / `VST3AudioUnit`) |
 | `trackPanNodes` | Pan mixer (after the inserts) |
 | `trackSplitterNodes` | Splitter mixer (one-to-many into mainMixer and sends; meter point) |
@@ -255,6 +257,11 @@ In-app AUv3 (`aufx`/`vst3`/`MyDW`) that places a VST3 instance in the AVAudioEng
 ### `InputMonitorAudioUnit.swift`
 In-app AUv3 (`aufx`/`inmn`/`MyDW`) that extracts a track's input channel(s) from the multichannel input (mono is duplicated to L/R). `configure(channelOffset:isStereo:)` is set while stopped; the input bus is sized to the device's channel count.
 
+### `DelayCompensationAudioUnit.swift` (new in v1.8)
+`StereoDelayLine` (render-thread ring buffer; a delay it cannot hold passes through) and an in-app AUv3 (`aufx`/`dlcp`/`MyDW`) with `delayFrames` and `isMuted` (about 5 ms ramp). Holds up to one second; reports no latency. `VST3AudioUnit` also uses `StereoDelayLine` so its bypass output is delayed by the plug-in's latency.
+
+`AudioEngineManager.updateLatencyCompensation()` sums each chain's `auAudioUnit.latency` (bypassed plug-ins included), sets D = largest FX channel latency, sets the delay nodes, keeps a `kAudioUnitProperty_Latency` listener on every plug-in, and reschedules playback if anything changed while playing. `transportPreRoll` P = D + the largest track insert latency. Players start P before the transport clock. `startPlayback` schedules first and then picks the start (`nextTransportStartTime(extraLead:)`: past the engine's rendered stretch — two IO buffers after `lastRenderTime`, at least 50 ms — plus enough time to call `play(at:)`, which blocks one render cycle, on the players in the order their audio begins). Recording arms its take files and input capture in `beforePlayersStart`, once the start time is known and before the players start, and each track is scheduled `P − (its latency + D)` later, so nothing after the start position is lost. Restarts during playback (`includePreRoll`) also fill the pre-roll. `exportMasterMix` waits until the engine renders, starts the transport the same way and keeps, through `ExportWindow`, exactly the tap frames from the host time at which the start is heard (+ master plug-in latency) for `end − start` seconds; it throws if the range was not fully captured.
+
 ### `MonoDownmixAudioUnit.swift`
 In-app AUv3 (`aufx`/`mndx`/`MyDW`) placed after every track's output mixer. With `isMono` set (the track is mono) it writes `(L + R) / 2` to both sides; otherwise it passes through. Mono clips already arrive as L = R (the player duplicates them), so they are unchanged either way.
 
@@ -278,7 +285,7 @@ Swift wrapper holding the C++ bridge handle (`@unchecked Sendable`).
 Reads and sets input/output devices, input channels (mono/stereo choices), sample rate and buffer size through the Core Audio HAL. Selected devices are stored by UID in UserDefaults. The engine is actually pointed at them by `AudioEngineManager.bindIODevice` (switching the macOS defaults).
 
 ### `AudioDiskWriter.swift`
-Copies recording buffers and writes them to 24-bit WAV on a serial queue. File names: `Rec_<track>_<6-char ID>_<ch>ch_<rate>_24bit_<timestamp>.wav`. `finalize()` completes the file and returns its URL.
+Copies recording buffers and writes them to 24-bit WAV on a serial queue. File names (`RecordingFileName`): `<track name>_<take number>.wav`, e.g. `Bass_001.wav`. The name keeps letters of any script (NFC), turns whitespace and `_` runs into one `_`, drops other symbols, and is cut at 40 characters (`Track` if empty). The take number is one past the highest used in Recordings and Recordings/Unused. The file is created in `init`, so same-named tracks recording together get consecutive numbers. Reversed clips use the stem `Reverse_<track name>` and imports `Import` (`Import_001.wav`). (Before v1.8: `Rec_<track>_<6-char ID>_<ch>ch_<rate>_24bit_<timestamp>.wav`, `Import_<name>_<8 hex>.wav`, `Reverse_<file>_<8 hex>.wav`.) `finalize()` completes the file and returns its URL.
 
 ### `GenericAUParameterView.swift`
 Generic UI that builds sliders from an AU's parameter tree (used when there is no usable custom GUI).

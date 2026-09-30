@@ -1,6 +1,6 @@
-# MyDAW ソースコード仕様書（v1.7）
+# MyDAW ソースコード仕様書（v1.8）
 
-> 対象バージョン: **1.7** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **1.8** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -25,7 +25,7 @@
 #### `MyDAWApp: App`（`@main`）
 - **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `1.7`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `1.8`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Export Master Mix…
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
 - **`requestAudioPermissions()`**: OS バージョンに応じてマイク権限 API を呼ぶ。
@@ -132,6 +132,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 | `PluginStateDocument` | `pluginID`、`stateData`、`format`（AU は plist、VST3 は `"vst3-state"`） |
 | `PunchRangeDocument` | `startBeat`、`endBeat`、`enabled` |
 | `SongRangeDocument` | 曲の開始・終了フラグ。`startBeat`、`endBeat`（どちらも省略可） |
+| `ProjectDocument.masterExportFileName` | マスター書き出しで最後に選んだファイル名（省略可）。書き出しパネルはプロジェクトのフォルダで、この名前か `<プロジェクト名>_Master_Mix.wav` で開く |
 | `ColorDocument` | RGBA |
 
 全デコーダは `decodeIfPresent` で欠落項目に既定値を補い、旧バージョンのファイルを読み込めます。
@@ -174,7 +175,7 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 | `deleteTimeSelection`、`cropToTimeSelection`、`splitAtTimeSelection` | 範囲編集（1 回の UNDO 手順） |
 | `deleteSelectedClips` | 選択クリップをまとめて削除 |
 | `copySelection`、`cutSelection`、`paste()` | クリップボード。ペーストは再生位置と選択トラック基準（足りないトラックは最終トラックへ） |
-| `normalizeClips`、`reverseClips` | 右クリックの対象（選択に含まれていれば選択全体）に対する処理。ノーマライズはファイル全体のピークで 0 dBFS になるゲインを設定、逆再生は `Reverse_*.wav` を作って差し替え、フェードの前後を入れ替える |
+| `normalizeClips`、`reverseClips` | 右クリックの対象（選択に含まれていれば選択全体）に対する処理。ノーマライズはファイル全体のピークで 0 dBFS になるゲインを設定、逆再生は `Reverse_<トラック名>_NNN.wav`（`RecordingFileName`）を作って差し替え、フェードの前後を入れ替える |
 | `beginGroupDrag`、`updateGroupDrag(delta:)`、`endGroupDrag(trackDelta:)` | 選択クリップのまとめて移動（0 秒より前に出さない。トラック間は全クリップの移動先がある場合のみ） |
 | `duplicateSelectedClipsInPlace` | option ドラッグ開始時に、元の位置へ複製を残す（元の直下のレイヤー） |
 
@@ -196,6 +197,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `clipPlayerNodes` | クリップ 1 つにつき 1 つの `AVAudioPlayerNode` |
 | `trackOutputNodes` | トラック出力ミキサー（フェーダー音量・ソロ・ミュート）。ミュート・ソロは `audibility(tracks:fxChannels:)` で決まります。トラックをソロにすると送り先の FX も聞こえます。FX をソロにするとその FX のリターンだけが聞こえます（送り元トラックはセンドへは送り続け、splitter → mainMixer の接続音量だけを `setTrackDryAudible` で 0 にします） |
 | `trackDownmixNodes` | 各トラックのチェーン先頭（インサートの前）にある `MonoDownmixAudioUnit` |
+| `trackDryDelayNodes`／`fxReturnDelayNodes` | 各トラックのドライ経路（分岐 → mainMixer。遅延 D。FX ソロ時のドライ消音も担当）と各 FX のリターン（PAN → 出力。遅延 D − 自分の遅延）にある `DelayCompensationAudioUnit`。`updateLatencyCompensation()` が設定 |
 | `trackPluginNodes` | インサート（AU／`VST3AudioUnit`） |
 | `trackPanNodes` | PAN ミキサー（インサートの後） |
 | `trackSplitterNodes` | 分岐ミキサー（mainMixer と Send へ 1 対多接続、メーター計測点） |
@@ -255,6 +257,11 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 ### `InputMonitorAudioUnit.swift`
 多チャンネル入力から、トラックの入力チャンネル（モノは L/R 両方へ複製）を抽出するアプリ内 AUv3（`aufx`/`inmn`/`MyDW`）。`configure(channelOffset:isStereo:)` は停止中に設定。入力バス数はデバイスのチャンネル数に合わせて確保します。
 
+### `DelayCompensationAudioUnit.swift`（v1.8 新規）
+`StereoDelayLine`（レンダースレッド用のリングバッファ。保持できない遅延は素通し）と、`delayFrames`・`isMuted`（約 5 ms のランプ）を持つアプリ内 AUv3（`aufx`/`dlcp`/`MyDW`）。最大 1 秒まで。自身のレイテンシーは 0 と報告します。`VST3AudioUnit` も `StereoDelayLine` を使い、バイパス時の出力をプラグインのレイテンシー分だけ遅らせます。
+
+`AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（バイパス中も含む）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら再スケジュールします。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。プレイヤーはトランスポートの時計より P だけ早く動き始めます。`startPlayback` は先に予約してから開始時刻を決めます（`nextTransportStartTime(extraLead:)`：エンジンの計算済み区間の先 ＝ `lastRenderTime` から IO バッファ 2 つ分・最低 50 ms、に加えて、レンダー 1 回分待たされる `play(at:)` を、音が始まる順に全プレイヤーへ呼び終える時間）。録音は、開始時刻が決まった後・プレイヤーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます、各トラックは「P −（自分の遅延 ＋ D）」だけ遅らせて予約するので、開始位置以降の音は欠けません。再生中の再予約（`includePreRoll`）では先読み区間の音も予約します。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
+
 ### `MonoDownmixAudioUnit.swift`
 各トラックの出力ミキサーの直後に置くアプリ内 AUv3（`aufx`/`mndx`/`MyDW`）。`isMono`（トラックがモノラル）のときは `(L + R) / 2` を L/R 両方に書き、それ以外はそのまま通します。モノラルのクリップはプレイヤーが L = R に展開して届くので、どちらの場合も変化しません。
 
@@ -278,7 +285,7 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 Core Audio HAL から入出力デバイス、入力チャンネル（モノ／ステレオ候補）、サンプルレート、バッファサイズを取得・設定。選択デバイスは UID で UserDefaults に保存。エンジンへの実際の割り当ては `AudioEngineManager.bindIODevice`（macOS 既定デバイスの切り替え）が行う。
 
 ### `AudioDiskWriter.swift`
-録音バッファをコピーしてシリアルキューで 24-bit WAV へ書き込む。ファイル名は `Rec_<トラック名>_<ID6桁>_<ch>ch_<rate>_24bit_<日時>.wav`。`finalize()` で確定して URL を返す。
+録音バッファをコピーしてシリアルキューで 24-bit WAV へ書き込む。ファイル名（`RecordingFileName`）は `<トラック名>_<テイク番号>.wav`（例 `Bass_001.wav`）。トラック名は、どの言語の文字も残し（NFC に正規化）、空白と `_` の連続は `_` 1つにまとめ、その他の記号は取り除き、40 文字で切ります（何も残らなければ `Track`）。テイク番号は、Recordings と Recordings/Unused で使われている最大の番号 ＋ 1。ファイルは `init` で作られるので、同じ名前のトラックを同時に録音しても番号は重なりません。逆再生は `Reverse_<トラック名>`、取り込みは `Import` を元にした名前（`Import_001.wav`）。（v1.8 より前は `Rec_<トラック名>_<ID6桁>_<ch>ch_<rate>_24bit_<日時>.wav`、`Import_<名前>_<16進8桁>.wav`、`Reverse_<ファイル名>_<16進8桁>.wav`）`finalize()` で確定して URL を返す。
 
 ### `GenericAUParameterView.swift`
 AU のパラメータツリーからスライダー一覧を生成する汎用 UI（カスタム GUI が無い／使えない場合）。
