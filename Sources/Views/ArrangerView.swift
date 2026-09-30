@@ -1,16 +1,18 @@
 import SwiftUI
 
-private struct TimelineScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0.0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
 
 public struct ArrangerView: View {
     @ObservedObject public var projectState: ProjectState
     @ObservedObject public var audioEngine: AudioEngineManager
+    /// Scroll time last read from the track scroll view, so that a change
+    /// coming from the user's own scrolling is not sent back to it.
+    @State private var scrolledTime: Double?
+    /// Offset a `scrollTo` is heading for; offsets reported before it lands
+    /// are stale.
+    @State private var requestedScrollOffset: CGFloat?
+    /// The tracks' horizontal scroll view, which horizontal scrolls over the
+    /// ruler are passed to.
+    @State private var timelineScrollView = WeakScrollView()
 
     // Dynamic timeline width (minimum 2500 pt, extends with zoom & duration).
     // It always reaches a screen past the playhead, where auto-scroll puts
@@ -89,8 +91,17 @@ public struct ArrangerView: View {
     /// event was consumed.
     private func handleWheel(_ event: NSEvent, at location: CGPoint) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let isOverRuler = location.y < 32.0 && location.x >= 230.0
+        // The ruler is outside the tracks' scroll view, so horizontal
+        // scrolling there (Shift + wheel, trackpad swipe) is passed to it.
+        if isOverRuler,
+           modifiers.isEmpty || modifiers == [.shift],
+           abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) || modifiers == [.shift],
+           let scrollView = timelineScrollView.scrollView {
+            scrollView.scrollWheel(with: event)
+            return true
+        }
         if modifiers.isEmpty {
-            let isOverRuler = location.y < 32.0 && location.x >= 230.0
             guard isOverRuler else { return false }
             var delta = event.scrollingDeltaY
             if event.hasPreciseScrollingDeltas {
@@ -289,27 +300,40 @@ public struct ArrangerView: View {
                                         .offset(x: playheadX - 1)
                                         .allowsHitTesting(false)
                                 }
-                                .background(
-                                    GeometryReader { content in
-                                        Color.clear.preference(
-                                            key: TimelineScrollOffsetKey.self,
-                                            value: -content.frame(in: .named("timelineScroll")).minX
-                                        )
-                                    }
-                                )
-                                .onPreferenceChange(TimelineScrollOffsetKey.self) { offset in
+                                // Read from AppKit: a SwiftUI geometry
+                                // preference is not updated while the user
+                                // scrolls with the wheel or trackpad.
+                                .background(ScrollOffsetObserver(scrollView: timelineScrollView) { offset in
                                     guard !projectState.isRestoringScrollPosition else { return }
-                                    projectState.timelineScrollTime = max(
+                                    if let requested = requestedScrollOffset {
+                                        guard abs(offset - requested) < 1.0 else { return }
+                                        requestedScrollOffset = nil
+                                    }
+                                    let time = max(
                                         0.0,
                                         Double(offset / projectState.pixelsPerSecond)
                                     )
-                                }
-                                .onChange(of: projectState.timelineScrollTime) { _ in
+                                    scrolledTime = time
+                                    projectState.timelineScrollTime = time
+                                })
+                                .onChange(of: projectState.timelineScrollTime) { time in
+                                    guard time != scrolledTime else { return }
+                                    let requested = CGFloat(time) * projectState.pixelsPerSecond
+                                    requestedScrollOffset = requested
                                     withAnimation(nil) {
                                         horizontalProxy.scrollTo(
                                             "savedScrollPosition-\(projectState.scrollRestoreRevision)",
                                             anchor: .leading
                                         )
+                                    }
+                                    // A target past the content's end is never
+                                    // reached; stop waiting for it.
+                                    Task { @MainActor in
+                                        await Task.yield()
+                                        await Task.yield()
+                                        if requestedScrollOffset == requested {
+                                            requestedScrollOffset = nil
+                                        }
                                     }
                                 }
                                 .onChange(of: audioEngine.currentTime) { _ in
@@ -361,7 +385,6 @@ public struct ArrangerView: View {
                                         }
                                     }
                                 }
-                                .coordinateSpace(name: "timelineScroll")
                             }
                             .frame(width: max(timelineWidth, viewport.size.width - 230), alignment: .leading)
                         }
@@ -825,6 +848,62 @@ private final class OptionKeyMonitor: ObservableObject {
 /// Watches scroll-wheel and trackpad pinch events that land inside the
 /// arranger and hands them to `onWheel` / `onMagnify`; events they consume do
 /// not reach the scroll views.
+private final class WeakScrollView {
+    weak var scrollView: NSScrollView?
+}
+
+/// Reports the horizontal offset of the scroll view it sits in whenever that
+/// scroll view scrolls, however the scroll was made.
+private struct ScrollOffsetObserver: NSViewRepresentable {
+    let scrollView: WeakScrollView
+    let onScroll: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.scrollViewBox = scrollView
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ nsView: ObserverView, context: Context) {
+        nsView.onScroll = onScroll
+    }
+
+    final class ObserverView: NSView {
+        var onScroll: ((CGFloat) -> Void)?
+        var scrollViewBox: WeakScrollView?
+        private weak var clipView: NSClipView?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let clipView {
+                NotificationCenter.default.removeObserver(
+                    self, name: NSView.boundsDidChangeNotification, object: clipView
+                )
+                self.clipView = nil
+            }
+            guard window != nil, let scrollView = enclosingScrollView else { return }
+            let clip = scrollView.contentView
+            scrollViewBox?.scrollView = scrollView
+            clipView = clip
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(boundsDidChange),
+                name: NSView.boundsDidChangeNotification,
+                object: clip
+            )
+        }
+
+        @objc private func boundsDidChange() {
+            guard let clipView else { return }
+            onScroll?(clipView.bounds.origin.x)
+        }
+    }
+}
+
 private struct ArrangerWheelMonitor: NSViewRepresentable {
     let onWheel: (NSEvent, CGPoint) -> Bool
     let onMagnify: (NSEvent, CGPoint) -> Bool
