@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 1.6** · [日本語版 README](README_jp.md)
+**Version 1.7** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -31,6 +31,9 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
 - **Input monitoring** (`I` button): hear the live input through the track's effects while it is armed (the recording stays dry).
 - Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume.
+- **Song start / end flags** on the ruler: Rewind goes to the start flag (again: to 00:00), playback and recording stop at the end flag, and the flags set the export range.
+- Mono/stereo can be switched on recorded tracks too, without rewriting files (a mono track plays stereo clips as (L+R)/2).
+- The playhead has a ball that bounces on every beat; green while playing, red while recording. Clicking the ruler snaps the playhead to the grid.
 
 ### Editing
 - Move clips (also between tracks), trim both edges, clip gain, fade in/out, split, duplicate, delete, mute.
@@ -48,7 +51,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Mixing
 - Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**.
 - dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
-- Tracks, FX channels (renamable) and a master channel. Sends are post-insert and post-pan.
+- Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return.
 - Track colours selectable from a palette.
 
 ### Plug-ins
@@ -60,6 +63,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Project
 - One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
 - Master mix export to 24-bit WAV.
+- **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`.
 
 ### Audio devices
 - Separate input and output devices (for example, an audio interface for input and a monitor's speakers for output). While MyDAW runs, the chosen devices become the macOS default input and output; the previous defaults are restored on quit.
@@ -138,4 +142,4 @@ MyDAW/
 
 ## Version
 
-The About dialog shows version **1.6**.
+The About dialog shows version **1.7**.

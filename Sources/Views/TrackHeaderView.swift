@@ -4,15 +4,23 @@ public struct TrackHeaderView: View {
     @ObservedObject public var track: AudioTrack
     @ObservedObject public var projectState: ProjectState
     public let isSelected: Bool
+    /// True while the transport records; an armed track's channel mode is
+    /// then fixed, since it sets how many input channels are captured.
+    public let isRecording: Bool
 
     @State private var isShowingColorPalette = false
     @State private var isEditingName: Bool = false
     @State private var resizeStartHeight: CGFloat?
 
-    public init(track: AudioTrack, projectState: ProjectState, isSelected: Bool) {
+    public init(track: AudioTrack, projectState: ProjectState, isSelected: Bool, isRecording: Bool = false) {
         self.track = track
         self.projectState = projectState
         self.isSelected = isSelected
+        self.isRecording = isRecording
+    }
+
+    private var isChannelModeLocked: Bool {
+        isRecording && track.isRecordArmed
     }
 
     public static func rowHeight(for track: AudioTrack) -> CGFloat {
@@ -67,16 +75,20 @@ public struct TrackHeaderView: View {
                         Button("Mono") { projectState.setInputRouting(for: track, channelMode: .mono) }
                         Button("Stereo") { projectState.setInputRouting(for: track, channelMode: .stereo) }
                     } label: {
-                        Text(track.channelMode == .mono ? "1" : "2")
+                        Text(track.channelMode == .mono ? LocalizedStringKey("Mono") : LocalizedStringKey("Stereo"))
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.8))
-                            .frame(width: 18, height: 16)
-                            .background(Color.white.opacity(0.15))
+                            .foregroundColor(.white.opacity(isChannelModeLocked ? 0.35 : 0.8))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 4)
+                            .frame(height: 16)
+                            .background(Color.white.opacity(isChannelModeLocked ? 0.06 : 0.15))
                             .cornerRadius(3)
                     }
                     .menuStyle(BorderlessButtonMenuStyle())
-                    .disabled(!track.clips.isEmpty)
-                    .frame(width: 22)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(isChannelModeLocked)
 
                     // Delete Track Button
                     Button(action: {

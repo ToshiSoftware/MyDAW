@@ -176,7 +176,8 @@ public struct ArrangerView: View {
                                 TrackHeaderView(
                                     track: track,
                                     projectState: projectState,
-                                    isSelected: projectState.selectedTrackId == track.id
+                                    isSelected: projectState.selectedTrackId == track.id,
+                                    isRecording: audioEngine.isRecording
                                 )
                                 .frame(
                                     width: 230,
@@ -268,18 +269,12 @@ public struct ArrangerView: View {
                                     }
                                     .frame(maxWidth: timelineWidth, alignment: .leading)
 
-                                    VStack(spacing: 0) {
-                                        Triangle()
-                                            .fill(Color.orange)
-                                            .frame(width: 12, height: 8)
-                                            .offset(y: -4)
-
-                                        Rectangle()
-                                            .fill(Color.orange)
-                                            .frame(width: 2, height: max(300, totalHeight))
-                                    }
-                                    .offset(x: playheadX - 1)
-                                    .allowsHitTesting(false)
+                                    // The ball on top of this line is drawn in the ruler.
+                                    Rectangle()
+                                        .fill(PlayheadBall.color(for: audioEngine))
+                                        .frame(width: 2, height: max(300, totalHeight))
+                                        .offset(x: playheadX - 1)
+                                        .allowsHitTesting(false)
                                 }
                                 .background(
                                     GeometryReader { content in
@@ -394,13 +389,13 @@ public struct ArrangerView: View {
         }
     }
 
-// MARK: - Timeline Ruler View
-struct TimelineRulerView: View {
+/// Background, ticks and labels of the ruler. Its own view so that pointer
+/// tracking in the ruler (for the flag menu) does not redraw it.
+private struct RulerTicks: View {
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
-    let width: CGFloat
+
     var body: some View {
-        ZStack(alignment: .topLeading) {
             Canvas { context, size in
             let pps = projectState.pixelsPerSecond
 
@@ -461,25 +456,82 @@ struct TimelineRulerView: View {
                 markerIndex += 1
             }
             }
+    }
+}
+
+// MARK: - Timeline Ruler View
+struct TimelineRulerView: View {
+    @ObservedObject var audioEngine: AudioEngineManager
+    @ObservedObject var projectState: ProjectState
+    let width: CGFloat
+    @StateObject private var optionKey = OptionKeyMonitor()
+    /// Last pointer x over the ruler, where the context menu places a flag.
+    @State private var hoverX: CGFloat = 0.0
+    /// Position of the last seek in the current ruler drag.
+    @State private var seekTarget: Double?
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RulerTicks(audioEngine: audioEngine, projectState: projectState)
+
+            // Under the punch handles, which win where the two overlap
+            // (⌥ lets the drag through to a flag).
+            SongRangeOverlay(
+                audioEngine: audioEngine,
+                projectState: projectState,
+                width: width
+            )
 
             PunchRangeOverlay(
                 audioEngine: audioEngine,
                 projectState: projectState,
                 width: width
             )
+            .allowsHitTesting(!optionKey.isDown)
+
+            PlayheadBall(audioEngine: audioEngine, pixelsPerSecond: projectState.pixelsPerSecond)
+                .allowsHitTesting(false)
         }
         .frame(width: width, height: 32)
         .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            if case .active(let location) = phase {
+                hoverX = location.x
+            }
+        }
+        .contextMenu {
+            let time = projectState.snappedTimelineTime(Double(hoverX / max(0.001, projectState.pixelsPerSecond)))
+            Button("Set Song Start Here") { projectState.setSongStart(time: time) }
+                .disabled(!projectState.canPlaceSongStart(at: time))
+            Button("Set Song End Here") { projectState.setSongEnd(time: time) }
+                .disabled(!projectState.canPlaceSongEnd(at: time))
+            if projectState.songRange.startBeat != nil || projectState.songRange.endBeat != nil {
+                Divider()
+            }
+            if projectState.songRange.startBeat != nil {
+                Button("Remove Song Start") { projectState.setSongStart(time: nil) }
+            }
+            if projectState.songRange.endBeat != nil {
+                Button("Remove Song End") { projectState.setSongEnd(time: nil) }
+            }
+        }
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     let clickX = max(0, value.location.x)
-                    let targetTime = Double(clickX / projectState.pixelsPerSecond)
+                    let targetTime = projectState.snappedTimelineTime(Double(clickX / projectState.pixelsPerSecond))
+                    // Within one drag, seek (and so restart playback) only
+                    // when the snapped position changes.
+                    guard targetTime != seekTarget else { return }
+                    seekTarget = targetTime
                     audioEngine.seek(
                         to: targetTime,
                         tracks: projectState.tracks,
                         fxChannels: projectState.fxChannels
                     )
+                }
+                .onEnded { _ in
+                    seekTarget = nil
                 }
         )
     }
@@ -570,6 +622,193 @@ private struct PunchRangeOverlay: View {
     }
 }
 
+/// Song start / end flags on the ruler. Dragging moves a flag with the grid
+/// snap and shows its position in the ruler's current units.
+private struct SongRangeOverlay: View {
+    @ObservedObject var audioEngine: AudioEngineManager
+    @ObservedObject var projectState: ProjectState
+    let width: CGFloat
+    @State private var dragStartTime: Double?
+    @State private var draggedFlag: Flag?
+
+    enum Flag {
+        case start, end
+
+        // Both flags share one colour; the pennant's direction tells them apart.
+        var color: Color { Color(red: 0.35, green: 0.65, blue: 1.00) }
+    }
+
+    var body: some View {
+        let pixelsPerSecond = max(0.001, projectState.pixelsPerSecond)
+        ZStack(alignment: .topLeading) {
+            if let start = projectState.songStartTime {
+                flag(.start, time: start, pixelsPerSecond: pixelsPerSecond)
+            }
+            if let end = projectState.songEndTime {
+                flag(.end, time: end, pixelsPerSecond: pixelsPerSecond)
+            }
+        }
+        .frame(width: width, height: 32, alignment: .topLeading)
+    }
+
+    private func flag(_ flag: Flag, time: Double, pixelsPerSecond: CGFloat) -> some View {
+        let x = CGFloat(time) * pixelsPerSecond
+        return ZStack(alignment: .topLeading) {
+            FlagShape(pointsRight: flag == .start)
+                .fill(flag.color)
+                .frame(width: 22, height: 32)
+                .allowsHitTesting(false)
+            if draggedFlag == flag {
+                Text(positionText(time))
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.black.opacity(0.85))
+                    .cornerRadius(3)
+                    .fixedSize()
+                    // Beside the pole, on the pennant's side.
+                    .frame(width: 160, alignment: flag == .start ? .leading : .trailing)
+                    .offset(x: flag == .start ? 14 : 8 - 160, y: 15)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: 22, height: 32, alignment: .topLeading)
+        // Only the pennant grabs the flag; the pole and the rest of the
+        // ruler move the playhead.
+        .contentShape(PennantHitShape(pointsRight: flag == .start))
+        .offset(x: x - 11, y: 0)
+        .help(flag == .start ? "Song start" : "Song end")
+        // High priority, so grabbing a flag never also moves the playhead
+        // through the ruler's own drag.
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if dragStartTime == nil {
+                        dragStartTime = time
+                        // Shows the position tooltip from the moment of the press.
+                        draggedFlag = flag
+                    }
+                    // A press alone leaves the flag where it is, even off the grid.
+                    guard value.translation.width != 0 else { return }
+                    let rawTime = (dragStartTime ?? time) + Double(value.translation.width / pixelsPerSecond)
+                    let snapped = projectState.snappedTimelineTime(rawTime)
+                    switch flag {
+                    case .start: projectState.setSongStart(time: snapped)
+                    case .end: projectState.setSongEnd(time: snapped)
+                    }
+                }
+                .onEnded { _ in
+                    dragStartTime = nil
+                    draggedFlag = nil
+                }
+        )
+    }
+
+    /// Bar:beat:tick (480 per beat) in beat mode, h:m:s.ms in time mode.
+    private func positionText(_ time: Double) -> String {
+        if projectState.showsBeats {
+            let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+            let totalTicks = Int((max(0.0, time) / beatDuration * 480.0).rounded())
+            let beats = totalTicks / 480
+            return String(format: "%03d:%02d:%03d", beats / 4 + 1, beats % 4 + 1, totalTicks % 480)
+        }
+        let totalMilliseconds = Int((max(0.0, time) * 1000.0).rounded())
+        let seconds = totalMilliseconds / 1000
+        return String(
+            format: "%02d:%02d:%02d.%03d",
+            seconds / 3600, (seconds / 60) % 60, seconds % 60, totalMilliseconds % 1000
+        )
+    }
+}
+
+/// The playhead's head: a ball resting on the playhead line at the bottom of
+/// the ruler. While the transport runs it bounces once per beat, touching
+/// down on each beat; stopped, it rests wherever the playhead is.
+private struct PlayheadBall: View {
+    @ObservedObject var audioEngine: AudioEngineManager
+    let pixelsPerSecond: CGFloat
+
+    private static let diameter: CGFloat = 12
+    private static let bounceHeight: CGFloat = 16
+
+    /// Green while playing, red while actually recording (not while waiting
+    /// for a punch-in), orange when stopped. Shared with the playhead line.
+    static func color(for engine: AudioEngineManager) -> Color {
+        if engine.isRecording { return .red }
+        if engine.isPlaying { return .green }
+        return .orange
+    }
+
+    var body: some View {
+        let x = CGFloat(audioEngine.currentTime) * pixelsPerSecond
+        let lift: CGFloat
+        if audioEngine.isPlaying || audioEngine.isRecording {
+            let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
+            let phase = (max(0.0, audioEngine.currentTime) / beatDuration).truncatingRemainder(dividingBy: 1.0)
+            lift = Self.bounceHeight * CGFloat(sin(Double.pi * phase))
+        } else {
+            lift = 0
+        }
+        return Circle()
+            .fill(Self.color(for: audioEngine))
+            .frame(width: Self.diameter, height: Self.diameter)
+            .position(x: x, y: 32 - Self.diameter / 2 - lift)
+    }
+}
+
+/// A pole down the middle of the ruler with a pennant at the top, pointing
+/// into the song (right for the start flag, left for the end flag).
+private struct FlagShape: Shape {
+    let pointsRight: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let poleX = rect.midX
+        path.addRect(CGRect(x: poleX - 0.75, y: rect.minY, width: 1.5, height: rect.height))
+        let tip = pointsRight ? poleX + 10 : poleX - 10
+        path.move(to: CGPoint(x: poleX, y: rect.minY + 1))
+        path.addLine(to: CGPoint(x: tip, y: rect.minY + 6))
+        path.addLine(to: CGPoint(x: poleX, y: rect.minY + 11))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The pennant of a `FlagShape` (with a little slack), where a flag can be grabbed.
+private struct PennantHitShape: Shape {
+    let pointsRight: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let width: CGFloat = 13
+        let x = pointsRight ? rect.midX - 2 : rect.midX + 2 - width
+        return Path(CGRect(x: x, y: rect.minY, width: width, height: 13))
+    }
+}
+
+/// Publishes whether ⌥ is held, so the ruler can let a drag through the
+/// punch handles to a song flag beneath them.
+private final class OptionKeyMonitor: ObservableObject {
+    @Published private(set) var isDown = false
+    private var monitor: Any?
+
+    init() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            let isDown = event.modifierFlags.contains(.option)
+            if self?.isDown != isDown {
+                self?.isDown = isDown
+            }
+            return event
+        }
+    }
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
+
 /// Watches scroll-wheel and trackpad pinch events that land inside the
 /// arranger and hands them to `onWheel` / `onMagnify`; events they consume do
 /// not reach the scroll views.
@@ -637,17 +876,5 @@ private struct ArrangerWheelMonitor: NSViewRepresentable {
                 self.monitor = nil
             }
         }
-    }
-}
-
-// Scrubber triangle indicator
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.closeSubpath()
-        return path
     }
 }

@@ -480,10 +480,13 @@ private struct FXStripView: View {
         } controls: {
             VStack(spacing: 4) {
                 PanBlock(pan: $channel.pan, tint: channel.color, onChange: applyLevels)
-                Text("FX")
-                    .font(.system(size: 9, weight: .black))
-                    .foregroundColor(channel.color)
-                    .frame(height: 20)
+                HStack(spacing: 4) {
+                    Button("M") { projectState.toggleMute(for: channel) }
+                        .buttonStyle(MixerButtonStyle(active: channel.isMuted, color: .cyan))
+                    Button("S") { projectState.toggleSolo(for: channel) }
+                        .buttonStyle(MixerButtonStyle(active: channel.isSoloed, color: .yellow))
+                }
+                .frame(height: 20)
                 FaderColumn(gain: $channel.volume, peak: channel.outputStereoPeak, tint: channel.color, onChange: applyLevels)
                 StripFooter(name: channel.name, color: channel.color) { newName in
                     projectState.renameFXChannel(id: channel.id, to: newName)

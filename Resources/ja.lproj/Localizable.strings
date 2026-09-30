@@ -23,7 +23,7 @@
 "Plug-in scan complete: %lld found" = "プラグインの検出が完了しました: %lld 件";
 "Show Time Ruler" = "ルーラーを時間表示にする";
 "Show Bars and Beats Ruler" = "ルーラーを小節・拍表示にする";
-"Rewind to Beginning (00:00.000)" = "先頭（00:00.000）へ戻る";
+"Rewind to Song Start (on or before it: to 00:00.000)" = "開始フラグへ戻る（フラグ上かそれより前なら 00:00.000 へ）";
 "Start / Pause (Spacebar)" = "再生／一時停止（Space）";
 "Record Armed Tracks" = "録音モードのトラックに録音";
 "No Tracks Armed for Recording" = "録音モードのトラックがありません";
@@ -70,8 +70,6 @@
 "Track Name" = "トラック名";
 "Mono" = "モノラル";
 "Stereo" = "ステレオ";
-"1" = "1";
-"2" = "2";
 "Recording Mode (Armed)" = "録音待機中";
 "Playback Mode (Click to Arm Record)" = "再生モード（クリックで録音待機）";
 "Mute Track" = "ミュート";
@@ -122,7 +120,6 @@
 "Double-click to rename" = "ダブルクリックで名前を変更";
 "M" = "M";
 "S" = "S";
-"FX" = "FX";
 "Remove FX channel" = "FX チャンネルを削除";
 "STEREO OUT" = "STEREO OUT";
 "+%lld" = "+%lld";
@@ -177,3 +174,31 @@
 "INSERT" = "インサート";
 "SEND" = "センド";
 "POST" = "ポスト";
+
+/* Delete confirmation */
+"Delete “%@”?" = "「%@」を削除してよいですか？";
+"The track's clips, plug-ins and sends will be removed. This cannot be undone." = "トラックのクリップ、プラグイン、センドも削除されます。この操作は取り消せません。";
+"The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone." = "この FX チャンネルのプラグインと、各トラックからこの FX へのセンドも削除されます。この操作は取り消せません。";
+"Delete" = "削除";
+
+/* Song start / end flags (ruler) */
+"Set Song Start Here" = "ここを開始位置にする";
+"Set Song End Here" = "ここを終了位置にする";
+"Remove Song Start" = "開始フラグを削除";
+"Remove Song End" = "終了フラグを削除";
+"Song start" = "開始フラグ";
+"Song end" = "終了フラグ";
+
+/* Move unused recordings */
+"Move Unused Recordings to Unused Folder" = "未使用の録音ファイルを Unused フォルダへ移動";
+"No unused recordings" = "未使用の録音ファイルはありません";
+"Every WAV file in the Recordings folder is used by the project." = "Recordings フォルダの WAV ファイルは、すべてプロジェクトで使われています。";
+"Moved %lld unused recordings" = "未使用の録音ファイルを %lld 個移動しました";
+"These files are not used by the project and were moved to:\n%@" = "次のファイルはプロジェクトで使われていないため、以下のフォルダへ移動しました:\n%@";
+"Could not be moved:" = "移動できなかったファイル:";
+"Could not read the Recordings folder.\n\n%@" = "Recordings フォルダを読み込めませんでした。\n\n%@";
+"Could not create the Unused folder.\n\n%@" = "Unused フォルダを作成できませんでした。\n\n%@";
+"The project needs to be saved" = "プロジェクトを保存する必要があります";
+"Save Project and Continue" = "プロジェクトを保存して実行";
+"The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z)." = "実行前にプロジェクトを保存します。\n直前の録音クリップの移動は、取り消せません（⌘Z）。";
+"The Undo history was cleared, since it referred to moved files." = "移動したファイルを取り消しの履歴が使っていたため、取り消しの履歴を消去しました。";

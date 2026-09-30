@@ -138,21 +138,10 @@ public struct MainDAWView: View {
         .background(
             SpacebarHandler {
                 guard !projectState.isShowingMasterExportDialog else { return }
-                let beatDuration = 60.0 / max(20.0, min(400.0, projectState.audioEngine.bpm))
-                projectState.audioEngine.setPunchRange(
-                    startTime: projectState.punchRange.startBeat * beatDuration,
-                    endTime: projectState.punchRange.endBeat * beatDuration,
-                    enabled: projectState.punchRange.enabled
-                )
-                projectState.audioEngine.startPlayOrRecord(
-                    tracks: projectState.tracks,
-                    fxChannels: projectState.fxChannels,
-                    recordArmedTracks: false
-                )
+                projectState.toggleTransport(recordArmedTracks: false)
             } rewind: {
                 guard !projectState.isShowingMasterExportDialog else { return }
-                projectState.audioEngine.rewind(tracks: projectState.tracks)
-                projectState.timelineScrollTime = 0.0
+                projectState.rewindToSongStart()
             } record: {
                 guard !projectState.isShowingMasterExportDialog else { return }
                 if let selectedTrackID = projectState.selectedTrackId,
@@ -264,8 +253,9 @@ private struct MasterExportDialog: View {
 
     init(projectState: ProjectState) {
         self.projectState = projectState
-        _startText = State(initialValue: "0.000")
-        _endText = State(initialValue: String(format: "%.3f", projectState.audioContentEndTime))
+        // The song start / end flags, when set, give the range to export.
+        _startText = State(initialValue: String(format: "%.3f", projectState.songStartTime ?? 0.0))
+        _endText = State(initialValue: String(format: "%.3f", projectState.songEndTime ?? projectState.audioContentEndTime))
     }
 
     var body: some View {

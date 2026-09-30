@@ -52,7 +52,7 @@ struct MyDAWApp: App {
                 Button("About MyDAW") {
                     let version = Bundle.main.object(
                         forInfoDictionaryKey: "CFBundleShortVersionString"
-                    ) as? String ?? "1.6"
+                    ) as? String ?? "1.7"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationVersion: version
                     ])
@@ -72,7 +72,7 @@ struct MyDAWApp: App {
                 .keyboardShortcut("o", modifiers: [.command])
 
                 Button("Save Project…") {
-                    projectState.saveProject()
+                    projectState.saveProjectAndShowConfirmation()
                 }
                 .keyboardShortcut("s", modifiers: [.command])
                 .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
@@ -81,6 +81,11 @@ struct MyDAWApp: App {
                     projectState.beginMasterExportDialog()
                 }
                 .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
+
+                Button("Move Unused Recordings to Unused Folder") {
+                    projectState.moveUnusedRecordings()
+                }
+                .disabled(!projectState.canMoveUnusedRecordings)
             }
             CommandGroup(after: .undoRedo) {
                 Button("Undo Clip Edit") {

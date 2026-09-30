@@ -7,6 +7,8 @@ public final class FXChannel: Identifiable, ObservableObject {
     @Published public var name: String
     @Published public var volume: Float
     @Published public var pan: Float
+    @Published public var isMuted: Bool
+    @Published public var isSoloed: Bool
     @Published public var plugins: [TrackPluginDescriptor]
     @Published public var color: Color
     @Published public var currentOutputPeak: Float = 0.0
@@ -17,6 +19,8 @@ public final class FXChannel: Identifiable, ObservableObject {
         name: String = "FX 1",
         volume: Float = 1.0,
         pan: Float = 0.0,
+        isMuted: Bool = false,
+        isSoloed: Bool = false,
         plugins: [TrackPluginDescriptor] = [],
         color: Color = .purple
     ) {
@@ -24,6 +28,8 @@ public final class FXChannel: Identifiable, ObservableObject {
         self.name = name
         self.volume = volume
         self.pan = pan
+        self.isMuted = isMuted
+        self.isSoloed = isSoloed
         self.plugins = plugins
         self.color = color
     }

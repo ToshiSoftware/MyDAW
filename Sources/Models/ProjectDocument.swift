@@ -26,6 +26,18 @@ public struct PunchRangeDocument: Codable, Hashable {
     }
 }
 
+/// Song start / end flags in beats, like the punch range, so they follow a
+/// tempo change. Either may be absent.
+public struct SongRangeDocument: Codable, Hashable {
+    public let startBeat: Double?
+    public let endBeat: Double?
+
+    public init(startBeat: Double? = nil, endBeat: Double? = nil) {
+        self.startBeat = startBeat
+        self.endBeat = endBeat
+    }
+}
+
 public struct ProjectDocument: Codable {
     public let version: Int
     public let pixelsPerSecond: Double
@@ -46,10 +58,11 @@ public struct ProjectDocument: Codable {
     public let masterPlugins: [TrackPluginDescriptor]
     public let pluginStates: [PluginStateDocument]
     public let punchRange: PunchRangeDocument
+    public let songRange: SongRangeDocument
 
     private enum CodingKeys: String, CodingKey {
         case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
-        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange
+        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange, songRange
     }
 
     public init(
@@ -70,7 +83,8 @@ public struct ProjectDocument: Codable {
         fxChannels: [FXChannelDocument] = [],
         masterPlugins: [TrackPluginDescriptor] = [],
         pluginStates: [PluginStateDocument] = [],
-        punchRange: PunchRangeDocument = PunchRangeDocument()
+        punchRange: PunchRangeDocument = PunchRangeDocument(),
+        songRange: SongRangeDocument = SongRangeDocument()
     ) {
         self.version = 4
         self.pixelsPerSecond = pixelsPerSecond
@@ -91,6 +105,7 @@ public struct ProjectDocument: Codable {
         self.masterPlugins = masterPlugins
         self.pluginStates = pluginStates
         self.punchRange = punchRange
+        self.songRange = songRange
     }
 
     public init(from decoder: Decoder) throws {
@@ -114,6 +129,7 @@ public struct ProjectDocument: Codable {
         masterPlugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .masterPlugins) ?? []
         pluginStates = try values.decodeIfPresent([PluginStateDocument].self, forKey: .pluginStates) ?? []
         punchRange = try values.decodeIfPresent(PunchRangeDocument.self, forKey: .punchRange) ?? PunchRangeDocument()
+        songRange = try values.decodeIfPresent(SongRangeDocument.self, forKey: .songRange) ?? SongRangeDocument()
     }
 }
 
@@ -202,8 +218,14 @@ public struct FXChannelDocument: Codable {
     public let name: String
     public let volume: Float
     public let pan: Float
+    public let isMuted: Bool
+    public let isSoloed: Bool
     public let color: ColorDocument
     public let plugins: [TrackPluginDescriptor]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, volume, pan, isMuted, isSoloed, color, plugins
+    }
 
     @MainActor
     public init(channel: FXChannel) {
@@ -211,8 +233,23 @@ public struct FXChannelDocument: Codable {
         name = channel.name
         volume = channel.volume
         pan = channel.pan
+        isMuted = channel.isMuted
+        isSoloed = channel.isSoloed
         color = ColorDocument(color: channel.color)
         plugins = channel.plugins
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        volume = try values.decode(Float.self, forKey: .volume)
+        pan = try values.decode(Float.self, forKey: .pan)
+        // Projects saved before FX mute / solo existed have neither key.
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        color = try values.decode(ColorDocument.self, forKey: .color)
+        plugins = try values.decode([TrackPluginDescriptor].self, forKey: .plugins)
     }
 }
 

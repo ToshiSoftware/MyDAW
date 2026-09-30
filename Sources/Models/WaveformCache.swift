@@ -141,8 +141,6 @@ public final class WaveformCache: ObservableObject {
                     var i = 0
                     while i < frameLength {
                         let chunkEnd = min(i + targetSamplesPerPeak, frameLength)
-                        var combinedMin: Float = 0.0
-                        var combinedMax: Float = 0.0
                         var chunkChannelPeaks: [PeakPoint] = []
 
                         for ch in 0..<channelCount {
@@ -155,8 +153,21 @@ public final class WaveformCache: ObservableObject {
                                 if val > maxVal { maxVal = val }
                             }
                             chunkChannelPeaks.append(PeakPoint(id: peakId, min: minVal, max: maxVal))
-                            combinedMin = min(combinedMin, minVal)
-                            combinedMax = max(combinedMax, maxVal)
+                        }
+
+                        // The single-lane (mono track) waveform shows the
+                        // channel average, which is what a mono track plays.
+                        var combinedMin: Float = 0.0
+                        var combinedMax: Float = 0.0
+                        let channelScale = 1.0 / Float(max(1, channelCount))
+                        for sampleIdx in i..<chunkEnd {
+                            var sum: Float = 0.0
+                            for ch in 0..<channelCount {
+                                sum += channelData[ch][sampleIdx]
+                            }
+                            let val = sum * channelScale
+                            if val < combinedMin { combinedMin = val }
+                            if val > combinedMax { combinedMax = val }
                         }
 
                         calculatedPeaks.append(PeakPoint(id: peakId, min: combinedMin, max: combinedMax))

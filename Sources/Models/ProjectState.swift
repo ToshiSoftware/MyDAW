@@ -77,6 +77,9 @@ public final class ProjectState: ObservableObject {
     @Published public var pixelsPerSecond: CGFloat = 80.0 // Horizontal zoom factor
     @Published public var timelineScrollTime: Double = 0.0
     @Published public var punchRange = PunchRangeDocument()
+    @Published public var songRange = SongRangeDocument() {
+        didSet { audioEngine.songEndTime = songEndTime }
+    }
     @Published public private(set) var zoomRevision: Int = 0
     @Published public private(set) var scrollRestoreRevision: Int = 0
     @Published public var isRestoringScrollPosition: Bool = false
@@ -159,6 +162,85 @@ public final class ProjectState: ObservableObject {
         )
     }
 
+    // MARK: Song start / end flags
+
+    /// Smallest distance kept between the start and end flags, in beats.
+    public static let minimumSongLengthBeats = 1.0
+
+    private var currentBeatDuration: Double {
+        60.0 / max(20.0, min(400.0, audioEngine.bpm))
+    }
+
+    public var songStartTime: Double? {
+        songRange.startBeat.map { $0 * currentBeatDuration }
+    }
+
+    public var songEndTime: Double? {
+        songRange.endBeat.map { $0 * currentBeatDuration }
+    }
+
+    /// Whether a start flag may go at `time` (it must stay before the end flag).
+    public func canPlaceSongStart(at time: Double) -> Bool {
+        guard let endBeat = songRange.endBeat else { return true }
+        return time / currentBeatDuration <= endBeat - Self.minimumSongLengthBeats
+    }
+
+    /// Whether an end flag may go at `time` (it must stay after the start flag).
+    public func canPlaceSongEnd(at time: Double) -> Bool {
+        let startBeat = songRange.startBeat ?? 0.0
+        return time / currentBeatDuration >= startBeat + Self.minimumSongLengthBeats
+    }
+
+    /// Places (or with nil removes) the start flag, kept before the end flag.
+    public func setSongStart(time: Double?) {
+        let beat = time.map { t -> Double in
+            let requested = max(0.0, t / currentBeatDuration)
+            guard let endBeat = songRange.endBeat else { return requested }
+            return max(0.0, min(requested, endBeat - Self.minimumSongLengthBeats))
+        }
+        songRange = SongRangeDocument(startBeat: beat, endBeat: songRange.endBeat)
+    }
+
+    /// Places (or with nil removes) the end flag, kept after the start flag.
+    public func setSongEnd(time: Double?) {
+        let beat = time.map { t -> Double in
+            let lowest = (songRange.startBeat ?? 0.0) + Self.minimumSongLengthBeats
+            return max(lowest, t / currentBeatDuration)
+        }
+        songRange = SongRangeDocument(startBeat: songRange.startBeat, endBeat: beat)
+    }
+
+    /// Starts (or pauses) playback, or recording on armed tracks, with the
+    /// punch range and song end in seconds at the current tempo.
+    public func toggleTransport(recordArmedTracks: Bool) {
+        let beatDuration = currentBeatDuration
+        audioEngine.setPunchRange(
+            startTime: punchRange.startBeat * beatDuration,
+            endTime: punchRange.endBeat * beatDuration,
+            enabled: punchRange.enabled
+        )
+        audioEngine.songEndTime = songEndTime
+        audioEngine.startPlayOrRecord(
+            tracks: tracks,
+            fxChannels: fxChannels,
+            recordArmedTracks: recordArmedTracks
+        )
+    }
+
+    /// Returns to the start flag, or to 0 when already on the flag, before
+    /// it, or when there is none.
+    public func rewindToSongStart() {
+        let target: Double
+        if let start = songStartTime, audioEngine.currentTime > start + 0.001 {
+            target = start
+        } else {
+            target = 0.0
+        }
+        audioEngine.rewind(tracks: tracks, to: target)
+        // Keep the flag a little in from the left edge.
+        timelineScrollTime = max(0.0, target - Double(40.0 / max(0.001, pixelsPerSecond)))
+    }
+
     public let audioEngine: AudioEngineManager
     public let deviceManager: AudioDeviceManager
 
@@ -196,6 +278,10 @@ public final class ProjectState: ObservableObject {
         }
 
         setupPeakObserver()
+        self.audioEngine.onReachSongEnd = { [weak self] in
+            guard let self else { return }
+            self.audioEngine.stop(tracks: self.tracks)
+        }
 
         // Add 2 initial tracks as default template
         addTrack(name: "Audio 1", mode: .stereo, isArmed: true)
@@ -588,13 +674,11 @@ public final class ProjectState: ObservableObject {
         if audioEngine.isPlaying || audioEngine.isRecording,
            let send = track.fxSends.first(where: { $0.fxChannelID == fxChannelID }),
            let fxChannel = fxChannels.first(where: { $0.id == fxChannelID }) {
-            let anySolo = tracks.contains { $0.isSoloed }
-            audioEngine.updateSendLevel(
-                track: track,
-                send: send,
-                fxChannel: fxChannel,
-                anySolo: anySolo
-            )
+            audioEngine.updateSendLevel(track: track, send: send, fxChannel: fxChannel)
+            // Whether a send is on decides which tracks an FX solo keeps.
+            if tracks.contains(where: \.isSoloed) || fxChannels.contains(where: \.isSoloed) {
+                audioEngine.updateMixerLevels(tracks: tracks, fxChannels: fxChannels)
+            }
         } else {
             audioEngine.syncTracks(tracks, fxChannels: fxChannels)
         }
@@ -711,9 +795,23 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    /// Changing a track's channel mode leaves its files untouched: a mono
+    /// track downmixes stereo clips as it plays, and a stereo track plays mono
+    /// clips on both sides. Not on an armed track while recording, since the
+    /// mode also sets how many input channels the recording captures.
     public func setInputRouting(for track: AudioTrack, channelMode: ChannelMode? = nil, inputChannelIndex: Int? = nil) {
-        if let channelMode {
+        if let channelMode, !(audioEngine.isRecording && track.isRecordArmed) {
             track.channelMode = channelMode
+            // Stereo pairs start on even channels (1-2, 3-4, …); an odd mono
+            // input would otherwise pair with the next channel, which may not
+            // exist. Mono keeps the pair's first channel.
+            if channelMode == .stereo {
+                let pairStart = track.inputChannelIndex - track.inputChannelIndex % 2
+                let options = deviceManager.channels(for: .stereo)
+                track.inputChannelIndex = options.contains { $0.channelOffset == pairStart }
+                    ? pairStart
+                    : (options.first?.channelOffset ?? 0)
+            }
         }
         if let inputChannelIndex {
             track.inputChannelIndex = inputChannelIndex
@@ -733,6 +831,16 @@ public final class ProjectState: ObservableObject {
 
     public func toggleSolo(for track: AudioTrack) {
         track.isSoloed.toggle()
+        updateMixerLevelsAfterTrackControlChange()
+    }
+
+    public func toggleMute(for channel: FXChannel) {
+        channel.isMuted.toggle()
+        updateMixerLevelsAfterTrackControlChange()
+    }
+
+    public func toggleSolo(for channel: FXChannel) {
+        channel.isSoloed.toggle()
         updateMixerLevelsAfterTrackControlChange()
     }
 
@@ -937,7 +1045,8 @@ public final class ProjectState: ObservableObject {
             fxChannels: fxChannels.map { FXChannelDocument(channel: $0) },
             masterPlugins: masterPlugins,
             pluginStates: audioEngine.capturePluginStates(),
-            punchRange: punchRange
+            punchRange: punchRange,
+            songRange: songRange
         )
 
         do {
@@ -1148,12 +1257,15 @@ public final class ProjectState: ObservableObject {
                     name: $0.name,
                     volume: $0.volume,
                     pan: $0.pan,
+                    isMuted: $0.isMuted,
+                    isSoloed: $0.isSoloed,
                     plugins: uniquePluginInstances($0.plugins),
                     color: $0.color.color
                 )
             }
             masterPlugins = uniquePluginInstances(document.masterPlugins)
             punchRange = document.punchRange
+            songRange = document.songRange
             audioEngine.setSavedPluginStates(document.pluginStates)
             let beatDuration = 60.0 / max(20.0, min(400.0, document.bpm))
             audioEngine.setPunchRange(
@@ -1209,6 +1321,132 @@ public final class ProjectState: ObservableObject {
             return URL(fileURLWithPath: path).standardizedFileURL
         }
         return projectFolderURL.appendingPathComponent(path).standardizedFileURL
+    }
+
+    // MARK: Unused recordings
+
+    public var canMoveUnusedRecordings: Bool {
+        isProjectOpen && !audioEngine.isPlaying && !audioEngine.isRecording && !audioEngine.hasPendingRecording
+    }
+
+    /// Moves the WAV files directly in the project's Recordings folder that no
+    /// clip or clipboard entry uses into Recordings/Unused, then lists them.
+    /// A deleted take is still in the Undo history, so it counts as unused;
+    /// when a moved file was in that history, the history is cleared so Undo
+    /// never brings back a clip whose file has gone.
+    public func moveUnusedRecordings() {
+        guard canMoveUnusedRecordings else { return }
+        // Decided on the open project, so it is saved first: otherwise files
+        // the last saved version still uses could be moved.
+        let confirmation = NSAlert()
+        confirmation.messageText = String(localized: "The project needs to be saved")
+        confirmation.informativeText = String(localized: "The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z).")
+        confirmation.alertStyle = .informational
+        confirmation.addButton(withTitle: String(localized: "Save Project and Continue"))
+        let cancelButton = confirmation.addButton(withTitle: String(localized: "Cancel"))
+        cancelButton.keyEquivalent = "\u{1b}"
+        guard confirmation.runModal() == .alertFirstButtonReturn, saveProject() else { return }
+
+        let fileManager = FileManager.default
+        let recordingsURL = audioEngine.recordingsDirectory.standardizedFileURL
+        let unusedURL = recordingsURL.appendingPathComponent("Unused", isDirectory: true)
+
+        func key(_ url: URL) -> String {
+            url.standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        var usedPaths = Set(tracks.flatMap { $0.clips.map { key($0.fileURL) } })
+        usedPaths.formUnion(clipboard.map { key($0.fileURL) })
+        var historyPaths = Set<String>()
+        for snapshot in undoStack + redoStack {
+            for clips in snapshot.clipsByTrack.values {
+                historyPaths.formUnion(clips.map { key($0.fileURL) })
+            }
+        }
+
+        let candidates: [URL]
+        do {
+            candidates = try fileManager.contentsOfDirectory(
+                at: recordingsURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            .filter { url in
+                url.pathExtension.lowercased() == "wav" &&
+                    (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true &&
+                    !usedPaths.contains(key(url))
+            }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        } catch {
+            presentProjectError(String(localized: "Could not read the Recordings folder.\n\n\(error.localizedDescription)"))
+            return
+        }
+
+        var moved: [String] = []
+        var failed: [String] = []
+        var movedPaths = Set<String>()
+        if !candidates.isEmpty {
+            do {
+                try fileManager.createDirectory(at: unusedURL, withIntermediateDirectories: true)
+            } catch {
+                presentProjectError(String(localized: "Could not create the Unused folder.\n\n\(error.localizedDescription)"))
+                return
+            }
+        }
+        for url in candidates {
+            // Never overwrite an earlier file of the same name in Unused.
+            var destination = unusedURL.appendingPathComponent(url.lastPathComponent)
+            var suffix = 2
+            while fileManager.fileExists(atPath: destination.path) {
+                let base = url.deletingPathExtension().lastPathComponent
+                destination = unusedURL.appendingPathComponent("\(base)_\(suffix).\(url.pathExtension)")
+                suffix += 1
+            }
+            do {
+                try fileManager.moveItem(at: url, to: destination)
+                moved.append(destination.lastPathComponent)
+                movedPaths.insert(key(url))
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        let clearsHistory = !movedPaths.isDisjoint(with: historyPaths)
+        if clearsHistory {
+            undoStack.removeAll()
+            redoStack.removeAll()
+            updateHistoryAvailability()
+        }
+        presentUnusedRecordingsResult(moved: moved, failed: failed, unusedURL: unusedURL, clearedHistory: clearsHistory)
+    }
+
+    private func presentUnusedRecordingsResult(moved: [String], failed: [String], unusedURL: URL, clearedHistory: Bool) {
+        let alert = NSAlert()
+        alert.alertStyle = failed.isEmpty ? .informational : .warning
+        if moved.isEmpty && failed.isEmpty {
+            alert.messageText = String(localized: "No unused recordings")
+            alert.informativeText = String(localized: "Every WAV file in the Recordings folder is used by the project.")
+        } else {
+            alert.messageText = String(localized: "Moved \(moved.count) unused recordings")
+            alert.informativeText = String(localized: "These files are not used by the project and were moved to:\n\(unusedURL.path)")
+            var lines = moved
+            if clearedHistory {
+                lines += ["", String(localized: "The Undo history was cleared, since it referred to moved files.")]
+            }
+            if !failed.isEmpty {
+                lines += ["", String(localized: "Could not be moved:")] + failed
+            }
+            let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+            textView.string = lines.joined(separator: "\n")
+            textView.isEditable = false
+            textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            textView.textContainerInset = NSSize(width: 4, height: 4)
+            let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+            scrollView.documentView = textView
+            scrollView.hasVerticalScroller = true
+            scrollView.borderType = .bezelBorder
+            alert.accessoryView = scrollView
+        }
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.runModal()
     }
 
     private func presentProjectError(_ message: String) {

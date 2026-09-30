@@ -72,8 +72,7 @@ public struct TransportBarView: View {
 
                 // Rewind (|<<)
                 Button(action: {
-                    audioEngine.rewind(tracks: projectState.tracks)
-                    projectState.timelineScrollTime = 0.0
+                    projectState.rewindToSongStart()
                 }) {
                     Image(systemName: "backward.end.fill")
                         .font(.system(size: 14, weight: .bold))
@@ -83,21 +82,11 @@ public struct TransportBarView: View {
                         .cornerRadius(5)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help("Rewind to Beginning (00:00.000)")
+                .help("Rewind to Song Start (on or before it: to 00:00.000)")
 
                 Button(action: {
                     DispatchQueue.main.async {
-                        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-                        audioEngine.setPunchRange(
-                            startTime: projectState.punchRange.startBeat * beatDuration,
-                            endTime: projectState.punchRange.endBeat * beatDuration,
-                            enabled: projectState.punchRange.enabled
-                        )
-                        audioEngine.startPlayOrRecord(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels,
-                            recordArmedTracks: false
-                        )
+                        projectState.toggleTransport(recordArmedTracks: false)
                     }
                 }) {
                     Image(systemName: isTransportActive ? "pause.fill" : "play.fill")
@@ -123,17 +112,7 @@ public struct TransportBarView: View {
                 let anyArmed = projectState.tracks.contains { $0.isRecordArmed }
                 Button(action: {
                     DispatchQueue.main.async {
-                        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-                        audioEngine.setPunchRange(
-                            startTime: projectState.punchRange.startBeat * beatDuration,
-                            endTime: projectState.punchRange.endBeat * beatDuration,
-                            enabled: projectState.punchRange.enabled
-                        )
-                        audioEngine.startPlayOrRecord(
-                            tracks: projectState.tracks,
-                            fxChannels: projectState.fxChannels,
-                            recordArmedTracks: true
-                        )
+                        projectState.toggleTransport(recordArmedTracks: true)
                     }
                 }) {
                     Circle()

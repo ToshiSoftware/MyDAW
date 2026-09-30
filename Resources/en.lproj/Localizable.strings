@@ -23,7 +23,7 @@
 "Plug-in scan complete: %lld found" = "Plug-in scan complete: %lld found";
 "Show Time Ruler" = "Show Time Ruler";
 "Show Bars and Beats Ruler" = "Show Bars and Beats Ruler";
-"Rewind to Beginning (00:00.000)" = "Rewind to Beginning (00:00.000)";
+"Rewind to Song Start (on or before it: to 00:00.000)" = "Rewind to Song Start (on or before it: to 00:00.000)";
 "Start / Pause (Spacebar)" = "Start / Pause (Spacebar)";
 "Record Armed Tracks" = "Record Armed Tracks";
 "No Tracks Armed for Recording" = "No Tracks Armed for Recording";
@@ -70,8 +70,6 @@
 "Track Name" = "Track Name";
 "Mono" = "Mono";
 "Stereo" = "Stereo";
-"1" = "1";
-"2" = "2";
 "Recording Mode (Armed)" = "Recording Mode (Armed)";
 "Playback Mode (Click to Arm Record)" = "Playback Mode (Click to Arm Record)";
 "Mute Track" = "Mute Track";
@@ -122,7 +120,6 @@
 "Double-click to rename" = "Double-click to rename";
 "M" = "M";
 "S" = "S";
-"FX" = "FX";
 "Remove FX channel" = "Remove FX channel";
 "STEREO OUT" = "STEREO OUT";
 "+%lld" = "+%lld";
@@ -177,3 +174,31 @@
 "INSERT" = "INSERT";
 "SEND" = "SEND";
 "POST" = "POST";
+
+/* Delete confirmation */
+"Delete “%@”?" = "Delete “%@”?";
+"The track's clips, plug-ins and sends will be removed. This cannot be undone." = "The track's clips, plug-ins and sends will be removed. This cannot be undone.";
+"The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone." = "The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone.";
+"Delete" = "Delete";
+
+/* Song start / end flags (ruler) */
+"Set Song Start Here" = "Set Song Start Here";
+"Set Song End Here" = "Set Song End Here";
+"Remove Song Start" = "Remove Song Start";
+"Remove Song End" = "Remove Song End";
+"Song start" = "Song start";
+"Song end" = "Song end";
+
+/* Move unused recordings */
+"Move Unused Recordings to Unused Folder" = "Move Unused Recordings to Unused Folder";
+"No unused recordings" = "No unused recordings";
+"Every WAV file in the Recordings folder is used by the project." = "Every WAV file in the Recordings folder is used by the project.";
+"Moved %lld unused recordings" = "Moved %lld unused recordings";
+"These files are not used by the project and were moved to:\n%@" = "These files are not used by the project and were moved to:\n%@";
+"Could not be moved:" = "Could not be moved:";
+"Could not read the Recordings folder.\n\n%@" = "Could not read the Recordings folder.\n\n%@";
+"Could not create the Unused folder.\n\n%@" = "Could not create the Unused folder.\n\n%@";
+"The project needs to be saved" = "The project needs to be saved";
+"Save Project and Continue" = "Save Project and Continue";
+"The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z)." = "The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z).";
+"The Undo history was cleared, since it referred to moved files." = "The Undo history was cleared, since it referred to moved files.";
