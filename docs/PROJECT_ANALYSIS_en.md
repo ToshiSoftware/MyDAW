@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v1.6)
+# MyDAW Project Analysis (v1.7)
 
-> Version covered: **1.6** (source as of 2026-09-29, v1.6 release)
+> Version covered: **1.7** (source as of 2026-09-30, v1.7 release)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -64,6 +64,7 @@ MyDAW/
 │   │   ├── PluginManager.swift       AU / VST3 discovery (VST3 via child process + cache)
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
+│   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
 │   │   ├── VST3NativeInstance.swift  Swift wrapper around the C++ VST3 instance
 │   │   ├── VST3HostBridge.swift      Swift wrapper around the VST3 enumeration API
 │   │   ├── VST3Host.swift            VST3 host abstraction (protocols)
@@ -78,7 +79,7 @@ MyDAW/
 │       ├── WaveformCanvas.swift      Waveform drawing (SwiftUI Canvas)
 │       ├── MixerView.swift           Mixer (three-section strips)
 │       ├── MixerControls.swift       Fader, pan, meter, dB scale
-│       └── WindowCloseHandler.swift  Save prompt when the window closes
+│       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler)
 ├── VST3Host/                   C++ VST3 host bridge (static library via CMake)
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  Translations (Localizable.strings and InfoPlist.strings in en.lproj / ja.lproj)
@@ -136,6 +137,9 @@ Per-clip AVAudioPlayerNode (one node per clip)
       │
       ▼
 Track output mixer (fader volume)
+      │
+      ▼
+MonoDownmixAudioUnit (L+R)/2 on mono tracks, pass-through on stereo
       │
       ▼
 Inserts (AU / VST3AudioUnit, in insert order)
@@ -282,7 +286,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 ## 5. Design decisions and lessons learned
 
-AVAudioEngine and plug-in pitfalls found while building v1.4–1.6, and how they were solved. Keep these in mind when changing the engine.
+AVAudioEngine and plug-in pitfalls found while building v1.4–1.7, and how they were solved. Keep these in mind when changing the engine.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |

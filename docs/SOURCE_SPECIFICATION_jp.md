@@ -1,6 +1,6 @@
-# MyDAW ソースコード仕様書（v1.6）
+# MyDAW ソースコード仕様書（v1.7）
 
-> 対象バージョン: **1.6** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **1.7** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -25,13 +25,14 @@
 #### `MyDAWApp: App`（`@main`）
 - **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `1.6`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `1.7`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Export Master Mix…
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
 - **`requestAudioPermissions()`**: OS バージョンに応じてマイク権限 API を呼ぶ。
 
 #### `MyDAWApplicationDelegate: NSApplicationDelegate`
 - 最後のウィンドウを閉じてもアプリを終了しない。
+- **`applicationShouldTerminate`**: `confirmQuit`（`ProjectState.confirmQuit()`）を呼び、キャンセルまたは保存失敗なら `.terminateCancel` を返す。終了メニュー・⌘Q・ウィンドウを閉じる操作のすべてがここを通る（`relaunch()` は確認済みのためスキップ）。
 - **`applicationWillTerminate`**: `shutdownAudioEngine` を呼び、`AudioEngineManager.shutdown()` を実行する（VST3 モジュールの正しい解放と、macOS 既定入出力デバイスの復元に必須）。
 
 ---
@@ -50,7 +51,7 @@
 | プロパティ | 内容 |
 | --- | --- |
 | `id`, `name`, `color` | 識別子、表示名、トラック色 |
-| `channelMode`, `inputChannelIndex` | 録音チャンネル数と入力の先頭チャンネル（0 起点） |
+| `channelMode`, `inputChannelIndex` | 録音チャンネル数と入力の先頭チャンネル（0 起点）。`channelMode` は再生にも使われ、モノラルのトラックではステレオのクリップをモノラル化します（`MonoDownmixAudioUnit`）。ファイルは書き換えません |
 | `isRecordArmed`, `isInputMonitoring` | 録音待機（R）、インプットモニター（I） |
 | `isMuted`, `isSoloed`, `volume`, `pan` | ミキサー値 |
 | `trackHeight` | レーンの高さ（最低 120pt） |
@@ -108,7 +109,7 @@
 ### `FXChannel.swift`
 
 #### `FXChannel: ObservableObject`
-`id`、`name`（既定 "FX n"）、`volume`、`pan`、`plugins`、`color`、`currentOutputPeak`、`outputStereoPeak`。`insertPlugin`／`removePlugin`／`movePlugin`。
+`id`、`name`（既定 "FX n"）、`volume`、`pan`、`isMuted`、`isSoloed`、`plugins`、`color`、`currentOutputPeak`、`outputStereoPeak`。`insertPlugin`／`removePlugin`／`movePlugin`。
 
 #### `FXSend: Codable`
 `id`、`fxChannelID`、`level`（線形ゲイン）、`enabled`。
@@ -127,9 +128,10 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 | `ProjectDocument` | `version`（現行 4）、ズーム、スクロール、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、FX、マスタープラグイン、プラグイン状態、パンチ範囲 |
 | `TrackDocument` | 名前、チャンネル、入力、R/M/S、**I（`isInputMonitoring`）**、音量、パン、高さ、色、クリップ、プラグイン、Send |
 | `ClipDocument` | ID、開始位置、ソース位置、長さ、元の長さ、ゲイン、ミュート、フェード、フェードカーブ（`fadeInCurve`／`fadeOutCurve`、読めない場合は `.auto`）、ファイルパス（プロジェクトからの相対） |
-| `FXChannelDocument` | FX の名前・音量・パン・色・プラグイン |
+| `FXChannelDocument` | FX の名前・音量・パン・ミュート・ソロ・色・プラグイン（古いプロジェクトではミュート・ソロは OFF） |
 | `PluginStateDocument` | `pluginID`、`stateData`、`format`（AU は plist、VST3 は `"vst3-state"`） |
 | `PunchRangeDocument` | `startBeat`、`endBeat`、`enabled` |
+| `SongRangeDocument` | 曲の開始・終了フラグ。`startBeat`、`endBeat`（どちらも省略可） |
 | `ColorDocument` | RGBA |
 
 全デコーダは `decodeIfPresent` で欠落項目に既定値を補い、旧バージョンのファイルを読み込めます。
@@ -140,12 +142,14 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 - **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（0.5〜3）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
 - **初期化**: デバイスとバッファサイズをエンジンへ適用、ピーク通知を購読、既定トラック 2 本を作成、プラグイン検出を開始。
-- **トラック**: `addTrack`、`deleteTrack`、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
+- **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
 - **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）／`deleteClip`、`toggleClipMute`、`duplicateClip`、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`beginClipDragPreview` など）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
 - **UNDO/REDO**: `beginClipEdit()` で編集前スナップショット（クリップの位置・範囲・ゲイン・ミュート・フェードとカーブ・ファイル、各トラックの選択）を取り、`endClipEdit()` で履歴に積む。クリップが変わっていなければ積まない（ハンドルをクリックしただけの場合など）。`undo()`／`redo()` は再生・録音中は無効。
 - **パンチ**: `setPunchRange`、`setPunchStartBeat`、`setPunchEndBeat`、`setPunchEnabled`。
+- **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
+- **開始・終了フラグ**: `songRange`（変更時にエンジンの `songEndTime` を更新）、`songStartTime`／`songEndTime`（秒）、`setSongStart(time:)`／`setSongEnd(time:)`（nil で削除。`minimumSongLengthBeats` 以上離す）、`canPlaceSongStart(at:)`／`canPlaceSongEnd(at:)`。`toggleTransport(recordArmedTracks:)` はパンチ範囲と終了位置をエンジンに渡して再生／録音を開始・一時停止します（再生・録音ボタンと Space から）。`rewindToSongStart()` は開始フラグへ、フラグ上かそれより前なら 0 へ戻ります。エンジンの `onReachSongEnd` から `stop(tracks:)` を呼びます。
 - **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`movePlugin(_:before:on:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`moveMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
-- **FX**: `addFXChannel()`、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`、`setSend(trackID:fxChannelID:level:)`。
+- **FX**: `addFXChannel()`、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
 - **ファイル**: `createNewProject`、`loadProject`、`saveProject`、`saveProjectAndShowConfirmation`、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
 - **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
 - **書き出し**: `beginMasterExportDialog`、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。
@@ -190,18 +194,19 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | --- | --- |
 | `playerNodes` | トラック用予備プレイヤー（通常未使用） |
 | `clipPlayerNodes` | クリップ 1 つにつき 1 つの `AVAudioPlayerNode` |
-| `trackOutputNodes` | トラック出力ミキサー（フェーダー音量・ソロ・ミュート） |
+| `trackOutputNodes` | トラック出力ミキサー（フェーダー音量・ソロ・ミュート）。ミュート・ソロは `audibility(tracks:fxChannels:)` で決まります。トラックをソロにすると送り先の FX も聞こえます。FX をソロにするとその FX のリターンだけが聞こえます（送り元トラックはセンドへは送り続け、splitter → mainMixer の接続音量だけを `setTrackDryAudible` で 0 にします） |
+| `trackDownmixNodes` | 各トラックのチェーン先頭（インサートの前）にある `MonoDownmixAudioUnit` |
 | `trackPluginNodes` | インサート（AU／`VST3AudioUnit`） |
 | `trackPanNodes` | PAN ミキサー（インサートの後） |
 | `trackSplitterNodes` | 分岐ミキサー（mainMixer と Send へ 1 対多接続、メーター計測点） |
 | `sendGainNodes` | Send ごとのゲインミキサー |
 | `inputMonitorNodes` | `InputMonitorAudioUnit`（I 有効時） |
-| `fxInputNodes`／`fxPluginNodes`／`fxPanNodes`／`fxOutputNodes` | FX チャンネルの入力・インサート・PAN・出力（メーター） |
+| `fxInputNodes`／`fxPluginNodes`／`fxPanNodes`／`fxOutputNodes` | FX チャンネルの入力（フェーダー音量）・インサート・PAN・出力（メーター。ミュート時とソロで外れたときは音量 0） |
 | `masterOutputNode`／`masterPluginNodes`／`masterMeterNode` | マスターボリューム・POST プラグイン・最終メーター |
 
 #### 主な公開メソッド
-- **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中なら再スケジュール）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
-- **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind`、`seek(to:)`、`setPunchRange`。
+- **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中は `rescheduleEditedClips` で、`ClipScheduleSignature` が変わったクリップと、それに重なるクリップだけを、再開時刻の再生位置から予約し直します。ほかのクリップは鳴り続けます）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
+- **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind(tracks:to:)`、`seek(to:)`、`setPunchRange`。`songEndTime`: 再生位置タイマーがこれをまたぐと `onReachSongEnd` を呼びます（それより前から再生を始めた場合のみ）。この停止では、録音したクリップを終了位置で切り揃え、再生位置を終了位置に置きます。
 - **デバイス**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（デバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
 - **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`。
 - **その他**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:)`（マスター経路を実時間で 24-bit WAV へ）、`shutdown()`（エンジン停止、VST3 解放、macOS 既定入出力デバイスの復元）、録音フォルダ関連。
@@ -249,6 +254,9 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 
 ### `InputMonitorAudioUnit.swift`
 多チャンネル入力から、トラックの入力チャンネル（モノは L/R 両方へ複製）を抽出するアプリ内 AUv3（`aufx`/`inmn`/`MyDW`）。`configure(channelOffset:isStereo:)` は停止中に設定。入力バス数はデバイスのチャンネル数に合わせて確保します。
+
+### `MonoDownmixAudioUnit.swift`
+各トラックの出力ミキサーの直後に置くアプリ内 AUv3（`aufx`/`mndx`/`MyDW`）。`isMono`（トラックがモノラル）のときは `(L + R) / 2` を L/R 両方に書き、それ以外はそのまま通します。モノラルのクリップはプレイヤーが L = R に展開して届くので、どちらの場合も変化しません。
 
 ### `VST3NativeInstance.swift`
 C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked Sendable`）。
@@ -316,7 +324,7 @@ Studio One 風ミキサー。
 - **全体**: 上端ドラッグで高さ変更（320〜1000pt）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
 - **`StripSections`**: INSERT／SEND／コントロールの 3 区画（見出しは `SectionHeader`。`LocalizedStringKey` で翻訳される）と、区画の高さを変える境界（全ストリップ共通・UserDefaults 保存）。
 - **`TrackStripView`**: INSERT（＋メニュー、緑丸で ON/OFF、名前クリックで GUI、ドラッグで並べ替え、× で削除）、SEND（FX ごとのレベルバーと dB 値）、PAN、M／S、フェーダー値、目盛り・フェーダー・ステレオメーター、名前（クリックで選択）。
-- **`FXStripView`**: INSERT、（SEND 区画は空欄。位置合わせのためだけに残す）、PAN、FX 削除、フェーダー、名前（ダブルクリックで改名）。
+- **`FXStripView`**: INSERT、（SEND 区画は空欄。位置合わせのためだけに残す）、PAN、「FX」表示、フェーダー、名前（ダブルクリックで改名）。右クリックメニューは「FX を追加」「FX チャンネルを削除」（削除は `confirmRemoveFXChannel` で確認ダイアログを経由）（ストリップ上ではミキサー全体のメニューより優先されるため、FX を追加も併記）。
 - **`MasterStripView`**: POST プラグイン、フェーダー、ステレオメーター。
 - **`MixerLevelMeter`**: トラックヘッダー用の横型メーター（Logic Pro 相当のスケール）。
 
@@ -332,7 +340,7 @@ Studio One 風ミキサー。
 | `SendLevelBar` | 横 Send レベル（dB テーパー、⌥クリックで 0 dB） |
 
 ### `WindowCloseHandler.swift`
-ウィンドウを閉じる際に Save／Don't Save／Cancel を確認し、保存成功または破棄時に終了する。
+ウィンドウを閉じると `NSApp.terminate` を呼ぶ。保存確認は `applicationShouldTerminate`（`ProjectState.confirmQuit()`）で行うため、終了メニューや ⌘Q と同じ確認になる。
 
 ---
 
@@ -367,7 +375,7 @@ CMake（`VST3Host/CMakeLists.txt`）で `MyDAWVST3Bridge` 静的ライブラリ�
 2. `loadProject(from:)` → DTO 復元 → `AudioClip.loadMetadata` → `setSavedPluginStates` → `syncTracks` でグラフ再構築（AU は非同期で状態復元、VST3 はインスタンス生成時に復元）。
 
 ### 6.3 終了
-`applicationWillTerminate` → `shutdown()` → エンジン停止 → `releaseVST3Instances`（エディタを閉じる → ラッパーから参照を外す → インスタンス破棄 → `bundleExit`）→ `restoreOriginalDefaultDevices`（macOS 既定入出力を起動前に戻す）。
+`applicationShouldTerminate` → `ProjectState.confirmQuit()`（プロジェクトを開いていれば Save／Don't Save／Cancel を確認。確認済みの `relaunch()` からはスキップ）→ `applicationWillTerminate` → `shutdown()` → エンジン停止 → `releaseVST3Instances`（エディタを閉じる → ラッパーから参照を外す → インスタンス破棄 → `bundleExit`）→ `restoreOriginalDefaultDevices`（macOS 既定入出力を起動前に戻す）。
 
 ### 6.4 デバイス変更と再起動
 1. `BufferSettingsView` の Apply → 言語が変わっていれば `AppLanguage.select`、デバイスかサンプルレートが変わっていれば `AudioEngineManager.applyAudioDevices`（サンプルレート設定、`bindIODevice`）→ 成功時 `AudioDeviceManager.setSelectedDeviceIDs`。

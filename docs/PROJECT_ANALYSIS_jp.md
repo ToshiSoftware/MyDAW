@@ -1,6 +1,6 @@
-# MyDAW プロジェクト解析（v1.6）
+# MyDAW プロジェクト解析（v1.7）
 
-> 対象バージョン: **1.6**（2026-09-29 時点のソース。v1.6 確定版）
+> 対象バージョン: **1.7**（2026-09-30 時点のソース。v1.7 確定版）
 > 英語版: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 > 型・関数単位の詳細: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 
@@ -64,6 +64,7 @@ MyDAW/
 │   │   ├── PluginManager.swift       AU／VST3 検出（VST3 は子プロセス＋キャッシュ）
 │   │   ├── VST3AudioUnit.swift       VST3 を包むアプリ内 AUv3
 │   │   ├── InputMonitorAudioUnit.swift 入力チャンネル抽出用アプリ内 AUv3
+│   │   ├── MonoDownmixAudioUnit.swift モノラルのトラックを L/R 加算するアプリ内 AUv3
 │   │   ├── VST3NativeInstance.swift  C++ VST3 インスタンスの Swift ラッパー
 │   │   ├── VST3HostBridge.swift      VST3 列挙 API の Swift ラッパー
 │   │   ├── VST3Host.swift            VST3 ホスト抽象（プロトコル）
@@ -78,7 +79,7 @@ MyDAW/
 │       ├── WaveformCanvas.swift      波形描画（SwiftUI Canvas）
 │       ├── MixerView.swift           ミキサー（3 区画ストリップ）
 │       ├── MixerControls.swift       フェーダー、PAN、メーター、dB スケール
-│       └── WindowCloseHandler.swift  ウィンドウを閉じる際の保存確認
+│       └── WindowCloseHandler.swift  ウィンドウを閉じたらアプリを終了（保存確認は終了処理側）
 ├── VST3Host/                   C++ VST3 ホストブリッジ（CMake で静的ライブラリ化）
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  翻訳（en.lproj・ja.lproj の Localizable.strings、InfoPlist.strings）
@@ -136,6 +137,9 @@ flowchart TD
       │
       ▼
 トラック出力ミキサー（フェーダー音量）
+      │
+      ▼
+MonoDownmixAudioUnit（モノラルのトラックは (L+R)/2、ステレオはそのまま）
       │
       ▼
 インサート（AU / VST3AudioUnit を挿入順に直列）
@@ -282,7 +286,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 
 ## 5. 設計判断と得られた知見
 
-v1.4〜1.6 の開発で判明した AVAudioEngine／プラグインの落とし穴と、その対策です。改修時に同じ問題を再発させないために記録します。
+v1.4〜1.7 の開発で判明した AVAudioEngine／プラグインの落とし穴と、その対策です。改修時に同じ問題を再発させないために記録します。
 
 | 事象 | 原因 | 対策 |
 | --- | --- | --- |

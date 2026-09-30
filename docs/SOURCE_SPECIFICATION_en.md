@@ -1,6 +1,6 @@
-# MyDAW Source Code Specification (v1.6)
+# MyDAW Source Code Specification (v1.7)
 
-> Version covered: **1.6** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
+> Version covered: **1.7** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 > System structure, signal paths and design decisions: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 
 For every file under `Sources/` and `VST3Host/`, this document describes responsibilities, types, the contracts of the main properties and methods, threading assumptions and side effects. Private methods are listed only where they are needed to follow the processing flow.
@@ -25,13 +25,14 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 #### `MyDAWApp: App` (`@main`)
 - **`init()`**: first calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
 - **`body`**: a `WindowGroup` with `MainDAWView`, plus menus:
-  - About (shows the version; falls back to `1.6` without Info.plist)
+  - About (shows the version; falls back to `1.7` without Info.plist)
   - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), Export Master Mix…
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
 - **`requestAudioPermissions()`**: calls the microphone permission API appropriate for the OS version.
 
 #### `MyDAWApplicationDelegate: NSApplicationDelegate`
 - Keeps the app running when the last window closes.
+- **`applicationShouldTerminate`**: calls `confirmQuit` (`ProjectState.confirmQuit()`); returns `.terminateCancel` when the user cancels or saving fails. Every quit path goes through it (the Quit menu, ⌘Q, closing the window); `relaunch()` has already asked, so it skips the question.
 - **`applicationWillTerminate`**: calls `shutdownAudioEngine`, which runs `AudioEngineManager.shutdown()` (required to release VST3 modules correctly and to restore the macOS default input/output devices).
 
 ---
@@ -50,7 +51,7 @@ Gain constants shared by all faders and sends: `unity = 1.0`, `maximum = 10^(6/2
 | Property | Meaning |
 | --- | --- |
 | `id`, `name`, `color` | Identifier, display name, track colour |
-| `channelMode`, `inputChannelIndex` | Recorded channel count and first input channel (0-based) |
+| `channelMode`, `inputChannelIndex` | Recorded channel count and first input channel (0-based). `channelMode` also sets playback: a mono track downmixes stereo clips (`MonoDownmixAudioUnit`); files are never rewritten |
 | `isRecordArmed`, `isInputMonitoring` | Record arm (R), input monitoring (I) |
 | `isMuted`, `isSoloed`, `volume`, `pan` | Mixer values |
 | `trackHeight` | Lane height (at least 120 pt) |
@@ -108,7 +109,7 @@ Pure functions for clip overlaps and fade curves, shared by playback (`AudioEngi
 ### `FXChannel.swift`
 
 #### `FXChannel: ObservableObject`
-`id`, `name` (default "FX n"), `volume`, `pan`, `plugins`, `color`, `currentOutputPeak`, `outputStereoPeak`; `insertPlugin` / `removePlugin` / `movePlugin`.
+`id`, `name` (default "FX n"), `volume`, `pan`, `isMuted`, `isSoloed`, `plugins`, `color`, `currentOutputPeak`, `outputStereoPeak`; `insertPlugin` / `removePlugin` / `movePlugin`.
 
 #### `FXSend: Codable`
 `id`, `fxChannelID`, `level` (linear gain), `enabled`.
@@ -127,9 +128,10 @@ L/R peak values. `init(buffer:)` computes each channel's maximum absolute sample
 | `ProjectDocument` | `version` (currently 4), zoom, scroll, playhead, BPM, metronome, master volume, display scales, tracks, FX, master plug-ins, plug-in states, punch range |
 | `TrackDocument` | Name, channels, input, R/M/S, **I (`isInputMonitoring`)**, volume, pan, height, colour, clips, plug-ins, sends |
 | `ClipDocument` | ID, start, source offset, duration, original duration, gain, mute, fades, fade curves (`fadeInCurve` / `fadeOutCurve`, `.auto` if unreadable), file path (relative to the project) |
-| `FXChannelDocument` | FX name, volume, pan, colour, plug-ins |
+| `FXChannelDocument` | FX name, volume, pan, mute, solo, colour, plug-ins (mute / solo default to off in older projects) |
 | `PluginStateDocument` | `pluginID`, `stateData`, `format` (plist for AU, `"vst3-state"` for VST3) |
 | `PunchRangeDocument` | `startBeat`, `endBeat`, `enabled` |
+| `SongRangeDocument` | Song start / end flags: optional `startBeat`, `endBeat` |
 | `ColorDocument` | RGBA |
 
 Every decoder uses `decodeIfPresent` with defaults, so files from older versions load.
@@ -140,12 +142,14 @@ Every decoder uses `decodeIfPresent` with defaults, so files from older versions
 
 - **Published state**: `tracks`, `fxChannels`, `masterPlugins`, `selectedTrackId`, `pixelsPerSecond` (20–400), `timelineScrollTime`, `punchRange`, `showsBeats`, `snapToGrid` (stored in UserDefaults), `waveformVerticalScale` (1–32), `trackHeightScale` (0.5–3), `timeSelection` (range selection), `marqueeRect` (marquee while dragging), `clipboard`, export dialog state, startup log, `pluginManager`, `audioEngine`, `deviceManager`.
 - **Initialisation**: applies devices and buffer size to the engine, subscribes to peak notifications, creates two default tracks, starts plug-in discovery.
-- **Tracks**: `addTrack`, `deleteTrack`, `toggleRecordArm`, `toggleInputMonitoring`, `toggleMute`, `toggleSolo`, `setInputRouting(for:channelMode:inputChannelIndex:)` (syncs the engine immediately).
+- **Tracks**: `addTrack`, `deleteTrack` (the UI calls `confirmDeleteTrack`, which asks first), `toggleRecordArm`, `toggleInputMonitoring`, `toggleMute`, `toggleSolo`, `setInputRouting(for:channelMode:inputChannelIndex:)` (syncs the engine immediately).
 - **Clips**: `selectClip` (selects only that clip and clears the range selection), `moveClip` (across tracks), `deleteSelectedClip` (deletes inside the range selection if there is one, otherwise every selected clip) / `deleteClip`, `toggleClipMute`, `duplicateClip`, `splitSelectedClip` / `splitClip`, drag preview (`beginClipDragPreview` etc.). Selection, ranges, clipboard and group moves live in `ProjectState+Editing.swift`.
 - **Undo/redo**: `beginClipEdit()` takes a snapshot (clip position, range, gain, mute, fades and curves, file, and each track's selection); `endClipEdit()` pushes it unless the clips are unchanged (for example after just clicking a handle). `undo()` / `redo()` do nothing while playing or recording.
 - **Punch**: `setPunchRange`, `setPunchStartBeat`, `setPunchEndBeat`, `setPunchEnabled`.
+- **Unused recordings**: `moveUnusedRecordings()` (File menu; `canMoveUnusedRecordings` = project open, stopped, no recording being finalised) first asks to save (Save Project and Continue / Cancel) and saves, then moves WAV files directly in Recordings that no clip or clipboard entry refers to into `Recordings/Unused` (numbered on a name clash) and lists them in an NSAlert. If a moved file appears in an Undo / Redo snapshot, both stacks are cleared.
+- **Song flags**: `songRange` (pushes `songEndTime` to the engine), `songStartTime` / `songEndTime` (seconds), `setSongStart(time:)` / `setSongEnd(time:)` (nil removes; kept at least `minimumSongLengthBeats` apart), `canPlaceSongStart(at:)` / `canPlaceSongEnd(at:)`. `toggleTransport(recordArmedTracks:)` passes the punch range and song end to the engine and starts or pauses (used by the play / record buttons and Space). `rewindToSongStart()` goes to the start flag, or to 0 when on or before it. The engine's `onReachSongEnd` calls `stop(tracks:)`.
 - **Plug-ins**: tracks `insertPlugin(_:into:)` / `removePlugin(_:from:)` / `movePlugin(_:before:on:)` / `togglePlugin(_:on:)`; FX `…intoFX:` / `…fromFX:` / `…onFX:`; master `insertMasterPlugin` / `removeMasterPlugin` / `moveMasterPlugin` / `toggleMasterPlugin`; `openPluginUI`.
-- **FX**: `addFXChannel()`, `renameFXChannel(id:to:)` (ignores empty names), `removeFXChannel(id:)`, `setSend(trackID:fxChannelID:level:)`.
+- **FX**: `addFXChannel()`, `renameFXChannel(id:to:)` (ignores empty names), `removeFXChannel(id:)` (the UI calls `confirmRemoveFXChannel(id:)`; the NSAlert makes Return and Esc cancel), `setSend(trackID:fxChannelID:level:)`.
 - **Files**: `createNewProject`, `loadProject`, `saveProject`, `saveProjectAndShowConfirmation`, `importAudioFile(_:intoTrackId:)` (copies 24-bit integer PCM at the current rate as is; otherwise converts it with `ClipAudioProcessing.writeConverted` into `Recordings/`), `locateClipFile` (matching sample rate only).
 - **Restart**: `promptRestartForAudioSettings()` (after a device, sample-rate or language change, asks Save and Restart / Restart Without Saving / Cancel), `relaunch()` (a `/bin/sh` waits for this process to exit, then `open -n` relaunches with the project as an argument).
 - **Export**: `beginMasterExportDialog`, `exportMasterMix(startTime:endTime:)`, `cancelMasterExport`.
@@ -190,18 +194,19 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 | --- | --- |
 | `playerNodes` | Spare per-track player (normally unused) |
 | `clipPlayerNodes` | One `AVAudioPlayerNode` per clip |
-| `trackOutputNodes` | Track output mixer (fader volume, solo, mute) |
+| `trackOutputNodes` | Track output mixer (fader volume, solo, mute). Mute and solo come from `audibility(tracks:fxChannels:)`: soloing a track keeps the FX channels it sends to; soloing an FX channel plays only its return (the sending tracks keep feeding their sends, but their splitter → mainMixer connection volume is set to 0 via `setTrackDryAudible`) |
+| `trackDownmixNodes` | `MonoDownmixAudioUnit` at the head of every track chain (before the inserts) |
 | `trackPluginNodes` | Inserts (AU / `VST3AudioUnit`) |
 | `trackPanNodes` | Pan mixer (after the inserts) |
 | `trackSplitterNodes` | Splitter mixer (one-to-many into mainMixer and sends; meter point) |
 | `sendGainNodes` | Per-send gain mixer |
 | `inputMonitorNodes` | `InputMonitorAudioUnit` (when I is on) |
-| `fxInputNodes` / `fxPluginNodes` / `fxPanNodes` / `fxOutputNodes` | FX channel input, inserts, pan and output (meter) |
+| `fxInputNodes` / `fxPluginNodes` / `fxPanNodes` / `fxOutputNodes` | FX channel input (fader volume), inserts, pan and output (meter; volume 0 when muted or soloed out) |
 | `masterOutputNode` / `masterPluginNodes` / `masterMeterNode` | Master volume, POST plug-ins, final meter |
 
 #### Main public methods
-- **Graph sync**: `syncTracks(_:fxChannels:)` (incremental update of tracks, FX, master, sends and input monitoring), `syncTracks(_:fxChannels:masterPlugins:)`, `syncMasterPlugins`, `syncAfterClipEdit` (reschedules while playing), `updateMixerLevels` (volume, pan, sends, FX), `updateSendLevel`, `setClipMuted`, `setPluginEnabled`.
-- **Transport**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)` (starts playback/recording, or stops if running), `stop(tracks:)`, `rewind`, `seek(to:)`, `setPunchRange`.
+- **Graph sync**: `syncTracks(_:fxChannels:)` (incremental update of tracks, FX, master, sends and input monitoring), `syncTracks(_:fxChannels:masterPlugins:)`, `syncMasterPlugins`, `syncAfterClipEdit` (during playback, `rescheduleEditedClips` restarts only the clips whose `ClipScheduleSignature` changed plus the clips overlapping them, from the transport position at the restart time; other clips play on), `updateMixerLevels` (volume, pan, sends, FX), `updateSendLevel`, `setClipMuted`, `setPluginEnabled`.
+- **Transport**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)` (starts playback/recording, or stops if running), `stop(tracks:)`, `rewind(tracks:to:)`, `seek(to:)`, `setPunchRange`. `songEndTime`: the playhead timer calls `onReachSongEnd` when it crosses it (only if playback started before it); that stop cuts recorded clips at it and leaves the playhead there.
 - **Devices**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)` (sets the device sample rate and calls `bindIODevice` when the devices change), `applyInputBufferFrameSize`, `applyAutomaticTimingCompensation`.
 - **Plug-ins**: `openPluginUI(pluginID:)`, `isPluginUnavailable`, `capturePluginStates`, `setSavedPluginStates`, `prepareForPluginGraphRestore`.
 - **Other**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:)` (renders the master path in real time to 24-bit WAV), `shutdown()` (stops the engine, releases VST3, restores the macOS default input/output devices), recordings folder helpers.
@@ -249,6 +254,9 @@ In-app AUv3 (`aufx`/`vst3`/`MyDW`) that places a VST3 instance in the AVAudioEng
 
 ### `InputMonitorAudioUnit.swift`
 In-app AUv3 (`aufx`/`inmn`/`MyDW`) that extracts a track's input channel(s) from the multichannel input (mono is duplicated to L/R). `configure(channelOffset:isStereo:)` is set while stopped; the input bus is sized to the device's channel count.
+
+### `MonoDownmixAudioUnit.swift`
+In-app AUv3 (`aufx`/`mndx`/`MyDW`) placed after every track's output mixer. With `isMono` set (the track is mono) it writes `(L + R) / 2` to both sides; otherwise it passes through. Mono clips already arrive as L = R (the player duplicates them), so they are unchanged either way.
 
 ### `VST3NativeInstance.swift`
 Swift wrapper holding the C++ bridge handle (`@unchecked Sendable`).
@@ -316,7 +324,7 @@ Studio One-style mixer.
 - **Overall**: drag the top edge to resize (320–1000 pt), horizontally scrolling track/FX strips, MASTER pinned on the right, right-click for Add FX.
 - **`StripSections`**: INSERT / SEND / controls sections (headings via `SectionHeader`, localised through `LocalizedStringKey`) with draggable dividers (shared by all strips, stored in UserDefaults).
 - **`TrackStripView`**: INSERT (+ menu, green dot on/off, click name for GUI, drag to reorder, × to remove), SEND (level bar and dB value per FX), pan, M/S, fader value, scale / fader / stereo meter, name (click to select).
-- **`FXStripView`**: INSERT, (an empty SEND section kept only for alignment), pan, remove FX, fader, name (double-click to rename).
+- **`FXStripView`**: INSERT, (an empty SEND section kept only for alignment), pan, "FX" label, fader, name (double-click to rename). Its context menu has Add FX and Remove FX channel (removal goes through the `confirmRemoveFXChannel` confirmation dialog) (it overrides the mixer-wide menu on the strip, so Add FX is repeated there).
 - **`MasterStripView`**: POST plug-ins, fader, stereo meter.
 - **`MixerLevelMeter`**: horizontal meter used in track headers (Logic Pro-like scale).
 
@@ -332,7 +340,7 @@ Studio One-style mixer.
 | `SendLevelBar` | Horizontal send level on the dB taper (⌥-click → 0 dB) |
 
 ### `WindowCloseHandler.swift`
-Asks Save / Don't Save / Cancel when the window closes and quits after a successful save or discard.
+Closing the window calls `NSApp.terminate`, so the save prompt comes from `applicationShouldTerminate` (`ProjectState.confirmQuit()`), the same as the Quit menu and ⌘Q.
 
 ---
 
@@ -367,7 +375,7 @@ CMake (`VST3Host/CMakeLists.txt`) builds the static library `MyDAWVST3Bridge`, w
 2. `loadProject(from:)` → DTOs restored → `AudioClip.loadMetadata` → `setSavedPluginStates` → `syncTracks` rebuilds the graph (AU state restored asynchronously, VST3 state when the instance is created).
 
 ### 6.3 Quit
-`applicationWillTerminate` → `shutdown()` → engine stop → `releaseVST3Instances` (close editors → detach wrappers → destroy instances → `bundleExit`) → `restoreOriginalDefaultDevices` (puts the macOS default input/output back).
+`applicationShouldTerminate` → `ProjectState.confirmQuit()` (Save / Don't Save / Cancel while a project is open; skipped during `relaunch()`, which has already asked) → `applicationWillTerminate` → `shutdown()` → engine stop → `releaseVST3Instances` (close editors → detach wrappers → destroy instances → `bundleExit`) → `restoreOriginalDefaultDevices` (puts the macOS default input/output back).
 
 ### 6.4 Device change and restart
 1. Apply in `BufferSettingsView` → `AppLanguage.select` if the language changed; `AudioEngineManager.applyAudioDevices` (sample rate, `bindIODevice`) if a device or the sample rate changed → on success `AudioDeviceManager.setSelectedDeviceIDs`.
