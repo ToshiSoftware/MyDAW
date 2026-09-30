@@ -17,6 +17,15 @@ final class MyDAWApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         shutdownAudioEngine?()
         shutdownAudioEngine = nil
+        // Leave without running C++ static destructors. Plug-ins keep threads
+        // of their own (JUCE timers, UAD services) that can outlive their
+        // instances; exit() then tears down statics those threads still use,
+        // and a plug-in crashes the quit now and then (seen with Deelay).
+        // Everything MyDAW must write is written by now.
+        UserDefaults.standard.synchronize()
+        fflush(stdout)
+        fflush(stderr)
+        _exit(0)
     }
 }
 

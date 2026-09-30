@@ -3918,8 +3918,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         for player in playerNodes.values { player.stop() }
         for player in clipPlayerNodes.values { player.stop() }
-        releaseVST3Instances()
-        releaseAudioUnits()
+        // Drained here, not after terminate: (which never returns), so the
+        // plug-ins are really disposed while the process still runs.
+        autoreleasepool {
+            releaseVST3Instances()
+            releaseAudioUnits()
+        }
         restoreOriginalDefaultDevices()
 
         isPlaying = false
