@@ -42,6 +42,13 @@ public struct MainDAWView: View {
                     .frame(height: 12)
                     .background(Color.white.opacity(0.15))
 
+                // Audio processing load and dropout mark
+                AudioLoadIndicator(monitor: projectState.audioEngine.loadMonitor)
+
+                Divider()
+                    .frame(height: 12)
+                    .background(Color.white.opacity(0.15))
+
                 // Storage location with Reveal in Finder button
                 Button(action: {
                     projectState.audioEngine.revealRecordingsFolder()
@@ -120,6 +127,11 @@ public struct MainDAWView: View {
                     onOpen: {
                         DispatchQueue.main.async {
                             projectState.loadProject()
+                        }
+                    },
+                    onOpenRecent: { entry in
+                        DispatchQueue.main.async {
+                            projectState.openRecentProject(entry)
                         }
                     }
                 )

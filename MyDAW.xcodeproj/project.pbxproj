@@ -16,6 +16,7 @@
 		DAWB00070000000000000001 /* AudioEngineManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00070000000000000001 /* AudioEngineManager.swift */; };
 		DAWB00080000000000000001 /* MainDAWView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00080000000000000001 /* MainDAWView.swift */; };
 		DAWB00090000000000000001 /* TransportBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00090000000000000001 /* TransportBarView.swift */; };
+		DAWB00970000000000000001 /* AudioLoadIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00970000000000000001 /* AudioLoadIndicator.swift */; };
 		DAWB00100000000000000001 /* ArrangerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00100000000000000001 /* ArrangerView.swift */; };
 		DAWB00110000000000000001 /* TrackHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00110000000000000001 /* TrackHeaderView.swift */; };
 		DAWB00120000000000000001 /* WaveformLaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00120000000000000001 /* WaveformLaneView.swift */; };
@@ -24,6 +25,7 @@
 		DAWB00150000000000000001 /* AudioClip.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00150000000000000001 /* AudioClip.swift */; };
 		DAWB00160000000000000001 /* ProjectDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00160000000000000001 /* ProjectDocument.swift */; };
 		DAWB00170000000000000001 /* PluginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00170000000000000001 /* PluginManager.swift */; };
+		DAWB00960000000000000001 /* AudioLoadMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00960000000000000001 /* AudioLoadMonitor.swift */; };
 		DAWB00180000000000000001 /* VST3Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00180000000000000001 /* VST3Host.swift */; };
 		DAWB00190000000000000001 /* VST3NativeInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00190000000000000001 /* VST3NativeInstance.swift */; };
 		DAWB00200000000000000001 /* VST3HostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00200000000000000001 /* VST3HostBridge.swift */; };
@@ -33,6 +35,7 @@
 		DAWB00240000000000000001 /* GenericAUParameterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00240000000000000001 /* GenericAUParameterView.swift */; };
 		DAWB00250000000000000001 /* ClipLayering.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00250000000000000001 /* ClipLayering.swift */; };
 		DAWB00260000000000000001 /* StereoPeak.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00260000000000000001 /* StereoPeak.swift */; };
+		DAWB00950000000000000001 /* RecentProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00950000000000000001 /* RecentProjects.swift */; };
 		DAWB00270000000000000001 /* MixerControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00270000000000000001 /* MixerControls.swift */; };
 		DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00280000000000000001 /* VST3AudioUnit.swift */; };
 		DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */; };
@@ -52,6 +55,7 @@
 		DAWF00070000000000000001 /* AudioEngineManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineManager.swift; sourceTree = "<group>"; };
 		DAWF00080000000000000001 /* MainDAWView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainDAWView.swift; sourceTree = "<group>"; };
 		DAWF00090000000000000001 /* TransportBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBarView.swift; sourceTree = "<group>"; };
+		DAWF00970000000000000001 /* AudioLoadIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLoadIndicator.swift; sourceTree = "<group>"; };
 		DAWF00100000000000000001 /* ArrangerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrangerView.swift; sourceTree = "<group>"; };
 		DAWF00110000000000000001 /* TrackHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackHeaderView.swift; sourceTree = "<group>"; };
 		DAWF00120000000000000001 /* WaveformLaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformLaneView.swift; sourceTree = "<group>"; };
@@ -60,6 +64,7 @@
 		DAWF00150000000000000001 /* AudioClip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioClip.swift; sourceTree = "<group>"; };
 		DAWF00160000000000000001 /* ProjectDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDocument.swift; sourceTree = "<group>"; };
 		DAWF00170000000000000001 /* PluginManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginManager.swift; sourceTree = "<group>"; };
+		DAWF00960000000000000001 /* AudioLoadMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLoadMonitor.swift; sourceTree = "<group>"; };
 		DAWF00180000000000000001 /* VST3Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3Host.swift; sourceTree = "<group>"; };
 		DAWF00190000000000000001 /* VST3NativeInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3NativeInstance.swift; sourceTree = "<group>"; };
 		DAWF00200000000000000001 /* VST3HostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3HostBridge.swift; sourceTree = "<group>"; };
@@ -69,6 +74,7 @@
 		DAWF00240000000000000001 /* GenericAUParameterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenericAUParameterView.swift; sourceTree = "<group>"; };
 		DAWF00250000000000000001 /* ClipLayering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipLayering.swift; sourceTree = "<group>"; };
 		DAWF00260000000000000001 /* StereoPeak.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoPeak.swift; sourceTree = "<group>"; };
+		DAWF00950000000000000001 /* RecentProjects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentProjects.swift; sourceTree = "<group>"; };
 		DAWF00270000000000000001 /* MixerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixerControls.swift; sourceTree = "<group>"; };
 		DAWF00280000000000000001 /* VST3AudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3AudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMonitorAudioUnit.swift; sourceTree = "<group>"; };
@@ -121,6 +127,7 @@
 				DAWF00140000000000000001 /* FXChannel.swift */,
 				DAWF00160000000000000001 /* ProjectDocument.swift */,
 				DAWF00040000000000000001 /* ProjectState.swift */,
+				DAWF00950000000000000001 /* RecentProjects.swift */,
 				DAWF00260000000000000001 /* StereoPeak.swift */,
 				DAWF00030000000000000001 /* WaveformCache.swift */,
 			);
@@ -138,6 +145,7 @@
 				DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */,
 				DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */,
 				DAWF00170000000000000001 /* PluginManager.swift */,
+				DAWF00960000000000000001 /* AudioLoadMonitor.swift */,
 				DAWF00280000000000000001 /* VST3AudioUnit.swift */,
 				DAWF00180000000000000001 /* VST3Host.swift */,
 				DAWF00200000000000000001 /* VST3HostBridge.swift */,
@@ -156,6 +164,7 @@
 				DAWF00220000000000000001 /* ProjectSelectionView.swift */,
 				DAWF00110000000000000001 /* TrackHeaderView.swift */,
 				DAWF00090000000000000001 /* TransportBarView.swift */,
+				DAWF00970000000000000001 /* AudioLoadIndicator.swift */,
 				DAWF00130000000000000001 /* WaveformCanvas.swift */,
 				DAWF00120000000000000001 /* WaveformLaneView.swift */,
 				DAWF00230000000000000001 /* WindowCloseHandler.swift */,
@@ -286,6 +295,7 @@
 				DAWB00070000000000000001 /* AudioEngineManager.swift in Sources */,
 				DAWB00080000000000000001 /* MainDAWView.swift in Sources */,
 				DAWB00090000000000000001 /* TransportBarView.swift in Sources */,
+				DAWB00970000000000000001 /* AudioLoadIndicator.swift in Sources */,
 				DAWB00100000000000000001 /* ArrangerView.swift in Sources */,
 				DAWB00110000000000000001 /* TrackHeaderView.swift in Sources */,
 				DAWB00120000000000000001 /* WaveformLaneView.swift in Sources */,
@@ -294,6 +304,7 @@
 				DAWB00150000000000000001 /* AudioClip.swift in Sources */,
 				DAWB00160000000000000001 /* ProjectDocument.swift in Sources */,
 				DAWB00170000000000000001 /* PluginManager.swift in Sources */,
+				DAWB00960000000000000001 /* AudioLoadMonitor.swift in Sources */,
 				DAWB00180000000000000001 /* VST3Host.swift in Sources */,
 				DAWB00190000000000000001 /* VST3NativeInstance.swift in Sources */,
 				DAWB00200000000000000001 /* VST3HostBridge.swift in Sources */,
@@ -303,6 +314,7 @@
 				DAWB00240000000000000001 /* GenericAUParameterView.swift in Sources */,
 				DAWB00250000000000000001 /* ClipLayering.swift in Sources */,
 				DAWB00260000000000000001 /* StereoPeak.swift in Sources */,
+				DAWB00950000000000000001 /* RecentProjects.swift in Sources */,
 				DAWB00270000000000000001 /* MixerControls.swift in Sources */,
 				DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */,
 				DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */,

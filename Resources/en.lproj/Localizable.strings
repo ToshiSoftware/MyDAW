@@ -1,6 +1,7 @@
 /* GUI strings. Keys are the English source strings; regenerate the key list with scripts/extract-strings.sh. */
 
 "MyDAW - Professional Audio Workstation" = "MyDAW - Professional Audio Workstation";
+"MyDAW Help" = "MyDAW Help";
 "About MyDAW" = "About MyDAW";
 "New Project…" = "New Project…";
 "Open Project…" = "Open Project…";
@@ -16,6 +17,11 @@
 "Open an existing project" = "Open an existing project";
 "New Project" = "New Project";
 "Open Project" = "Open Project";
+"Recent Projects" = "Recent Projects";
+"No recent projects" = "No recent projects";
+"Remove from List" = "Remove from List";
+"Not found: %@" = "Not found: %@";
+"The project file could not be found:\n%@" = "The project file could not be found:\n%@";
 "Scanning Audio Unit plug-ins..." = "Scanning Audio Unit plug-ins...";
 "Audio Unit: %lld found" = "Audio Unit: %lld found";
 "Scanning VST3 plug-ins..." = "Scanning VST3 plug-ins...";
@@ -29,11 +35,12 @@
 "No Tracks Armed for Recording" = "No Tracks Armed for Recording";
 "Disable Punch In/Out" = "Disable Punch In/Out";
 "Enable Punch In/Out" = "Enable Punch In/Out";
-"Delete Selected Recordings or Range" = "Delete Selected Recordings or Range";
 "Save Project" = "Save Project";
 "Toggle Metronome Click" = "Toggle Metronome Click";
 "Settings" = "Settings";
 "Disable Beat Snap" = "Disable Beat Snap";
+"Disable Auto-Scroll" = "Disable Auto-Scroll";
+"Enable Auto-Scroll" = "Enable Auto-Scroll";
 "Enable Beat Snap" = "Enable Beat Snap";
 "P" = "P";
 "TIME" = "TIME";
@@ -108,6 +115,14 @@
 "Choose Recording File…" = "Choose Recording File…";
 "Unmute Recording" = "Unmute Recording";
 "Mute Recording" = "Mute Recording";
+"%lld Clips" = "%lld Clips";
+"Normalize (%lld)" = "Normalize (%lld)";
+"Reverse (%lld)" = "Reverse (%lld)";
+"Mute Recordings (%lld)" = "Mute Recordings (%lld)";
+"Unmute Recordings (%lld)" = "Unmute Recordings (%lld)";
+"Duplicate Recordings (%lld)" = "Duplicate Recordings (%lld)";
+"Split at Cursor (%lld)" = "Split at Cursor (%lld)";
+"Delete Recordings (%lld)" = "Delete Recordings (%lld)";
 "Auto" = "Auto";
 "Equal Power" = "Equal Power";
 "Linear" = "Linear";
@@ -204,3 +219,8 @@
 "The Undo history was cleared, since it referred to moved files." = "The Undo history was cleared, since it referred to moved files.";
 "The export ended before the whole range was captured." = "The export ended before the whole range was captured.";
 "Show in Finder" = "Show in Finder";
+"Dropout" = "Dropout";
+"Audio processing load: %lld%% (peak %lld%%)" = "Audio processing load: %lld%% (peak %lld%%)";
+"MyDAW CPU usage (all cores): %lld%%" = "MyDAW CPU usage (all cores): %lld%%";
+"Dropouts since launch: %lld" = "Dropouts since launch: %lld";
+"Last dropout: %@" = "Last dropout: %@";

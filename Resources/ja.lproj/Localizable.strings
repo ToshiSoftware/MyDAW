@@ -1,6 +1,7 @@
 /* GUI strings. Keys are the English source strings; regenerate the key list with scripts/extract-strings.sh. */
 
 "MyDAW - Professional Audio Workstation" = "MyDAW - Professional Audio Workstation";
+"MyDAW Help" = "MyDAW ヘルプ";
 "About MyDAW" = "MyDAW について";
 "New Project…" = "新規プロジェクト…";
 "Open Project…" = "プロジェクトを開く…";
@@ -16,6 +17,11 @@
 "Open an existing project" = "既存プロジェクトを開く";
 "New Project" = "新規プロジェクト";
 "Open Project" = "プロジェクトを開く";
+"Recent Projects" = "最近使ったプロジェクト";
+"No recent projects" = "最近使ったプロジェクトはありません";
+"Remove from List" = "リストから削除";
+"Not found: %@" = "見つかりません: %@";
+"The project file could not be found:\n%@" = "プロジェクトファイルが見つかりません:\n%@";
 "Scanning Audio Unit plug-ins..." = "Audio Unit プラグインを検出しています...";
 "Audio Unit: %lld found" = "Audio Unit: %lld 件";
 "Scanning VST3 plug-ins..." = "VST3 プラグインを検出しています...";
@@ -29,11 +35,12 @@
 "No Tracks Armed for Recording" = "録音モードのトラックがありません";
 "Disable Punch In/Out" = "パンチイン／アウトを無効にする";
 "Enable Punch In/Out" = "パンチイン／アウトを有効にする";
-"Delete Selected Recordings or Range" = "選択中のクリップまたは範囲を削除";
 "Save Project" = "プロジェクトを保存";
 "Toggle Metronome Click" = "クリックのオン／オフ";
 "Settings" = "設定";
 "Disable Beat Snap" = "スナップを無効にする";
+"Disable Auto-Scroll" = "自動スクロールを無効にする";
+"Enable Auto-Scroll" = "自動スクロールを有効にする";
 "Enable Beat Snap" = "スナップを有効にする";
 "P" = "P";
 "TIME" = "時間";
@@ -108,6 +115,14 @@
 "Choose Recording File…" = "録音ファイルを選択…";
 "Unmute Recording" = "ミュートを解除";
 "Mute Recording" = "クリップをミュート";
+"%lld Clips" = "%lld個のクリップ";
+"Normalize (%lld)" = "ノーマライズ（%lld個）";
+"Reverse (%lld)" = "逆再生（%lld個）";
+"Mute Recordings (%lld)" = "クリップをミュート（%lld個）";
+"Unmute Recordings (%lld)" = "ミュートを解除（%lld個）";
+"Duplicate Recordings (%lld)" = "クリップを複製（%lld個）";
+"Split at Cursor (%lld)" = "再生位置で分割（%lld個）";
+"Delete Recordings (%lld)" = "クリップを削除（%lld個）";
 "Auto" = "Auto";
 "Equal Power" = "等パワー";
 "Linear" = "直線";
@@ -204,3 +219,8 @@
 "The Undo history was cleared, since it referred to moved files." = "移動したファイルを取り消しの履歴が使っていたため、取り消しの履歴を消去しました。";
 "The export ended before the whole range was captured." = "書き出しが、指定した範囲をすべて取り込む前に終了しました。";
 "Show in Finder" = "Finder で表示";
+"Dropout" = "音飛び";
+"Audio processing load: %lld%% (peak %lld%%)" = "オーディオ処理負荷: %lld%%（ピーク %lld%%）";
+"MyDAW CPU usage (all cores): %lld%%" = "MyDAW の CPU 使用率（全コア）: %lld%%";
+"Dropouts since launch: %lld" = "起動後の音飛び: %lld 回";
+"Last dropout: %@" = "最後の音飛び: %@";

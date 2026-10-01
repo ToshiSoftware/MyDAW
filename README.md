@@ -38,6 +38,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Editing
 - Move clips (also between tracks), trim both edges, clip gain, fade in/out, split, duplicate, delete, mute.
 - **Multiple selection**: shift/cmd-click, marquee (shift to add), cmd+A. Selected clips move and delete together.
+- **Right-click menu**: right-clicking an unselected clip selects it; right-clicking a selected clip applies the command to every selected clip (Normalize, Reverse, Mute, Duplicate, Split, Delete; with several clips the items show the count). Duplicate places the selection, as one block, at the playhead. Inside a selected range the range menu opens.
 - **Range selection** (cmd-drag) across tracks: delete (leave silence), crop, split at both edges.
 - **Cut / copy / paste** (cmd+X / C / V, pasted at the playhead) and option-drag to duplicate.
 - **Fade curves**: drag the handle in the middle of a fade line to bend it continuously (snaps to linear and equal power; double-click for Auto).
@@ -47,9 +48,10 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Overlap layering**: the most recently added clip plays on top of older ones, with automatic crossfades (equal power by default) at the boundaries. The fades of the upper clip drive the crossfades.
 - WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
 - View: mouse wheel over the ruler or a pinch zooms horizontally, option+wheel sets track height, option+shift+wheel sets waveform height.
+- **Auto-scroll**: the view follows the playhead while playing or recording; turn it on/off with the |→ button at the right end of the transport bar. The horizontal scroll bar moves only when its knob (●) is dragged.
 
 ### Mixing
-- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**.
+- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge.
 - dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
 - Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return.
 - Track colours selectable from a palette.
@@ -64,14 +66,17 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 
 ### Project
 - One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
+- **Recent Projects** on the start screen: up to 50 projects with their last-saved date; click a name to open it.
 - Master mix export to 24-bit WAV, cut to the sample at the start and end positions (plug-in latency included).
 - **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`.
 
 ### Audio devices
 - Separate input and output devices (for example, an audio interface for input and a monitor's speakers for output). While MyDAW runs, the chosen devices become the macOS default input and output; the previous defaults are restored on quit.
 - Changing a device or the sample rate offers to save and restart, and reopens the project after the restart.
+- **CPU meter** in the status bar: audio processing load as a bar that turns from green through yellow and orange to red, and a red **● Dropout** mark for 3 seconds whenever the sound breaks up.
 
 ### Languages
+- **MyDAW Help** in the Help menu (⌘?) opens the operation manual (PDF on the web) in the GUI language.
 - The GUI is available in English and Japanese. It follows the macOS language at first and can be switched under Language in Settings (after a restart).
 - Translations live in `Localizable.strings` under `Resources/en.lproj` and `Resources/ja.lproj`; an English/Japanese table is in [docs/UI_Strings_en_ja.csv](docs/UI_Strings_en_ja.csv). After adding GUI strings, run `./scripts/extract-strings.sh` to find missing translations.
 
@@ -104,7 +109,7 @@ When the project is inside a Google Drive folder, the script removes extended at
 
 ## Quick start
 
-1. Launch MyDAW and choose **New Project** (pick a folder) or **Open Project**.
+1. Launch MyDAW and choose **New Project** (pick a folder) or **Open Project**, or click a project in **Recent Projects**.
 2. Allow microphone access when macOS asks.
 3. Click the gear button and choose your input/output device and buffer size.
 4. Arm a track with **R**, choose its input channel, and check the meter moves.

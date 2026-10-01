@@ -294,16 +294,37 @@ extension ProjectState {
 
     // MARK: Clip commands (right-click menu)
 
-    /// The clips a menu command on `clipId` acts on: the whole selection when
-    /// that clip is part of it, otherwise just that clip (which gets selected).
-    private func menuTargetClips(trackId: UUID, clipId: UUID) -> [AudioClip] {
-        guard let track = tracks.first(where: { $0.id == trackId }) else { return [] }
-        if !track.selectedClipIDs.contains(clipId) {
-            selectClip(trackId: trackId, clipId: clipId)
-        }
+    /// The clips a menu opened on `clipId` acts on: the whole selection when
+    /// that clip is part of it, otherwise just that clip.
+    public func menuTargets(trackId: UUID, clipId: UUID) -> [(track: AudioTrack, clip: AudioClip)] {
+        guard let track = tracks.first(where: { $0.id == trackId }),
+              let clip = track.clips.first(where: { $0.id == clipId }) else { return [] }
+        guard track.selectedClipIDs.contains(clipId) else { return [(track, clip)] }
         return tracks.flatMap { track in
-            track.clips.filter { track.selectedClipIDs.contains($0.id) }
+            track.clips.filter { track.selectedClipIDs.contains($0.id) }.map { (track, $0) }
         }
+    }
+
+    /// Right-click on a clip: selects it, unless it is already selected (then
+    /// the menu acts on the whole selection).
+    public func selectForMenu(trackId: UUID, clipId: UUID) {
+        guard let track = tracks.first(where: { $0.id == trackId }),
+              !track.selectedClipIDs.contains(clipId) else { return }
+        selectClip(trackId: trackId, clipId: clipId)
+    }
+
+    /// The menu targets the playhead is inside, i.e. those Split cuts.
+    public func splittableMenuTargets(trackId: UUID, clipId: UUID) -> [(track: AudioTrack, clip: AudioClip)] {
+        let time = audioEngine.currentTime
+        return menuTargets(trackId: trackId, clipId: clipId).filter { target in
+            let offset = time - target.clip.startTime
+            return offset > 0.02 && offset < target.clip.duration - 0.02
+        }
+    }
+
+    private func menuTargetClips(trackId: UUID, clipId: UUID) -> [AudioClip] {
+        selectForMenu(trackId: trackId, clipId: clipId)
+        return menuTargets(trackId: trackId, clipId: clipId).map(\.clip)
     }
 
     /// Runs `edit` on each target clip whose file exists, as one undo step.
@@ -313,6 +334,71 @@ extension ProjectState {
         beginClipEdit()
         for clip in targets where !clip.isFileMissing {
             edit(clip)
+        }
+        endClipEdit()
+        audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+    }
+
+    /// Mutes every target clip, or unmutes them all when all are muted.
+    public func toggleMuteMenuTargets(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isRecording else { return }
+        let targets = menuTargetClips(trackId: trackId, clipId: clipId)
+        let mute = targets.contains { !$0.isMuted }
+        for clip in targets where clip.isMuted != mute {
+            clip.isMuted = mute
+            audioEngine.setClipMuted(clip.id, muted: mute)
+        }
+    }
+
+    /// Copies the target clips as one block whose start lands on the
+    /// playhead, each on its own track; the copies become the selection.
+    public func duplicateMenuTargets(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isRecording else { return }
+        selectForMenu(trackId: trackId, clipId: clipId)
+        let targets = menuTargets(trackId: trackId, clipId: clipId)
+        guard let blockStart = targets.map(\.clip.startTime).min() else { return }
+        let offset = audioEngine.currentTime - blockStart
+        beginClipEdit()
+        clearSelection()
+        for (track, clip) in targets {
+            let copy = clip.duplicate(at: clip.startTime + offset)
+            track.restoreClip(copy)
+            track.selectedClipIDs.insert(copy.id)
+        }
+        endClipEdit()
+        audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+    }
+
+    /// Splits the target clips at the playhead (those it is inside); both
+    /// halves stay selected.
+    public func splitMenuTargets(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
+        selectForMenu(trackId: trackId, clipId: clipId)
+        let targets = splittableMenuTargets(trackId: trackId, clipId: clipId)
+        guard !targets.isEmpty else { return }
+        let time = audioEngine.currentTime
+        let selectedBefore = tracks.reduce(into: [UUID: Set<UUID>]()) { $0[$1.id] = $1.selectedClipIDs }
+        let clipIDsBefore = Set(tracks.flatMap { $0.clips.map(\.id) })
+        beginClipEdit()
+        for (track, clip) in targets {
+            _ = track.splitClip(id: clip.id, at: time)
+        }
+        for track in tracks {
+            let newPieces = track.clips.map(\.id).filter { !clipIDsBefore.contains($0) }
+            track.selectedClipIDs = (selectedBefore[track.id] ?? []).union(newPieces)
+        }
+        endClipEdit()
+        audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+    }
+
+    /// Deletes the target clips (their files stay on disk) as one undo step.
+    public func deleteMenuTargets(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isRecording else { return }
+        selectForMenu(trackId: trackId, clipId: clipId)
+        let targets = menuTargets(trackId: trackId, clipId: clipId)
+        beginClipEdit()
+        for (track, clip) in targets {
+            track.deleteClip(id: clip.id, removeFile: false)
         }
         endClipEdit()
         audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)

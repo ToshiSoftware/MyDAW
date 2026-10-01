@@ -11,35 +11,41 @@ public struct MixerView: View {
     @State private var heightDragStart: Double?
 
     static let stripWidth: CGFloat = 92
-    static let minControlHeight: Double = 230
-    private static let chromeHeight: Double = 34
+    /// Smallest distance from the divider above the fader section to the
+    /// bottom edge of the mixer.
+    static let minControlHeight: Double = 220
+    /// Resize bar, title row and the two section dividers.
+    private static let chromeHeight: Double = 37
+
+    /// Lowest mixer height that keeps the fader section `minControlHeight` tall.
+    private var minimumMixerHeight: Double {
+        Self.chromeHeight + pluginSectionHeight + sendSectionHeight + Self.minControlHeight
+    }
 
     public init(projectState: ProjectState) {
         self.projectState = projectState
     }
 
     public var body: some View {
+        let height = max(mixerHeight, minimumMixerHeight)
         let layout = MixerSectionLayout(
             pluginHeight: $pluginSectionHeight,
             sendHeight: $sendSectionHeight,
-            maxTopHeight: max(60, mixerHeight - Self.chromeHeight - Self.minControlHeight)
+            maxTopHeight: max(64, height - Self.chromeHeight - Self.minControlHeight)
         )
         VStack(spacing: 0) {
             Rectangle()
                 .fill(Color.white.opacity(0.12))
                 .frame(height: 5)
-                .contentShape(Rectangle())
-                .onHover { inside in
-                    if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-                }
-                .gesture(
-                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                        .onChanged { value in
-                            let start = heightDragStart ?? mixerHeight
-                            if heightDragStart == nil { heightDragStart = start }
-                            mixerHeight = min(1000, max(320, start - Double(value.translation.height)))
-                        }
-                        .onEnded { _ in heightDragStart = nil }
+                .overlay(
+                    VerticalResizeHandle(
+                        onBegin: { heightDragStart = height },
+                        onDrag: { translation in
+                            let start = heightDragStart ?? height
+                            mixerHeight = min(1000, max(minimumMixerHeight, start - Double(translation)))
+                        },
+                        onEnd: { heightDragStart = nil }
+                    )
                 )
 
             HStack {
@@ -86,7 +92,7 @@ public struct MixerView: View {
             .frame(maxHeight: .infinity)
             .padding(.bottom, 4)
         }
-        .frame(height: mixerHeight)
+        .frame(height: height)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
         .contextMenu {
             Button {
@@ -150,18 +156,87 @@ private struct StripSections<Plugins: View, Sends: View, Controls: View>: View {
             .fill(Color.white.opacity(0.14))
             .frame(height: 3)
             .padding(.vertical, 1)
-            .contentShape(Rectangle())
-            .onHover { inside in
-                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .onChanged { value in
-                        if dragStart == nil { dragStart = begin() }
-                        onDrag(Double(value.translation.height))
-                    }
-                    .onEnded { _ in dragStart = nil }
+            .overlay(
+                VerticalResizeHandle(
+                    onBegin: { dragStart = begin() },
+                    onDrag: { translation in onDrag(Double(translation)) },
+                    onEnd: { dragStart = nil }
+                )
             )
+    }
+}
+
+/// Up/down resize handle done in AppKit, so that the resize cursor and the
+/// drag always cover exactly the same area (SwiftUI's hover push/pop of the
+/// cursor gets out of step and is not shown reliably).
+struct VerticalResizeHandle: NSViewRepresentable {
+    let onBegin: () -> Void
+    /// Distance dragged since the press, positive downwards.
+    let onDrag: (CGFloat) -> Void
+    let onEnd: () -> Void
+
+    func makeNSView(context: Context) -> HandleView {
+        let view = HandleView()
+        update(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: HandleView, context: Context) {
+        update(nsView)
+    }
+
+    private func update(_ view: HandleView) {
+        view.onBegin = onBegin
+        view.onDrag = onDrag
+        view.onEnd = onEnd
+    }
+
+    final class HandleView: NSView {
+        var onBegin: (() -> Void)?
+        var onDrag: ((CGFloat) -> Void)?
+        var onEnd: (() -> Void)?
+        private var startY: CGFloat?
+
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .resizeUpDown)
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.cursorUpdate, .activeAlways, .inVisibleRect],
+                owner: self
+            ))
+        }
+
+        override func cursorUpdate(with event: NSEvent) {
+            NSCursor.resizeUpDown.set()
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            // Screen coordinates: the handle itself moves while dragging.
+            startY = NSEvent.mouseLocation.y
+            NSCursor.resizeUpDown.set()
+            onBegin?()
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let startY else { return }
+            NSCursor.resizeUpDown.set()
+            onDrag?(startY - NSEvent.mouseLocation.y)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard startY != nil else { return }
+            startY = nil
+            onEnd?()
+            window?.invalidateCursorRects(for: self)
+        }
     }
 }
 

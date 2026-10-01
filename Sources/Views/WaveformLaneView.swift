@@ -80,9 +80,9 @@ public struct WaveformLaneView: View {
         .onTapGesture {
             projectState.clearSelection()
         }
-        .contextMenu {
-            EditMenuItems(projectState: projectState)
-        }
+        // Right-click menus are built in AppKit at the click, after the
+        // clicked clip is selected (a SwiftUI menu is built beforehand).
+        .background(LaneMenuMonitor { x in laneMenu(atX: x) })
         .coordinateSpace(name: "timeline")
         .overlay(
             Rectangle()
@@ -145,63 +145,247 @@ public struct WaveformLaneView: View {
                 projectState.endTimeSelection()
             }
     }
+
+    /// Menu for a right-click at `x` in this lane: the range menu inside the
+    /// time selection; on a clip, the clip menu (the clip is selected first
+    /// unless it is already selected); elsewhere the clipboard menu.
+    private func laneMenu(atX x: CGFloat) -> NSMenu {
+        let time = Double(x / projectState.pixelsPerSecond)
+        if let selection = projectState.timeSelection,
+           selection.trackIDs.contains(track.id),
+           time >= selection.start, time <= selection.end {
+            return LaneMenu.editMenu(projectState)
+        }
+        if let clip = clip(atX: x) {
+            projectState.selectForMenu(trackId: track.id, clipId: clip.id)
+            return LaneMenu.clipMenu(projectState, track: track, clip: clip)
+        }
+        return LaneMenu.editMenu(projectState)
+    }
+
+    /// The topmost clip drawn at `x` (later clips lie on top).
+    private func clip(atX x: CGFloat) -> AudioClip? {
+        let pps = projectState.pixelsPerSecond
+        return track.clips.last { clip in
+            let start = CGFloat(clip.startTime) * pps
+            return x >= start && x <= start + max(4.0, CGFloat(clip.duration) * pps)
+        }
+    }
 }
 
-/// Clipboard and time-range commands shared by the clip and lane menus.
-/// `prepare` runs before Cut/Copy (the clip menu uses it to select its clip,
-/// so Cut/Copy stay enabled there even with nothing selected yet).
-private struct EditMenuItems: View {
-    @ObservedObject var projectState: ProjectState
-    var prepare: (() -> Void)? = nil
+/// The lane right-click menus.
+@MainActor
+private enum LaneMenu {
+    /// Clipboard commands, plus the range commands when a range is selected.
+    static func editMenu(_ projectState: ProjectState) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        addEditItems(to: menu, projectState)
+        return menu
+    }
 
-    var body: some View {
+    private static func addEditItems(to menu: NSMenu, _ projectState: ProjectState) {
         let isRecording = projectState.audioEngine.isRecording
-        let canCopy = prepare != nil || projectState.hasSelection
-        Button {
-            prepare?()
+        menu.addItem(ClosureMenuItem(String(localized: "Cut"), symbol: "scissors",
+                                     enabled: !isRecording && projectState.hasSelection) {
             projectState.cutSelection()
-        } label: {
-            Label("Cut", systemImage: "scissors")
-        }
-        .disabled(isRecording || !canCopy)
-
-        Button {
-            prepare?()
+        })
+        menu.addItem(ClosureMenuItem(String(localized: "Copy"), symbol: "doc.on.doc",
+                                     enabled: projectState.hasSelection) {
             projectState.copySelection()
-        } label: {
-            Label("Copy", systemImage: "doc.on.doc")
-        }
-        .disabled(!canCopy)
-
-        Button {
+        })
+        menu.addItem(ClosureMenuItem(String(localized: "Paste at Playhead"), symbol: "doc.on.clipboard",
+                                     enabled: !isRecording && projectState.canPaste) {
             projectState.paste()
-        } label: {
-            Label("Paste at Playhead", systemImage: "doc.on.clipboard")
+        })
+        guard projectState.timeSelection != nil else { return }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(String(localized: "Delete Range"), symbol: "delete.left",
+                                     enabled: !isRecording) {
+            projectState.deleteTimeSelection()
+        })
+        menu.addItem(ClosureMenuItem(String(localized: "Crop to Range"), symbol: "crop",
+                                     enabled: !isRecording) {
+            projectState.cropToTimeSelection()
+        })
+        menu.addItem(ClosureMenuItem(String(localized: "Split at Range Edges"), symbol: "square.split.2x1",
+                                     enabled: !isRecording) {
+            projectState.splitAtTimeSelection()
+        })
+    }
+
+    /// Commands on the clicked clip, or on every selected clip when the
+    /// clicked one is part of the selection.
+    static func clipMenu(_ projectState: ProjectState, track: AudioTrack, clip: AudioClip) -> NSMenu {
+        let engine = projectState.audioEngine
+        let isRecording = engine.isRecording
+        let isBusy = engine.isPlaying || engine.isRecording
+        let targets = projectState.menuTargets(trackId: track.id, clipId: clip.id)
+        let count = targets.count
+        let isMulti = count > 1
+        // A lone clip whose file is missing only offers what can fix or drop it.
+        let isMissingOnly = !isMulti && clip.isFileMissing
+        let trackId = track.id
+        let clipId = clip.id
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        if isMulti {
+            menu.addItem(ClosureMenuItem(String(localized: "\(count) Clips"), symbol: "square.stack", enabled: false) {})
+        } else if clip.isFileMissing {
+            menu.addItem(ClosureMenuItem(clip.fileURL.lastPathComponent, symbol: "doc", enabled: false) {})
+        } else {
+            let fileURL = clip.fileURL
+            let item = ClosureMenuItem(fileURL.lastPathComponent, symbol: "doc", enabled: true) {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            }
+            item.toolTip = String(localized: "Show in Finder")
+            menu.addItem(item)
         }
-        .disabled(isRecording || !projectState.canPaste)
 
-        if projectState.timeSelection != nil {
-            Divider()
-            Button {
-                projectState.deleteTimeSelection()
-            } label: {
-                Label("Delete Range", systemImage: "delete.left")
-            }
-            .disabled(isRecording)
+        if !isMissingOnly {
+            menu.addItem(.separator())
+            addEditItems(to: menu, projectState)
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(
+                isMulti ? String(localized: "Normalize (\(count))") : String(localized: "Normalize"),
+                symbol: "waveform.badge.plus", enabled: !isRecording
+            ) {
+                projectState.normalizeClips(trackId: trackId, clipId: clipId)
+            })
+            menu.addItem(ClosureMenuItem(
+                isMulti ? String(localized: "Reverse (\(count))") : String(localized: "Reverse"),
+                symbol: "arrow.uturn.backward", enabled: !isRecording
+            ) {
+                projectState.reverseClips(trackId: trackId, clipId: clipId)
+            })
+        }
 
-            Button {
-                projectState.cropToTimeSelection()
-            } label: {
-                Label("Crop to Range", systemImage: "crop")
-            }
-            .disabled(isRecording)
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(String(localized: "Choose Recording File…"), symbol: "folder",
+                                     enabled: !isMulti && !isBusy) {
+            projectState.locateClipFile(trackId: trackId, clipId: clipId)
+        })
 
-            Button {
-                projectState.splitAtTimeSelection()
-            } label: {
-                Label("Split at Range Edges", systemImage: "square.split.2x1")
+        menu.addItem(.separator())
+        let willMute = targets.contains { !$0.clip.isMuted }
+        let muteTitle: String
+        switch (willMute, isMulti) {
+        case (true, false): muteTitle = String(localized: "Mute Recording")
+        case (false, false): muteTitle = String(localized: "Unmute Recording")
+        case (true, true): muteTitle = String(localized: "Mute Recordings (\(count))")
+        case (false, true): muteTitle = String(localized: "Unmute Recordings (\(count))")
+        }
+        menu.addItem(ClosureMenuItem(muteTitle, symbol: willMute ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                                     enabled: !isRecording) {
+            projectState.toggleMuteMenuTargets(trackId: trackId, clipId: clipId)
+        })
+
+        menu.addItem(.separator())
+        if !isMissingOnly {
+            menu.addItem(ClosureMenuItem(
+                isMulti ? String(localized: "Duplicate Recordings (\(count))") : String(localized: "Duplicate Recording"),
+                symbol: "plus.square.on.square", enabled: !isRecording
+            ) {
+                projectState.duplicateMenuTargets(trackId: trackId, clipId: clipId)
+            })
+            let splitCount = projectState.splittableMenuTargets(trackId: trackId, clipId: clipId).count
+            menu.addItem(ClosureMenuItem(
+                isMulti ? String(localized: "Split at Cursor (\(splitCount))") : String(localized: "Split at Cursor"),
+                symbol: "scissors", enabled: splitCount > 0 && !isBusy
+            ) {
+                projectState.splitMenuTargets(trackId: trackId, clipId: clipId)
+            })
+            menu.addItem(.separator())
+        }
+        menu.addItem(ClosureMenuItem(
+            isMulti ? String(localized: "Delete Recordings (\(count))") : String(localized: "Delete Recording"),
+            symbol: "trash", enabled: !isRecording
+        ) {
+            projectState.deleteMenuTargets(trackId: trackId, clipId: clipId)
+        })
+        return menu
+    }
+}
+
+/// Menu item that runs a closure. It runs after the menu has closed, so a
+/// command may open a panel or an alert.
+private final class ClosureMenuItem: NSMenuItem {
+    private let handler: @MainActor () -> Void
+
+    init(_ title: String, symbol: String?, enabled: Bool, handler: @escaping @MainActor () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+        isEnabled = enabled
+        if let symbol {
+            image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func run() {
+        let handler = handler
+        Task { @MainActor in handler() }
+    }
+}
+
+/// Opens the menu from `menu` for right-clicks (and Control-clicks) on the
+/// view it is the background of, with the click's x in that view.
+private struct LaneMenuMonitor: NSViewRepresentable {
+    let menu: @MainActor (CGFloat) -> NSMenu?
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.menuProvider = menu
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) {
+        nsView.menuProvider = menu
+    }
+
+    final class MonitorView: NSView {
+        var menuProvider: (@MainActor (CGFloat) -> NSMenu?)?
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else if monitor == nil {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+                    self?.handle(event) ?? event
+                }
             }
-            .disabled(isRecording)
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let window, event.window === window, window.attachedSheet == nil else { return event }
+            if event.type == .leftMouseDown && !event.modifierFlags.contains(.control) { return event }
+            let point = convert(event.locationInWindow, from: nil)
+            // Only the part shown on screen (not scrolled away under the
+            // track headers or the ruler).
+            guard visibleRect.contains(point), let menu = menuProvider?(point.x) else { return event }
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return nil
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        deinit {
+            removeMonitor()
         }
     }
 }
@@ -284,15 +468,6 @@ private struct AudioClipView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     selectOnClick()
-                }
-                .contextMenu {
-                    fileNameMenuItem
-                    Divider()
-                    locateFileButton
-                    Divider()
-                    muteButton
-                    Divider()
-                    deleteButton
                 }
                 .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
         } else if (!clip.waveformCache.peaks.isEmpty || isActiveClip) && !isHiddenBeforePunchIn {
@@ -535,81 +710,7 @@ private struct AudioClipView: View {
             .onTapGesture {
                 selectOnClick()
             }
-            .contextMenu {
-                fileNameMenuItem
-                Divider()
-                EditMenuItems(projectState: projectState) {
-                    if projectState.timeSelection == nil && !track.selectedClipIDs.contains(clip.id) {
-                        projectState.selectClip(trackId: track.id, clipId: clip.id)
-                    }
-                }
-                Divider()
-                Button {
-                    projectState.normalizeClips(trackId: track.id, clipId: clip.id)
-                } label: {
-                    Label("Normalize", systemImage: "waveform.badge.plus")
-                }
-                .disabled(projectState.audioEngine.isRecording)
-                Button {
-                    projectState.reverseClips(trackId: track.id, clipId: clip.id)
-                } label: {
-                    Label("Reverse", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(projectState.audioEngine.isRecording)
-                Divider()
-                locateFileButton
-                Divider()
-                muteButton
-                Divider()
-
-                Button {
-                    projectState.selectClip(trackId: track.id, clipId: clip.id)
-                    projectState.duplicateClip(trackId: track.id, clipId: clip.id)
-                } label: {
-                    Label("Duplicate Recording", systemImage: "plus.square.on.square")
-                }
-                .disabled(projectState.audioEngine.isRecording)
-
-                Button {
-                    projectState.selectClip(trackId: track.id, clipId: clip.id)
-                    projectState.splitClip(trackId: track.id, clipId: clip.id)
-                } label: {
-                    Label("Split at Cursor", systemImage: "scissors")
-                }
-                .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
-
-                Divider()
-
-                Button(role: .destructive) {
-                    projectState.selectClip(trackId: track.id, clipId: clip.id)
-                    projectState.deleteClip(trackId: track.id, clipId: clip.id)
-                } label: {
-                    Label("Delete Recording", systemImage: "trash")
-                }
-                .disabled(projectState.audioEngine.isRecording)
-            }
             .offset(x: CGFloat(displayStartTime) * projectState.pixelsPerSecond)
-        }
-    }
-
-    /// The clip's file name (no path) at the top of its menu. A menu shows
-    /// plain text greyed out, so it is a button: it reveals the file in the
-    /// Finder. A missing file has nothing to reveal and stays greyed out.
-    @ViewBuilder
-    private var fileNameMenuItem: some View {
-        if clip.isFileMissing {
-            Text(verbatim: clip.fileURL.lastPathComponent)
-        } else {
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([clip.fileURL])
-            } label: {
-                Label {
-                    Text(verbatim: clip.fileURL.lastPathComponent)
-                } icon: {
-                    Image(systemName: "doc")
-                }
-            }
-            .help("Show in Finder")
         }
     }
 
@@ -646,39 +747,6 @@ private struct AudioClipView: View {
                 .padding(.horizontal, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var locateFileButton: some View {
-        Button {
-            projectState.selectClip(trackId: track.id, clipId: clip.id)
-            projectState.locateClipFile(trackId: track.id, clipId: clip.id)
-        } label: {
-            Label("Choose Recording File…", systemImage: "folder")
-        }
-        .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
-    }
-
-    private var muteButton: some View {
-        Button {
-            projectState.selectClip(trackId: track.id, clipId: clip.id)
-            projectState.toggleClipMute(trackId: track.id, clipId: clip.id)
-        } label: {
-            Label(
-                clip.isMuted ? "Unmute Recording" : "Mute Recording",
-                systemImage: clip.isMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
-            )
-        }
-        .disabled(projectState.audioEngine.isRecording)
-    }
-
-    private var deleteButton: some View {
-        Button(role: .destructive) {
-            projectState.selectClip(trackId: track.id, clipId: clip.id)
-            projectState.deleteClip(trackId: track.id, clipId: clip.id)
-        } label: {
-            Label("Delete Recording", systemImage: "trash")
-        }
-        .disabled(projectState.audioEngine.isRecording)
     }
 
     /// Plain click selects only this clip; Shift- or Cmd-click adds it to or

@@ -89,6 +89,12 @@ public final class ProjectState: ObservableObject {
             UserDefaults.standard.set(snapToGrid, forKey: "MyDAW.snapToGrid")
         }
     }
+    /// Whether the view follows the playhead while playing or recording.
+    @Published public var autoScrollEnabled: Bool = UserDefaults.standard.object(forKey: "MyDAW.autoScroll") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoScrollEnabled, forKey: "MyDAW.autoScroll")
+        }
+    }
     @Published public var pluginManager: PluginManager
     @Published public private(set) var startupLog: [String] = [String(localized: "Starting MyDAW...")]
     @Published public private(set) var isShowingStartupLog = true
@@ -948,32 +954,6 @@ public final class ProjectState: ObservableObject {
         }
     }
 
-    public func deleteClip(trackId: UUID, clipId: UUID) {
-        guard !audioEngine.isRecording,
-              let track = tracks.first(where: { $0.id == trackId }) else { return }
-        guard track.clips.contains(where: { $0.id == clipId }) else { return }
-        recordClipEdit()
-        track.deleteClip(id: clipId, removeFile: false)
-        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-    }
-
-    public func toggleClipMute(trackId: UUID, clipId: UUID) {
-        guard !audioEngine.isRecording,
-              let track = tracks.first(where: { $0.id == trackId }),
-              let clip = track.clips.first(where: { $0.id == clipId }) else { return }
-        clip.isMuted.toggle()
-          audioEngine.setClipMuted(clip.id, muted: clip.isMuted)
-    }
-
-    public func duplicateClip(trackId: UUID, clipId: UUID) {
-        guard !audioEngine.isRecording,
-              let track = tracks.first(where: { $0.id == trackId }) else { return }
-          guard track.clips.contains(where: { $0.id == clipId }) else { return }
-          recordClipEdit()
-        _ = track.duplicateClip(id: clipId)
-        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-    }
-
     public func splitSelectedClip() {
         guard !audioEngine.isPlaying && !audioEngine.isRecording,
               let track = tracks.first(where: { $0.selectedClipId != nil }),
@@ -1072,6 +1052,7 @@ public final class ProjectState: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(document).write(to: projectURL, options: .atomic)
+            RecentProjects.shared.noteSaved(projectURL)
             return true
         } catch {
             presentProjectError(String(localized: "Could not save project: \(error.localizedDescription)"))
@@ -1186,6 +1167,16 @@ public final class ProjectState: ObservableObject {
         }
 
         loadProject(from: url, projectFolderURL: folderURL)
+    }
+
+    /// Opens a project from the start screen's recent list.
+    func openRecentProject(_ entry: RecentProject) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
+        guard entry.exists else {
+            presentProjectError(String(localized: "The project file could not be found:\n\(entry.path)"))
+            return
+        }
+        loadProject(from: entry.url, projectFolderURL: entry.url.deletingLastPathComponent())
     }
 
     public func createNewProject() -> Bool {
@@ -1315,6 +1306,7 @@ public final class ProjectState: ObservableObject {
             self.projectFolderURL = projectFolderURL
             audioEngine.recordingsDirectory = recordingsURL
             isProjectOpen = true
+            RecentProjects.shared.noteOpened(url)
 
             audioEngine.syncTracks(
                 tracks,

@@ -86,6 +86,8 @@ struct MyDAWApp: App {
                 .keyboardShortcut("s", modifiers: [.command])
                 .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
 
+                Divider()
+
                 Button("Export Master Mix…") {
                     projectState.beginMasterExportDialog()
                 }
@@ -97,6 +99,19 @@ struct MyDAWApp: App {
                     projectState.moveUnusedRecordings()
                 }
                 .disabled(!projectState.canMoveUnusedRecordings)
+            }
+            CommandGroup(replacing: .help) {
+                Button("MyDAW Help") {
+                    // The manual PDF on the web, in the GUI language; the
+                    // system picks the app that opens it.
+                    let urlString = AppLanguage.current == .japanese
+                        ? "https://toshi.life.coocan.jp/note/OperationManual_jp.pdf"
+                        : "https://toshi.life.coocan.jp/note/OperationManual_en.pdf"
+                    if let url = URL(string: urlString) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .keyboardShortcut("?", modifiers: [.command])
             }
             CommandGroup(after: .undoRedo) {
                 Button("Undo Clip Edit") {

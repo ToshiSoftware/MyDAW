@@ -41,6 +41,19 @@ public struct ArrangerView: View {
         self.audioEngine = audioEngine
     }
 
+    /// Scrolls the tracks' horizontal scroll view to `offset` (clamped to
+    /// its content).
+    private func setTrackScrollOffset(_ offset: CGFloat) {
+        guard let scrollView = timelineScrollView.scrollView else { return }
+        let clipView = scrollView.contentView
+        let documentWidth = scrollView.documentView?.frame.width ?? 0
+        let maxOffset = max(0, documentWidth - clipView.bounds.width)
+        let x = min(max(0, offset), maxOffset)
+        guard abs(clipView.bounds.origin.x - x) >= 0.5 else { return }
+        clipView.scroll(to: NSPoint(x: x, y: clipView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
     // Waveform drawn inside the drag preview so the clip content stays visible while moving
     @ViewBuilder
     private func clipDragPreviewWaveform(clip: AudioClip, isStereo: Bool, color: Color) -> some View {
@@ -320,24 +333,45 @@ public struct ArrangerView: View {
                                     guard time != scrolledTime else { return }
                                     let requested = CGFloat(time) * projectState.pixelsPerSecond
                                     requestedScrollOffset = requested
-                                    withAnimation(nil) {
-                                        horizontalProxy.scrollTo(
-                                            "savedScrollPosition-\(projectState.scrollRestoreRevision)",
-                                            anchor: .leading
-                                        )
+                                    guard timelineScrollView.scrollView != nil else {
+                                        withAnimation(nil) {
+                                            horizontalProxy.scrollTo(
+                                                "savedScrollPosition-\(projectState.scrollRestoreRevision)",
+                                                anchor: .leading
+                                            )
+                                        }
+                                        Task { @MainActor in
+                                            await Task.yield()
+                                            await Task.yield()
+                                            if requestedScrollOffset == requested {
+                                                requestedScrollOffset = nil
+                                            }
+                                        }
+                                        return
                                     }
-                                    // A target past the content's end is never
-                                    // reached; stop waiting for it.
-                                    Task { @MainActor in
-                                        await Task.yield()
-                                        await Task.yield()
+                                    // Scroll the clip view itself: `scrollTo`
+                                    // finds its target in the layout of the
+                                    // moment, which right after a stop and
+                                    // rewind can still be the old one (the
+                                    // timeline width follows the playhead),
+                                    // leaving the view where it was.
+                                    setTrackScrollOffset(requested)
+                                    DispatchQueue.main.async {
+                                        guard requestedScrollOffset == requested else { return }
+                                        // Again once the new width is laid
+                                        // out, which may have clamped it.
+                                        timelineScrollView.scrollView?.window?.contentView?.layoutSubtreeIfNeeded()
+                                        setTrackScrollOffset(requested)
+                                        // A target past the content's end is
+                                        // never reached; stop waiting for it.
                                         if requestedScrollOffset == requested {
                                             requestedScrollOffset = nil
                                         }
                                     }
                                 }
                                 .onChange(of: audioEngine.currentTime) { _ in
-                                    guard audioEngine.isPlaying || audioEngine.isRecording else { return }
+                                    guard projectState.autoScrollEnabled,
+                                          audioEngine.isPlaying || audioEngine.isRecording else { return }
                                     let visibleWidth = max(1.0, viewport.size.width - 230.0)
                                     let visibleDuration = max(
                                         1.0,
@@ -348,16 +382,12 @@ public struct ArrangerView: View {
                                     if audioEngine.currentTime >= scrollTriggerTime {
                                         // Keep the ruler, waveform, and bottom
                                         // scrollbar driven by the same offset.
+                                        // The track view follows through the
+                                        // timelineScrollTime change above.
                                         projectState.timelineScrollTime = max(
                                             0.0,
                                             audioEngine.currentTime - rightMarginTime
                                         )
-                                        withAnimation(nil) {
-                                            horizontalProxy.scrollTo(
-                                                "savedScrollPosition-\(projectState.scrollRestoreRevision)",
-                                                anchor: .leading
-                                            )
-                                        }
                                     }
                                 }
                                 .onChange(of: projectState.scrollRestoreRevision) { _ in
@@ -402,15 +432,15 @@ public struct ArrangerView: View {
                 Image(systemName: "arrow.left.and.right")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white.opacity(0.5))
-                Slider(
+                KnobOnlySlider(
                     value: $projectState.timelineScrollTime,
-                    in: 0.0...max(
+                    range: 0.0...max(
                         0.0,
                         Double(timelineWidth / projectState.pixelsPerSecond)
                             - Double(max(1.0, (viewport.size.width - 230.0) / projectState.pixelsPerSecond))
-                    )
+                    ),
+                    tint: .cyan
                 )
-                .accentColor(.cyan)
             }
             .padding(.leading, 230)
             .padding(.trailing, 10)
@@ -842,6 +872,54 @@ private final class OptionKeyMonitor: ObservableObject {
         if let monitor {
             NSEvent.removeMonitor(monitor)
         }
+    }
+}
+
+/// Horizontal slider that only moves when its knob is dragged; clicks on the
+/// track do nothing, so a click near the mixer border cannot jump the view.
+private struct KnobOnlySlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let tint: Color
+    @State private var dragStartValue: Double?
+
+    private static let knobSize: CGFloat = 14
+
+    var body: some View {
+        GeometryReader { geometry in
+            let travel = max(1, geometry.size.width - Self.knobSize)
+            let span = range.upperBound - range.lowerBound
+            let fraction = span > 0 ? (min(max(value, range.lowerBound), range.upperBound) - range.lowerBound) / span : 0
+            let knobX = CGFloat(fraction) * travel
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(height: 4)
+                    .padding(.horizontal, Self.knobSize / 2)
+                Capsule()
+                    .fill(tint)
+                    .frame(width: knobX, height: 4)
+                    .padding(.leading, Self.knobSize / 2)
+                Circle()
+                    .fill(Color(white: 0.92))
+                    .overlay(Circle().stroke(Color.black.opacity(0.25), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.35), radius: 1, y: 0.5)
+                    .frame(width: Self.knobSize, height: Self.knobSize)
+                    .offset(x: knobX)
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                            .onChanged { drag in
+                                let start = dragStartValue ?? value
+                                if dragStartValue == nil { dragStartValue = start }
+                                let delta = Double(drag.translation.width / travel) * span
+                                value = min(max(start + delta, range.lowerBound), range.upperBound)
+                            }
+                            .onEnded { _ in dragStartValue = nil }
+                    )
+            }
+            .frame(height: geometry.size.height)
+        }
+        .frame(height: Self.knobSize)
     }
 }
 

@@ -17,6 +17,8 @@ public struct TrackCaptureConfig: @unchecked Sendable {
 @MainActor
 public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDelegate {
     public let engine = AVAudioEngine()
+    /// Processing load and dropouts for the status bar.
+    public let loadMonitor = AudioLoadMonitor()
 
     @Published public var isPlaying: Bool = false
     @Published public var isRecording: Bool = false
@@ -326,6 +328,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         setupEngine()
         startMeterTimer()
+        loadMonitor.start(engine: engine)
         // プラグインウィンドウは .floating レベルを使用するため、
         // メインウィンドウのアクティブ化に応じて orderFront する処理は不要になった。
     }
@@ -4129,6 +4132,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         isStartingPlayback = false
         stopPlayheadTimer()
         stopMetronome()
+        loadMonitor.stop()
 
         captureLock.withLock {
             recordingActiveState = false

@@ -46,6 +46,18 @@ public struct TransportBarView: View {
         HStack(spacing: 12) {
             // Transport Controls: Rewind, Stop, Play, Record
             HStack(spacing: 4) {
+                Button(action: { showingBufferSettings = true }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .frame(width: 34, height: 28)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(5)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
+                .help("Settings")
+
                 Button(action: { projectState.undo() }) {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 13, weight: .bold))
@@ -135,26 +147,22 @@ public struct TransportBarView: View {
                     Text("P")
                         .font(.system(size: 11, weight: .black))
                         .foregroundColor(projectState.punchRange.enabled ? .black : .red.opacity(0.75))
-                        .frame(width: 22, height: 20)
+                        .frame(width: 34, height: 20)
                         .background(projectState.punchRange.enabled ? Color.red : Color.white.opacity(0.08))
                         .cornerRadius(3)
                 }
                 .buttonStyle(PlainButtonStyle())
                 .help(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
 
-                Button(action: {
-                    projectState.deleteSelectedClip()
-                }) {
-                    Image(systemName: "trash")
+                Toggle(isOn: $audioEngine.metronomeEnabled) {
+                    Image(systemName: "metronome")
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.red.opacity(projectState.audioEngine.isRecording ? 0.35 : 0.9))
-                        .frame(width: 34, height: 28)
-                        .background(Color.white.opacity(0.08))
-                        .cornerRadius(5)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(projectState.audioEngine.isRecording || !projectState.hasSelection)
-                .help("Delete Selected Recordings or Range")
+                .toggleStyle(.button)
+                .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
+                .frame(width: 34, height: 28)
+                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
+                .help("Toggle Metronome Click")
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")
@@ -180,28 +188,6 @@ public struct TransportBarView: View {
                 .disabled(audioEngine.isPlaying || audioEngine.isRecording)
                 .help("Open Project")
 
-                Toggle(isOn: $audioEngine.metronomeEnabled) {
-                    Image(systemName: "metronome")
-                        .font(.system(size: 13, weight: .bold))
-                }
-                .toggleStyle(.button)
-                .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
-                .frame(width: 34, height: 28)
-                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Toggle Metronome Click")
-
-                Button(action: { showingBufferSettings = true }) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white.opacity(0.75))
-                        .frame(width: 34, height: 28)
-                        .background(Color.white.opacity(0.08))
-                        .cornerRadius(5)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
-                .help("Settings")
-
                 Button(action: { projectState.snapToGrid.toggle() }) {
                     Image(systemName: projectState.snapToGrid ? "square.grid.3x3.fill" : "square.grid.3x3")
                         .font(.system(size: 13, weight: .bold))
@@ -212,6 +198,22 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .help(projectState.snapToGrid ? "Disable Beat Snap" : "Enable Beat Snap")
+
+                Button(action: { projectState.autoScrollEnabled.toggle() }) {
+                    // |-> : the view follows the playhead.
+                    HStack(spacing: 1) {
+                        Rectangle()
+                            .frame(width: 2, height: 12)
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundColor(projectState.autoScrollEnabled ? .black : .white.opacity(0.75))
+                    .frame(width: 34, height: 28)
+                    .background(projectState.autoScrollEnabled ? Color.orange : Color.white.opacity(0.08))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .help(projectState.autoScrollEnabled ? "Disable Auto-Scroll" : "Enable Auto-Scroll")
             }
 
             // LCD Display: Time & Audio Format (Logic Pro Dark Glass Style)
