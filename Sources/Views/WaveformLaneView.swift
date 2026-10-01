@@ -396,7 +396,7 @@ private struct AudioClipView: View {
     @ObservedObject var projectState: ProjectState
     @State private var dragStartTime: Double?
     @State private var dragStartLocationX: CGFloat?
-    @State private var dragGrabOffsetY: CGFloat?
+    @State private var dragStartLocationY: CGFloat?
     @State private var dragTargetTrackId: UUID?
     @State private var isRangeDragging = false
     @State private var resizeStartTime: Double?
@@ -450,7 +450,7 @@ private struct AudioClipView: View {
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipIDs.contains(clip.id)
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
-        let layerSpans = ClipLayering.spans(for: track.clips)
+        let layerSpans = ClipLayering.spans(for: projectState.layeringClips(for: track))
         let fadeInLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: true)
         let fadeOutLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: false)
         let fadeInCurve = ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: true)
@@ -617,7 +617,7 @@ private struct AudioClipView: View {
             }
             .zIndex(fadeInStartDuration != nil || fadeOutStartDuration != nil || gainStartDB != nil || curveDragStartMidpoint != nil ? 1 : 0)
             .opacity(clip.isMuted ? 0.35 : 1.0)
-            .opacity(projectState.clipDragPreview?.clipID == clip.id ? 0 : 1)
+            .opacity(projectState.clipDragPreview?.clipIDs.contains(clip.id) == true ? 0 : 1)
             .contentShape(Rectangle())
             .gesture(
                     DragGesture(coordinateSpace: .named("timelineScroll"))
@@ -648,17 +648,8 @@ private struct AudioClipView: View {
                                     dragStartTime = clip.startTime
                                     dragStartLocationX = value.startLocation.x
                                     dragTargetTrackId = track.id
-                                    dragGrabOffsetY = value.startLocation.y - projectState.trackTopY(for: track.id)
-                                    projectState.beginClipDragPreview(
-                                        clipID: clip.id,
-                                        startTime: clip.startTime,
-                                        topY: projectState.trackTopY(for: track.id) + 2.0,
-                                        width: clipWidth,
-                                        height: max(20.0, height),
-                                        color: track.color,
-                                        clip: clip,
-                                        isStereo: track.channelMode == .stereo
-                                    )
+                                    dragStartLocationY = value.startLocation.y
+                                    projectState.beginClipDragPreview()
                                 }
                             }
                             if isRangeDragging {
@@ -674,11 +665,11 @@ private struct AudioClipView: View {
                             let rawStartTime = initialStartTime + Double(horizontalDelta / pixelsPerSecond)
                             let newStartTime = projectState.snappedTimelineTime(rawStartTime)
                             projectState.updateGroupDrag(delta: newStartTime - initialStartTime)
-                            dragTargetTrackId = projectState.trackID(atTimelineY: value.location.y)
-                            let grabOffsetY = dragGrabOffsetY ?? 0.0
+                            let targetTrackId = projectState.trackID(atTimelineY: value.location.y)
+                            dragTargetTrackId = targetTrackId
                             projectState.updateClipDragPreview(
-                                startTime: clip.startTime,
-                                topY: value.location.y - grabOffsetY
+                                verticalOffset: value.location.y - (dragStartLocationY ?? value.startLocation.y),
+                                trackDelta: trackDelta(to: targetTrackId)
                             )
                     }
                     .onEnded { _ in
@@ -687,18 +678,11 @@ private struct AudioClipView: View {
                                 projectState.endTimeSelection()
                                 return
                             }
-                            let tracks = projectState.tracks
-                            if let destinationTrackId = dragTargetTrackId,
-                               let from = tracks.firstIndex(where: { $0.id == track.id }),
-                               let to = tracks.firstIndex(where: { $0.id == destinationTrackId }) {
-                                projectState.endGroupDrag(trackDelta: to - from)
-                            } else {
-                                projectState.endGroupDrag(trackDelta: 0)
-                            }
+                            projectState.endGroupDrag(trackDelta: trackDelta(to: dragTargetTrackId))
                             dragStartTime = nil
                             dragStartLocationX = nil
                             dragTargetTrackId = nil
-                            dragGrabOffsetY = nil
+                            dragStartLocationY = nil
                             projectState.endClipDragPreview()
                             projectState.endClipEdit()
                             projectState.audioEngine.syncAfterClipEdit(
@@ -712,6 +696,16 @@ private struct AudioClipView: View {
             }
             .offset(x: CGFloat(displayStartTime) * projectState.pixelsPerSecond)
         }
+    }
+
+    /// Tracks from this clip's track to the one under the pointer; 0 when the
+    /// pointer is outside every track.
+    private func trackDelta(to destinationTrackId: UUID?) -> Int {
+        let tracks = projectState.tracks
+        guard let destinationTrackId,
+              let from = tracks.firstIndex(where: { $0.id == track.id }),
+              let to = tracks.firstIndex(where: { $0.id == destinationTrackId }) else { return 0 }
+        return to - from
     }
 
     /// Darkens the parts of this clip fully hidden by clips layered above it

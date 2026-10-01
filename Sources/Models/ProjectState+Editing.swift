@@ -495,11 +495,32 @@ extension ProjectState {
         }
     }
 
+    /// True when every selected clip has a track `trackDelta` tracks away.
+    func canMoveSelectedClips(trackDelta: Int) -> Bool {
+        tracks.indices.allSatisfy { index in
+            tracks[index].selectedClipIDs.isEmpty || tracks.indices.contains(index + trackDelta)
+        }
+    }
+
+    /// The clips layered in `track`'s lane, in layer order. While clips are
+    /// dragged to another track they already count there (on top, where they
+    /// will land) and no longer in the track they came from.
+    public func layeringClips(for track: AudioTrack) -> [AudioClip] {
+        guard let preview = clipDragPreview, preview.trackDelta != 0,
+              let index = tracks.firstIndex(where: { $0 === track }) else { return track.clips }
+        var clips = track.clips.filter { !preview.clipIDs.contains($0.id) }
+        let sourceIndex = index - preview.trackDelta
+        if tracks.indices.contains(sourceIndex) {
+            clips += tracks[sourceIndex].clips.filter { preview.clipIDs.contains($0.id) }
+        }
+        return clips
+    }
+
     /// Moves the selected clips `trackDelta` tracks down (up when negative),
     /// provided every one of them has a track to land on.
     public func endGroupDrag(trackDelta: Int) {
         defer { groupDragStarts = [:] }
-        guard trackDelta != 0 else { return }
+        guard trackDelta != 0, canMoveSelectedClips(trackDelta: trackDelta) else { return }
         var moves: [(clipID: UUID, from: AudioTrack, to: AudioTrack)] = []
         for (index, track) in tracks.enumerated() {
             for id in track.selectedClipIDs {

@@ -115,6 +115,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // Player node and file mapping per track ID
     private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
     private var clipPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
+    /// Track output mixer each clip's player feeds. A clip moved to another
+    /// track keeps its player, which must then be rewired to the new track.
+    private var clipPlayerOutputs: [UUID: ObjectIdentifier] = [:]
     // Last node of each track's insert chain; fans out to the main mixer and
     // to every active send, so sends carry the post-insert signal.
     private var trackChainTails: [UUID: AVAudioNode] = [:]
@@ -1279,6 +1282,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             engine.disconnectNodeOutput(node)
             engine.detach(node)
             clipPlayerNodes.removeValue(forKey: id)
+            clipPlayerOutputs.removeValue(forKey: id)
         }
 
         for (id, node) in playerNodes where !currentTrackIDs.contains(id) {
@@ -1503,6 +1507,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 if let existing = clipPlayerNodes[clip.id] {
                     clipNode = existing
                     needsConnect = isNewOutputNode
+                        || clipPlayerOutputs[clip.id] != ObjectIdentifier(outputNode)
                 } else {
                     clipNode = AVAudioPlayerNode()
                     engine.attach(clipNode)
@@ -1513,6 +1518,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 if needsConnect {
                     safeDisconnectNodeOutput(clipNode)
                     engine.connect(clipNode, to: outputNode, format: format)
+                    clipPlayerOutputs[clip.id] = ObjectIdentifier(outputNode)
                 }
             }
         }
@@ -3571,6 +3577,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let playersStartTime = AVAudioTime(
             hostTime: sharedStartTime.hostTime - Self.hostTicks(transportPreRoll)
         )
+        var edits: [(track: AudioTrack, player: AVAudioPlayerNode, affected: Set<UUID>)] = []
         for track in tracks {
             guard let player = playerNodes[track.id] else { continue }
             let previous = scheduledClipSignatures[track.id] ?? [:]
@@ -3585,15 +3592,22 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             for (id, signature) in current where ranges.contains(where: { $0.overlaps(signature.range) }) {
                 affected.insert(id)
             }
+            // Clips that left this track (deleted, or moved to another track,
+            // where they keep their player) stop before anything is
+            // rescheduled: stopped later, a clip moved to a track above
+            // would be silenced right after its new track started it.
             for id in changed where current[id] == nil {
                 clipPlayerNodes[id]?.stop()
             }
+            edits.append((track, player, affected))
+        }
+        for edit in edits {
             scheduleClips(
-                for: track,
-                player: player,
+                for: edit.track,
+                player: edit.player,
                 startSec: startSec,
                 sharedStartTime: playersStartTime,
-                onlyClipIDs: affected,
+                onlyClipIDs: edit.affected,
                 includePreRoll: true
             )
         }

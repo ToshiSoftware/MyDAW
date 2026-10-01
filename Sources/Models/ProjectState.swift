@@ -5,35 +5,17 @@ import AppKit
 import UniformTypeIdentifiers
 import AVFoundation
 
+/// Clips being dragged. The clips themselves move in time as the pointer
+/// moves; they change tracks only when the drag ends, so until then they are
+/// hidden in their lanes and drawn as a block that follows the pointer.
 public struct ClipDragPreview {
-    public let clipID: UUID
-    public let startTime: Double
-    public let topY: CGFloat
-    public let width: CGFloat
-    public let height: CGFloat
-    public let color: Color
-    public let clip: AudioClip?
-    public let isStereo: Bool
-
-    public init(
-        clipID: UUID,
-        startTime: Double,
-        topY: CGFloat,
-        width: CGFloat,
-        height: CGFloat,
-        color: Color,
-        clip: AudioClip? = nil,
-        isStereo: Bool = false
-    ) {
-        self.clipID = clipID
-        self.startTime = startTime
-        self.topY = topY
-        self.width = width
-        self.height = height
-        self.color = color
-        self.clip = clip
-        self.isStereo = isStereo
-    }
+    /// Every clip moving with the drag (the whole selection).
+    public let clipIDs: Set<UUID>
+    /// Vertical pointer travel since the drag began.
+    public var verticalOffset: CGFloat
+    /// Tracks down (up when negative) the clips will land; 0 when some clip
+    /// would have no track to land on, in which case none changes track.
+    public var trackDelta: Int
 }
 
 @MainActor
@@ -780,6 +762,19 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
+    /// Moves a track to `index` in the track order, which the arranger and the
+    /// mixer both follow. The audio graph is keyed by track, not by position,
+    /// so nothing needs to be rewired.
+    public func moveTrack(id: UUID, to index: Int) {
+        guard let from = tracks.firstIndex(where: { $0.id == id }) else { return }
+        let to = min(max(0, index), tracks.count - 1)
+        guard from != to else { return }
+        let track = tracks.remove(at: from)
+        tracks.insert(track, at: to)
+        // A time selection spans adjacent tracks, which these may no longer be.
+        timeSelection = nil
+    }
+
     /// Asks before deleting, since removing a track cannot be undone.
     public func confirmDeleteTrack(id: UUID) {
         guard let track = tracks.first(where: { $0.id == id }),
@@ -884,40 +879,20 @@ public final class ProjectState: ObservableObject {
         selectedTrackId = trackId
     }
 
-    public func beginClipDragPreview(
-        clipID: UUID,
-        startTime: Double,
-        topY: CGFloat,
-        width: CGFloat,
-        height: CGFloat,
-        color: Color,
-        clip: AudioClip? = nil,
-        isStereo: Bool = false
-    ) {
+    /// Starts the drag preview for the clips of the current group drag.
+    public func beginClipDragPreview() {
         clipDragPreview = ClipDragPreview(
-            clipID: clipID,
-            startTime: startTime,
-            topY: topY,
-            width: width,
-            height: height,
-            color: color,
-            clip: clip,
-            isStereo: isStereo
+            clipIDs: Set(groupDragStarts.keys),
+            verticalOffset: 0,
+            trackDelta: 0
         )
     }
 
-    public func updateClipDragPreview(startTime: Double, topY: CGFloat) {
-        guard let preview = clipDragPreview else { return }
-        clipDragPreview = ClipDragPreview(
-            clipID: preview.clipID,
-            startTime: startTime,
-            topY: topY,
-            width: preview.width,
-            height: preview.height,
-            color: preview.color,
-            clip: preview.clip,
-            isStereo: preview.isStereo
-        )
+    public func updateClipDragPreview(verticalOffset: CGFloat, trackDelta: Int) {
+        guard var preview = clipDragPreview else { return }
+        preview.verticalOffset = verticalOffset
+        preview.trackDelta = canMoveSelectedClips(trackDelta: trackDelta) ? trackDelta : 0
+        clipDragPreview = preview
     }
 
     public func endClipDragPreview() {

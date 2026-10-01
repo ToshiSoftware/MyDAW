@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 1.8** · [日本語版 README](README_jp.md)
+**Version 1.9** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -46,6 +46,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Tooltips show fade length, gain (dB) and curve while dragging. Waveforms are drawn at the level heard, including fades and crossfades.
 - Undo / redo of clip edits, beat snap.
 - **Overlap layering**: the most recently added clip plays on top of older ones, with automatic crossfades (equal power by default) at the boundaries. The fades of the upper clip drive the crossfades.
+- **Track reordering**: drag a track header up or down by any free spot (the name, the meter, …). The track lifts with its waveforms while the others step aside to show where it will land. The mixer strips follow the same order.
 - WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
 - View: mouse wheel over the ruler or a pinch zooms horizontally, option+wheel sets track height, option+shift+wheel sets waveform height.
 - **Auto-scroll**: the view follows the playhead while playing or recording; turn it on/off with the |→ button at the right end of the transport bar. The horizontal scroll bar moves only when its knob (●) is dragged.
@@ -151,4 +152,4 @@ MyDAW/
 
 ## Version
 
-The About dialog shows version **1.8**.
+The About dialog shows version **1.9**.

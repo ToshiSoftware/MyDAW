@@ -13,6 +13,10 @@ public struct ArrangerView: View {
     /// The tracks' horizontal scroll view, which horizontal scrolls over the
     /// ruler are passed to.
     @State private var timelineScrollView = WeakScrollView()
+    /// Track being dragged by its header to a new place in the order, and how
+    /// far it has been dragged vertically.
+    @State private var reorderTrackID: UUID?
+    @State private var reorderTranslation: CGFloat = 0
 
     // Dynamic timeline width (minimum 2500 pt, extends with zoom & duration).
     // It always reaches a screen past the playhead, where auto-scroll puts
@@ -56,10 +60,10 @@ public struct ArrangerView: View {
 
     // Waveform drawn inside the drag preview so the clip content stays visible while moving
     @ViewBuilder
-    private func clipDragPreviewWaveform(clip: AudioClip, isStereo: Bool, color: Color) -> some View {
+    private func clipDragPreviewWaveform(clip: AudioClip, isStereo: Bool, color: Color, landingTrack: AudioTrack) -> some View {
         let verticalScale = projectState.waveformVerticalScale * CGFloat(pow(10.0, clip.gainDB / 20.0))
-        let layerSpans = projectState.tracks.first(where: { $0.clips.contains { $0.id == clip.id } })
-            .map { ClipLayering.spans(for: $0.clips) } ?? []
+        // Faded and crossfaded as it would be where it lands.
+        let layerSpans = ClipLayering.spans(for: projectState.layeringClips(for: landingTrack))
         let channels: [Int?] = isStereo ? [0, 1] : [nil]
         VStack(spacing: 1) {
             ForEach(channels.indices, id: \.self) { index in
@@ -146,6 +150,118 @@ public struct ArrangerView: View {
         return true
     }
 
+    /// The dragged clips, each drawn from its own track moved by the
+    /// pointer's vertical travel, so the selection moves as one block.
+    private func clipDragPreviews(_ preview: ClipDragPreview) -> some View {
+        let tracks = projectState.tracks
+        let items: [(clip: AudioClip, track: AudioTrack, landing: AudioTrack)] = tracks.indices.flatMap { index in
+            let track = tracks[index]
+            let landingIndex = index + preview.trackDelta
+            let landing = tracks.indices.contains(landingIndex) ? tracks[landingIndex] : track
+            return track.clips
+                .filter { preview.clipIDs.contains($0.id) }
+                .map { (clip: $0, track: track, landing: landing) }
+        }
+        return ZStack(alignment: .topLeading) {
+            ForEach(items, id: \.clip.id) { item in
+                let width = max(4.0, CGFloat(item.clip.duration) * projectState.pixelsPerSecond)
+                let height = max(20.0, rowHeight(item.track) - 4.0)
+                let isStereo = item.track.channelMode == .stereo
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(item.track.color.opacity(0.18))
+                    .frame(width: width, height: height)
+                    .overlay {
+                        clipDragPreviewWaveform(
+                            clip: item.clip,
+                            isStereo: isStereo,
+                            color: item.track.color,
+                            landingTrack: item.landing
+                        )
+                        .opacity(item.clip.isMuted ? 0.35 : 0.85)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(
+                                item.track.color.opacity(0.95),
+                                style: StrokeStyle(lineWidth: 2, dash: [6, 3])
+                            )
+                    )
+                    .position(
+                        x: CGFloat(item.clip.startTime) * projectState.pixelsPerSecond + width / 2.0,
+                        y: projectState.trackTopY(for: item.track.id) + 2.0 + preview.verticalOffset + height / 2.0
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func rowHeight(_ track: AudioTrack) -> CGFloat {
+        TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
+    }
+
+    /// Index the dragged track would take if dropped now: the number of other
+    /// tracks whose middle lies above the dragged row's middle.
+    private func reorderTargetIndex() -> Int? {
+        guard let draggedID = reorderTrackID,
+              let dragged = projectState.tracks.first(where: { $0.id == draggedID }) else { return nil }
+        let draggedMid = projectState.trackTopY(for: draggedID) + rowHeight(dragged) / 2 + reorderTranslation
+        return projectState.tracks.filter { track in
+            track.id != draggedID
+                && projectState.trackTopY(for: track.id) + rowHeight(track) / 2 < draggedMid
+        }.count
+    }
+
+    /// Vertical offset of a row while a track is dragged: the dragged row
+    /// follows the pointer, and the rows it passes step aside to show where it
+    /// will land.
+    private func reorderOffset(for track: AudioTrack) -> CGFloat {
+        guard let draggedID = reorderTrackID,
+              let from = projectState.tracks.firstIndex(where: { $0.id == draggedID }),
+              let target = reorderTargetIndex(),
+              let index = projectState.tracks.firstIndex(where: { $0.id == track.id }) else { return 0 }
+        if track.id == draggedID {
+            return reorderTranslation
+        }
+        let step = rowHeight(projectState.tracks[from]) + 1
+        if index > from && index <= target { return -step }
+        if index < from && index >= target { return step }
+        return 0
+    }
+
+    /// Dragging a track header moves the track in the order. Buttons, menus
+    /// and the resize strip on the header keep their own gestures.
+    private func reorderGesture(for track: AudioTrack) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .global)
+            .onChanged { value in
+                if reorderTrackID == nil {
+                    reorderTrackID = track.id
+                    projectState.selectedTrackId = track.id
+                }
+                guard reorderTrackID == track.id else { return }
+                reorderTranslation = value.translation.height
+            }
+            .onEnded { _ in
+                guard reorderTrackID == track.id else { return }
+                let target = reorderTargetIndex()
+                withAnimation(.easeOut(duration: 0.18)) {
+                    if let target {
+                        projectState.moveTrack(id: track.id, to: target)
+                    }
+                    reorderTrackID = nil
+                    reorderTranslation = 0
+                }
+            }
+    }
+
+    private func reorderLift(for track: AudioTrack) -> ReorderLift {
+        ReorderLift(
+            isDragged: reorderTrackID == track.id,
+            offset: reorderOffset(for: track),
+            color: track.color
+        )
+    }
+
     /// Shaded band over each track in the time selection.
     private func timeSelectionHighlight(_ selection: TimeSelection) -> some View {
         let x = CGFloat(selection.start) * projectState.pixelsPerSecond
@@ -222,6 +338,8 @@ public struct ArrangerView: View {
                                     alignment: .top
                                 )
                                 .clipped()
+                                .gesture(reorderGesture(for: track))
+                                .modifier(reorderLift(for: track))
                             }
                         }
                         .frame(width: 230, alignment: .top)
@@ -240,6 +358,7 @@ public struct ArrangerView: View {
                                                 projectState: projectState,
                                                 timelineWidth: timelineWidth
                                             )
+                                            .modifier(reorderLift(for: track))
                                         }
                                     }
 
@@ -260,28 +379,7 @@ public struct ArrangerView: View {
                                     }
 
                                     if let preview = projectState.clipDragPreview {
-                                        RoundedRectangle(cornerRadius: 3)
-                                            .fill(preview.color.opacity(0.18))
-                                            .frame(width: preview.width, height: preview.height)
-                                            .overlay {
-                                                if let clip = preview.clip {
-                                                    clipDragPreviewWaveform(clip: clip, isStereo: preview.isStereo, color: preview.color)
-                                                        .opacity(clip.isMuted ? 0.35 : 0.85)
-                                                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                                                }
-                                            }
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 3)
-                                                    .stroke(
-                                                        preview.color.opacity(0.95),
-                                                        style: StrokeStyle(lineWidth: 2, dash: [6, 3])
-                                                    )
-                                            )
-                                            .position(
-                                                x: CGFloat(preview.startTime) * projectState.pixelsPerSecond + preview.width / 2.0,
-                                                y: preview.topY + preview.height / 2.0
-                                            )
-                                            .allowsHitTesting(false)
+                                        clipDragPreviews(preview)
                                     }
 
                                     let playheadX = CGFloat(audioEngine.currentTime) * projectState.pixelsPerSecond
@@ -415,6 +513,9 @@ public struct ArrangerView: View {
                                         }
                                     }
                                 }
+                                // Track geometry, the marquee and the time
+                                // selection are all measured in this space.
+                                .coordinateSpace(name: "timelineScroll")
                             }
                             .frame(width: max(timelineWidth, viewport.size.width - 230), alignment: .leading)
                         }
@@ -454,6 +555,35 @@ public struct ArrangerView: View {
             }
         }
     }
+
+/// Lifts the row of a track dragged to a new place in the order above the
+/// others, and moves each row by its offset during the drag.
+private struct ReorderLift: ViewModifier {
+    let isDragged: Bool
+    let offset: CGFloat
+    let color: Color
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                Rectangle()
+                    .stroke(color.opacity(isDragged ? 0.9 : 0), lineWidth: 2)
+                    .allowsHitTesting(false)
+            )
+            // Only while dragged, so the lanes don't pay for a shadow pass.
+            .background {
+                if isDragged {
+                    Rectangle()
+                        .fill(Color.black)
+                        .shadow(color: .black.opacity(0.7), radius: 8, y: 3)
+                }
+            }
+            .offset(y: offset)
+            // The dragged row tracks the pointer; the others glide aside.
+            .animation(isDragged ? nil : .easeInOut(duration: 0.15), value: offset)
+            .zIndex(isDragged ? 1 : 0)
+    }
+}
 
 /// Background, ticks and labels of the ruler. Its own view so that pointer
 /// tracking in the ruler (for the flag menu) does not redraw it.
