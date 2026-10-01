@@ -1,6 +1,6 @@
-# MyDAW Source Code Specification (v1.8)
+# MyDAW Source Code Specification (v1.9)
 
-> Version covered: **1.8** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
+> Version covered: **1.9** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 > System structure, signal paths and design decisions: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 
 For every file under `Sources/` and `VST3Host/`, this document describes responsibilities, types, the contracts of the main properties and methods, threading assumptions and side effects. Private methods are listed only where they are needed to follow the processing flow.
@@ -25,7 +25,7 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 #### `MyDAWApp: App` (`@main`)
 - **`init()`**: first calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
 - **`body`**: a `WindowGroup` with `MainDAWView`, plus menus:
-  - About (shows the version; falls back to `1.8` without Info.plist)
+  - About (shows the version; falls back to `1.9` without Info.plist)
   - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), separator, Export Master Mix…, separator, Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
   - Help: MyDAW Help (⌘?). Opens `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` for `AppLanguage.current` with `NSWorkspace.open` (the system picks the app)
@@ -144,8 +144,8 @@ Every decoder uses `decodeIfPresent` with defaults, so files from older versions
 
 - **Published state**: `tracks`, `fxChannels`, `masterPlugins`, `selectedTrackId`, `pixelsPerSecond` (20–400), `timelineScrollTime`, `punchRange`, `showsBeats`, `snapToGrid` (stored in UserDefaults), `autoScrollEnabled` (UserDefaults `MyDAW.autoScroll`), `waveformVerticalScale` (1–32), `trackHeightScale` (0.5–3), `timeSelection` (range selection), `marqueeRect` (marquee while dragging), `clipboard`, export dialog state, startup log, `pluginManager`, `audioEngine`, `deviceManager`.
 - **Initialisation**: applies devices and buffer size to the engine, subscribes to peak notifications, creates two default tracks, starts plug-in discovery.
-- **Tracks**: `addTrack`, `deleteTrack` (the UI calls `confirmDeleteTrack`, which asks first), `toggleRecordArm`, `toggleInputMonitoring`, `toggleMute`, `toggleSolo`, `setInputRouting(for:channelMode:inputChannelIndex:)` (syncs the engine immediately).
-- **Clips**: `selectClip` (selects only that clip and clears the range selection), `moveClip` (across tracks), `deleteSelectedClip` (deletes inside the range selection if there is one, otherwise every selected clip), `splitSelectedClip` / `splitClip`, drag preview (`beginClipDragPreview` etc.). Selection, ranges, clipboard and group moves live in `ProjectState+Editing.swift`.
+- **Tracks**: `addTrack`, `deleteTrack` (the UI calls `confirmDeleteTrack`, which asks first), `moveTrack(id:to:)` (reordering; the arranger and the mixer follow the order of `tracks`; the graph is not rewired; a time selection is cleared), `toggleRecordArm`, `toggleInputMonitoring`, `toggleMute`, `toggleSolo`, `setInputRouting(for:channelMode:inputChannelIndex:)` (syncs the engine immediately).
+- **Clips**: `selectClip` (selects only that clip and clears the range selection), `moveClip` (across tracks), `deleteSelectedClip` (deletes inside the range selection if there is one, otherwise every selected clip), `splitSelectedClip` / `splitClip`, drag preview (`ClipDragPreview`: the set of dragged clip IDs, the vertical travel and the track delta; `beginClipDragPreview()` / `updateClipDragPreview(verticalOffset:trackDelta:)` / `endClipDragPreview()`; the delta is 0 when some clip would have no destination). Selection, ranges, clipboard and group moves live in `ProjectState+Editing.swift`.
 - **Undo/redo**: `beginClipEdit()` takes a snapshot (clip position, range, gain, mute, fades and curves, file, and each track's selection); `endClipEdit()` pushes it unless the clips are unchanged (for example after just clicking a handle). `undo()` / `redo()` do nothing while playing or recording.
 - **Punch**: `setPunchRange`, `setPunchStartBeat`, `setPunchEndBeat`, `setPunchEnabled`.
 - **Unused recordings**: `moveUnusedRecordings()` (File menu; `canMoveUnusedRecordings` = project open, stopped, no recording being finalised) first asks to save (Save Project and Continue / Cancel) and saves, then moves WAV files directly in Recordings that no clip or clipboard entry refers to into `Recordings/Unused` (numbered on a name clash) and lists them in an NSAlert. If a moved file appears in an Undo / Redo snapshot, both stacks are cleared.
@@ -183,7 +183,8 @@ An extension of `ProjectState` that gathers selection and editing operations.
 | `menuTargets`, `selectForMenu`, `splittableMenuTargets` | Right-click targets: the whole selection when the right-clicked clip is part of it, otherwise that clip (selected by `selectForMenu`). `splittableMenuTargets` keeps those the playhead is inside |
 | `toggleMuteMenuTargets`, `duplicateMenuTargets`, `splitMenuTargets`, `deleteMenuTargets` | Commands on the right-click targets. Mute mutes all if any is unmuted, otherwise unmutes all; Duplicate copies them as a block whose start lands on the playhead and selects the copies; Split cuts those the playhead is inside and keeps both halves selected. Each is one undo step (except mute) |
 | `normalizeClips`, `reverseClips` | Act on the right-clicked clip, or the whole selection if it is part of one. Normalize sets the gain that brings the whole file's peak to 0 dBFS; Reverse writes `Reverse_<track name>_NNN.wav` (`RecordingFileName`), switches the clip to it and swaps the fades |
-| `beginGroupDrag`, `updateGroupDrag(delta:)`, `endGroupDrag(trackDelta:)` | Moves the selected clips together (never before zero; across tracks only when every clip has a destination) |
+| `beginGroupDrag`, `updateGroupDrag(delta:)`, `endGroupDrag(trackDelta:)` | Moves the selected clips together (never before zero; across tracks only when every clip has a destination, `canMoveSelectedClips(trackDelta:)`) |
+| `layeringClips(for:)` | The clips a lane layers. While clips are dragged to another track, they leave the source's list and go on top of the destination's |
 | `duplicateSelectedClipsInPlace` | At the start of an option-drag, leaves copies at the original positions (directly below each original) |
 
 ---
@@ -201,7 +202,8 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 | Dictionary | Role |
 | --- | --- |
 | `playerNodes` | Spare per-track player (normally unused) |
-| `clipPlayerNodes` | One `AVAudioPlayerNode` per clip |
+| `clipPlayerNodes` | One `AVAudioPlayerNode` per clip (kept when the clip moves to another track) |
+| `clipPlayerOutputs` | The track output mixer each clip player feeds; `syncTracks` rewires a player whose clip is now on another track |
 | `trackOutputNodes` | Track output mixer (fader volume, solo, mute). Mute and solo come from `audibility(tracks:fxChannels:)`: soloing a track keeps the FX channels it sends to; soloing an FX channel plays only its return (the sending tracks keep feeding their sends, but their splitter → mainMixer connection volume is set to 0 via `setTrackDryAudible`) |
 | `trackDownmixNodes` | `MonoDownmixAudioUnit` at the head of every track chain (before the inserts) |
 | `trackDryDelayNodes` / `fxReturnDelayNodes` | `DelayCompensationAudioUnit` on each track's dry path (splitter → mainMixer, delay D; mutes the dry sound for an FX solo) and on each FX return (pan → output, delay D − own latency). Set by `updateLatencyCompensation()` |
@@ -214,7 +216,7 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 | `masterOutputNode` / `masterPluginNodes` / `masterMeterNode` | Master volume, POST plug-ins, final meter |
 
 #### Main public methods
-- **Graph sync**: `syncTracks(_:fxChannels:)` (incremental update of tracks, FX, master, sends and input monitoring), `syncTracks(_:fxChannels:masterPlugins:)`, `syncMasterPlugins`, `syncAfterClipEdit` (during playback, `rescheduleEditedClips` restarts only the clips whose `ClipScheduleSignature` changed plus the clips overlapping them, from the transport position at the restart time; other clips play on), `updateMixerLevels` (volume, pan, sends, FX), `updateSendLevel`, `setClipMuted`, `setPluginEnabled`.
+- **Graph sync**: `syncTracks(_:fxChannels:)` (incremental update of tracks, FX, master, sends and input monitoring), `syncTracks(_:fxChannels:masterPlugins:)`, `syncMasterPlugins`, `syncAfterClipEdit` (during playback, `rescheduleEditedClips` restarts only the clips whose `ClipScheduleSignature` changed plus the clips overlapping them, from the transport position at the restart time; the players of clips that left a track are stopped on all tracks before anything is rescheduled, so a clip moved to a higher track is not stopped after its restart; other clips play on), `updateMixerLevels` (volume, pan, sends, FX), `updateSendLevel`, `setClipMuted`, `setPluginEnabled`.
 - **Transport**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)` (starts playback/recording, or stops if running), `stop(tracks:)`, `rewind(tracks:to:)`, `seek(to:)`, `setPunchRange`. `songEndTime`: the playhead timer calls `onReachSongEnd` when it crosses it (only if playback started before it); that stop cuts recorded clips at it and leaves the playhead there.
 - **Devices**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)` (sets the device sample rate and calls `bindIODevice` when the devices change), `applyInputBufferFrameSize`, `applyAutomaticTimingCompensation`.
 - **Plug-ins**: `openPluginUI(pluginID:)`, `isPluginUnavailable`, `capturePluginStates`, `setSavedPluginStates`, `prepareForPluginGraphRestore`.
@@ -328,12 +330,15 @@ Status bar item “CPU [bar] 34% ● Dropout” observing `AudioLoadMonitor` (on
 
 ### `ArrangerView.swift`
 Track headers and lanes, the ruler (seconds or bars/beats; click to seek), playhead, punch range (drag the left/right handles on the ruler in beat steps), Add Track button, auto-scroll (only when `autoScrollEnabled` is on; moves on when the playhead enters the right 10%), Delete key, and drawing of the marquee rectangle and range-selection band.
+- **Coordinate space `timelineScroll`**: set on the lanes' ZStack. `trackTopY`, `trackID(atTimelineY:)`, the marquee, range selection and clip drags are measured in it.
+- **Clip drag display**: `clipDragPreviews` draws every clip in `clipDragPreview` from its own track, moved by the vertical travel (waveform and fades as layered in the destination).
+- **Track reordering**: a `DragGesture` on each header (`reorderGesture`, 4 pt minimum, global coordinates). `reorderTargetIndex` counts the tracks whose middle lies above the dragged row's middle. With `reorderOffset` the dragged row follows the pointer and the rows it passes step aside by its height. `ReorderLift` is applied to both the header and the lane, framing the dragged row, adding a shadow and bringing it to the front. On release `moveTrack` runs inside an animation.
 - **Horizontal scrolling**: a `timelineScrollTime` change scrolls the tracks' `NSClipView` directly through `setTrackScrollOffset`, and again on the next main-queue turn after the new layout (`scrollTo` can take the position from an outdated layout). `ScrollOffsetObserver` feeds the user's own scrolling back into `timelineScrollTime`.
 - **`KnobOnlySlider`**: the horizontal scroll bar at the bottom. It moves only when its knob (●) is dragged; clicks elsewhere are ignored.
 - **`ArrangerWheelMonitor`**: a local event monitor for scroll-wheel and pinch events over the whole arranger (ruler included). A wheel over the ruler and a pinch zoom horizontally around the pointer; ⌥+wheel sets track height; ⌥⇧+wheel sets waveform height (also when shift turns the wheel into horizontal scrolling). Handled events are not passed to the scroll views.
 
 ### `TrackHeaderView.swift`
-Colour bar on the left (click for `TrackColorPalette`: 16 presets + custom), name (double-click to edit), mono/stereo toggle (1/2), delete, R / M / S / I, input channel menu, meter (input while armed, output otherwise), drag the bottom edge to change height.
+Colour bar on the left (click for `TrackColorPalette`: 16 presets + custom), name (double-click to edit), mono/stereo toggle (1/2), delete, R / M / S / I, input channel menu, meter (input while armed, output otherwise), drag the bottom edge to change height. Dragging anywhere else reorders the track (the gesture is attached by `ArrangerView`).
 
 ### `WaveformLaneView.swift`
 One track lane.

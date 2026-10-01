@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v1.8)
+# MyDAW Project Analysis (v1.9)
 
-> Version covered: **1.8** (source as of 2026-09-30, v1.8 release)
+> Version covered: **1.9** (source as of 2026-10-01, v1.9 release)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -29,6 +29,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
 - **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
 - **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate. Right-click commands apply to every selected clip (right-clicking an unselected clip selects it).
+- **Track reordering**: drag a track header to move the track. While dragging, the header and its waveform lane follow the pointer together and the other tracks step aside to show where it will land. The mixer strips follow the same order.
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom. Auto-scroll during playback can be turned on/off.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
 - **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry.
@@ -257,7 +258,8 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Marquee**: dragging over empty space draws `marqueeRect` and selects every clip it touches (shift adds to the existing selection).
 - **Range edits**: built on `AudioClip.piece(from:to:)` (a new clip for part of a clip, keeping fades only on shared edges); `AudioTrack.removeAudio` / `cropAudio` / `splitAudio` rebuild the clip list in layer order.
 - **Clipboard**: `ClipboardClip` (file, range, gain, fades, and time/track offsets from the copied block). Paste creates new clips relative to the playhead and the selected track.
-- **Group moves**: selected clips' start times are recorded when a drag begins and all move by the same delta (never before zero). A move across tracks happens only if every clip has a destination track. Option-drag inserts copies at the original positions when the drag starts (directly below each original in layer order).
+- **Group moves**: selected clips' start times are recorded when a drag begins and all move by the same delta (never before zero). A move across tracks happens only if every clip has a destination track. Option-drag inserts copies at the original positions when the drag starts (directly below each original in layer order). While dragging, the selected clips are hidden in their lanes and drawn as one block from `clipDragPreview` (the whole selection, the vertical travel and the track delta): each clip is drawn from its own track, moved by the vertical travel. While clips are dragged to another track, `layeringClips(for:)` drops them from the source track's layering and counts them on top in the destination (so the source shows no false "hidden" shading and the destination shows its crossfades in advance).
+- **Track reordering**: `ProjectState.moveTrack(id:to:)` only changes the order of `tracks`, which both the arranger and the mixer follow. The audio graph is keyed by track ID, so nothing is rewired. A time selection is cleared, since it assumes adjacent tracks. The drag display lives in `ArrangerView` (`reorderOffset`, `ReorderLift`).
 - **Clip commands**: Normalize measures the whole file's peak and sets the clip gain (non-destructive). Reverse writes the clip's range backwards to a new WAV and switches the clip to it (the original file stays, so Undo restores it).
 - **Right-click menu**: targets come from `menuTargets` (the whole selection when the clicked clip is selected, otherwise that clip). Mute mutes all if any is unmuted; Duplicate places the targets as one block starting at the playhead; Split cuts only targets the playhead is inside. Inside a selected range the range menu opens.
 - **Undo**: each operation is one step via `beginClipEdit()` / `endClipEdit()`; nothing is recorded if the clips did not change.
@@ -297,7 +299,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 ## 5. Design decisions and lessons learned
 
-AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they were solved. Keep these in mind when changing the engine.
+AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they were solved. Keep these in mind when changing the engine.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -321,6 +323,9 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they
 | After Rewind the song start flag is sometimes off screen (stopping right after an auto-scroll) | `ScrollViewReader.scrollTo` finds its target in the layout of the moment. Rewind also shrinks the timeline width, and the position was taken from the old layout, so the view stayed where it was | The tracks' horizontal scroll sets the `NSClipView` directly and repeats it once the new width is laid out (`setTrackScrollOffset`) |
 | The resize cursor shows on the mixer edge only sometimes (dragging works with the arrow) | SwiftUI `onHover` with `NSCursor.push()` / `pop()` gets out of step and is overridden by other views' cursors | The edge is an AppKit `VerticalResizeHandle` (cursor rect and drag in the same `NSView`) |
 | "Delete Recording" from the right-click menu hit a clip that was not selected, or only one of several selected | A SwiftUI `.contextMenu` is built before the click and cannot run code as it opens; each item acted on the clicked clip alone | The lane's `LaneMenuMonitor` (a local right-click monitor) selects the clicked clip and then builds an AppKit `NSMenu`; targets come from `menuTargets` |
+| A range or marquee selection always started at track 1, wherever it was pressed | The scroll-sync fix dropped `.coordinateSpace(name: "timelineScroll")` from the waveform lanes. A coordinate space with an unknown name silently falls back to each lane's own coordinates, so the vertical position always fell in the first track | The declaration is back where it was (on the lanes' ZStack). `trackTopY` / `trackID(atTimelineY:)`, the marquee and clip moves across tracks all depend on this space |
+| A clip moved to another track was silent | Clip players are reused by clip ID and were rewired only when the track's output mixer was new; a moved clip played through its old track, which was silent when that track was armed or muted | The output mixer each player feeds is recorded in `clipPlayerOutputs`, and a player is rewired when it differs from the clip's current track |
+| During playback, only clips moved from a lower track to a higher one were silent | Rescheduling after an edit went through the tracks from the top and, per track, stopped the players of clips that had left it; the source (lower) stopped the shared player after the destination (higher) had restarted it | `rescheduleEditedClips` works in two passes: stop every departed clip on all tracks first, then reschedule |
 
 ---
 
@@ -337,6 +342,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they
 - **Instruments**: not supported in AU or VST3 (effects only). AU discovery looks only for `kAudioUnitType_Effect`, so music effects (`aumf`) are not listed either.
 - **Input monitoring latency**: depends on buffer size (about 25–30 ms round trip at 48 kHz / 512 frames). Use 128–256 for guitar. Using the interface's direct monitoring at the same time makes the signal sound doubled.
 - **Graph changes while playing**: inserting, removing and reordering plug-ins is only allowed while stopped.
+- **Track reordering**: not undoable (undo covers clip edits only). Dragging a track to the edge of the view does not scroll vertically.
 - **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
 - **Plug-in latency changes**: AU latency changes are followed (property listener); a VST3's latency is read once when it is created.
 - **Bypass and latency**: a bypassed plug-in keeps counting its latency. MyDAW's VST3 wrapper delays its bypass signal to match; an AU's bypass relies on the plug-in keeping its delay.
@@ -356,7 +362,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they
 ### Medium priority
 1. Split `AudioEngineManager` (~4,500 lines) into graph building, playback scheduling, recording and metering types.
 2. More robust saving (atomic writes, autosave, tracking unsaved changes).
-3. Track reordering; integration with the system clipboard.
+3. Integration with the system clipboard; undo for track reordering and vertical auto-scroll while dragging a track.
 4. Unify conversion of shaped pieces to remove joins in mismatched-rate audio.
 5. Move the meters into their own views so transport bar tooltips also appear during playback.
 

@@ -1,6 +1,6 @@
-# MyDAW ソースコード仕様書（v1.8）
+# MyDAW ソースコード仕様書（v1.9）
 
-> 対象バージョン: **1.8** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **1.9** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -25,7 +25,7 @@
 #### `MyDAWApp: App`（`@main`）
 - **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `1.8`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `1.9`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、区切り線、Export Master Mix…、区切り線、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
   - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
@@ -144,8 +144,8 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 - **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（0.5〜3）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
 - **初期化**: デバイスとバッファサイズをエンジンへ適用、ピーク通知を購読、既定トラック 2 本を作成、プラグイン検出を開始。
-- **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
-- **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`beginClipDragPreview` など）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
+- **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`moveTrack(id:to:)`（並べ替え。アレンジャーとミキサーは `tracks` の順で並ぶ。グラフはつなぎ直さない。範囲選択は解除）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
+- **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`ClipDragPreview`：移動中のクリップ ID の集合、縦の移動量、移動先までのトラック数。`beginClipDragPreview()`／`updateClipDragPreview(verticalOffset:trackDelta:)`／`endClipDragPreview()`。移動先がないクリップがあるときトラック数は 0）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
 - **UNDO/REDO**: `beginClipEdit()` で編集前スナップショット（クリップの位置・範囲・ゲイン・ミュート・フェードとカーブ・ファイル、各トラックの選択）を取り、`endClipEdit()` で履歴に積む。クリップが変わっていなければ積まない（ハンドルをクリックしただけの場合など）。`undo()`／`redo()` は再生・録音中は無効。
 - **パンチ**: `setPunchRange`、`setPunchStartBeat`、`setPunchEndBeat`、`setPunchEnabled`。
 - **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
@@ -183,7 +183,8 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 | `menuTargets`、`selectForMenu`、`splittableMenuTargets` | 右クリックの対象: 右クリックしたクリップが選択に含まれていれば選択全体、そうでなければそのクリップ（`selectForMenu` で選択）。`splittableMenuTargets` はそのうち再生位置が内側にあるもの |
 | `toggleMuteMenuTargets`、`duplicateMenuTargets`、`splitMenuTargets`、`deleteMenuTargets` | 右クリックの対象への処理。ミュートは 1 つでも未ミュートがあれば全ミュート、なければ全解除。複製は対象をかたまりのまま先頭を再生位置へ置き、複製を選択。分割は再生位置にかかる対象を分割し両側を選択。いずれも 1 回の UNDO 手順（ミュートを除く） |
 | `normalizeClips`、`reverseClips` | 右クリックの対象（選択に含まれていれば選択全体）に対する処理。ノーマライズはファイル全体のピークで 0 dBFS になるゲインを設定、逆再生は `Reverse_<トラック名>_NNN.wav`（`RecordingFileName`）を作って差し替え、フェードの前後を入れ替える |
-| `beginGroupDrag`、`updateGroupDrag(delta:)`、`endGroupDrag(trackDelta:)` | 選択クリップのまとめて移動（0 秒より前に出さない。トラック間は全クリップの移動先がある場合のみ） |
+| `beginGroupDrag`、`updateGroupDrag(delta:)`、`endGroupDrag(trackDelta:)` | 選択クリップのまとめて移動（0 秒より前に出さない。トラック間は全クリップの移動先がある場合のみ＝`canMoveSelectedClips(trackDelta:)`） |
+| `layeringClips(for:)` | レーンの重なり計算に使うクリップ列。別トラックへのドラッグ中は、移動中のクリップを移動元から外し、移動先の最上位に加える |
 | `duplicateSelectedClipsInPlace` | option ドラッグ開始時に、元の位置へ複製を残す（元の直下のレイヤー） |
 
 ---
@@ -201,7 +202,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | 辞書 | 役割 |
 | --- | --- |
 | `playerNodes` | トラック用予備プレイヤー（通常未使用） |
-| `clipPlayerNodes` | クリップ 1 つにつき 1 つの `AVAudioPlayerNode` |
+| `clipPlayerNodes` | クリップ 1 つにつき 1 つの `AVAudioPlayerNode`（クリップがトラック間を移っても使い回す） |
+| `clipPlayerOutputs` | 各クリップのプレイヤーの接続先（トラック出力ミキサー）。今のトラックと違えば `syncTracks` がつなぎ直す |
 | `trackOutputNodes` | トラック出力ミキサー（フェーダー音量・ソロ・ミュート）。ミュート・ソロは `audibility(tracks:fxChannels:)` で決まります。トラックをソロにすると送り先の FX も聞こえます。FX をソロにするとその FX のリターンだけが聞こえます（送り元トラックはセンドへは送り続け、splitter → mainMixer の接続音量だけを `setTrackDryAudible` で 0 にします） |
 | `trackDownmixNodes` | 各トラックのチェーン先頭（インサートの前）にある `MonoDownmixAudioUnit` |
 | `trackDryDelayNodes`／`fxReturnDelayNodes` | 各トラックのドライ経路（分岐 → mainMixer。遅延 D。FX ソロ時のドライ消音も担当）と各 FX のリターン（PAN → 出力。遅延 D − 自分の遅延）にある `DelayCompensationAudioUnit`。`updateLatencyCompensation()` が設定 |
@@ -214,7 +216,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `masterOutputNode`／`masterPluginNodes`／`masterMeterNode` | マスターボリューム・POST プラグイン・最終メーター |
 
 #### 主な公開メソッド
-- **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中は `rescheduleEditedClips` で、`ClipScheduleSignature` が変わったクリップと、それに重なるクリップだけを、再開時刻の再生位置から予約し直します。ほかのクリップは鳴り続けます）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
+- **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中は `rescheduleEditedClips` で、`ClipScheduleSignature` が変わったクリップと、それに重なるクリップだけを、再開時刻の再生位置から予約し直します。先に全トラックで「なくなったクリップ」のプレイヤーを止めてから予約するため、上のトラックへ移したクリップも止められません。ほかのクリップは鳴り続けます）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
 - **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind(tracks:to:)`、`seek(to:)`、`setPunchRange`。`songEndTime`: 再生位置タイマーがこれをまたぐと `onReachSongEnd` を呼びます（それより前から再生を始めた場合のみ）。この停止では、録音したクリップを終了位置で切り揃え、再生位置を終了位置に置きます。
 - **デバイス**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（デバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
 - **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`。
@@ -328,12 +330,15 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `ArrangerView.swift`
 トラックヘッダーと波形レーンの並び、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、Add Track ボタン、自動スクロール（`autoScrollEnabled` が ON のときだけ、再生位置が右端 10% に入ると先へ送る）、Delete キー、枠選択の矩形と範囲選択の帯の表示。
+- **座標空間 `timelineScroll`**: 波形レーン全体の ZStack に付ける。`trackTopY`、`trackID(atTimelineY:)`、枠選択、範囲選択、クリップのドラッグはこの座標で測る。
+- **クリップのドラッグ表示**: `clipDragPreviews` が `clipDragPreview` の全クリップを、自分のトラックの位置から縦の移動量だけずらして描く（波形・フェードは移動先の重なりで表示）。
+- **トラックの並べ替え**: ヘッダの `DragGesture`（`reorderGesture`、4pt 以上、グローバル座標）。`reorderTargetIndex` は中心がドラッグ中の行の中心より上にあるトラック数。`reorderOffset` でドラッグ中の行はポインタに追従し、通過した行はその行の高さ分よける。`ReorderLift` はヘッダとレーンの両方に掛け、ドラッグ中の行に枠・影を付けて手前に出す。離すと `moveTrack` をアニメーション付きで実行。
 - **横スクロール**: `timelineScrollTime` の変更は `setTrackScrollOffset` でトラックの `NSClipView` を直接スクロールし、次のメインキューで新しいレイアウトの後にもう一度合わせ直す（`scrollTo` は古いレイアウトで位置を決めることがあるため）。`ScrollOffsetObserver` がユーザーのスクロールを `timelineScrollTime` へ戻す。
 - **`KnobOnlySlider`**: 下部の横スクロールバー。つまみ（●）のドラッグでだけ動き、つまみ以外のクリックは無視。
 - **`ArrangerWheelMonitor`**: アレンジャー全体（ルーラー含む）でのスクロールホイールとピンチをローカルイベントモニターで受ける。ルーラー上のホイールとピンチはポインター位置を基準に時間方向ズーム、⌥＋ホイールはトラック高さ、⌥⇧＋ホイールは波形縦倍率（shift による横スクロール変換にも対応）。処理したイベントはスクロールビューへ渡さない。
 
 ### `TrackHeaderView.swift`
-左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム）、名前（ダブルクリックで編集）、モノ／ステレオ切替（1／2）、削除、R／M／S／I、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更。
+左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム）、名前（ダブルクリックで編集）、モノ／ステレオ切替（1／2）、削除、R／M／S／I、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更。それ以外の所のドラッグはトラックの並べ替え（ジェスチャーは `ArrangerView` が付ける）。
 
 ### `WaveformLaneView.swift`
 1 トラック分のレーン。
