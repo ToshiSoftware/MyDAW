@@ -26,8 +26,9 @@
 - **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。
   - About（バージョン表示。Info.plist が無い場合の既定値は `1.8`）
-  - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Export Master Mix…
+  - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、区切り線、Export Master Mix…、区切り線、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
+  - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
 - **`requestAudioPermissions()`**: OS バージョンに応じてマイク権限 API を呼ぶ。
 
 #### `MyDAWApplicationDelegate: NSApplicationDelegate`
@@ -141,20 +142,24 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 `ProjectState: ObservableObject`（@MainActor）は UI とエンジンの間の Facade です。
 
-- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（0.5〜3）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
+- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（0.5〜3）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
 - **初期化**: デバイスとバッファサイズをエンジンへ適用、ピーク通知を購読、既定トラック 2 本を作成、プラグイン検出を開始。
 - **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
-- **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）／`deleteClip`、`toggleClipMute`、`duplicateClip`、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`beginClipDragPreview` など）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
+- **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`beginClipDragPreview` など）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
 - **UNDO/REDO**: `beginClipEdit()` で編集前スナップショット（クリップの位置・範囲・ゲイン・ミュート・フェードとカーブ・ファイル、各トラックの選択）を取り、`endClipEdit()` で履歴に積む。クリップが変わっていなければ積まない（ハンドルをクリックしただけの場合など）。`undo()`／`redo()` は再生・録音中は無効。
 - **パンチ**: `setPunchRange`、`setPunchStartBeat`、`setPunchEndBeat`、`setPunchEnabled`。
 - **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
 - **開始・終了フラグ**: `songRange`（変更時にエンジンの `songEndTime` を更新）、`songStartTime`／`songEndTime`（秒）、`setSongStart(time:)`／`setSongEnd(time:)`（nil で削除。`minimumSongLengthBeats` 以上離す）、`canPlaceSongStart(at:)`／`canPlaceSongEnd(at:)`。`toggleTransport(recordArmedTracks:)` はパンチ範囲と終了位置をエンジンに渡して再生／録音を開始・一時停止します（再生・録音ボタンと Space から）。`rewindToSongStart()` は開始フラグへ、フラグ上かそれより前なら 0 へ戻ります。エンジンの `onReachSongEnd` から `stop(tracks:)` を呼びます。
 - **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`movePlugin(_:before:on:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`moveMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
 - **FX**: `addFXChannel()`、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
-- **ファイル**: `createNewProject`、`loadProject`、`saveProject`、`saveProjectAndShowConfirmation`、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
+- **ファイル**: `createNewProject`、`loadProject`、`openRecentProject(_:)`（ファイルの存在を確認し、そのフォルダーで `loadProject(from:projectFolderURL:)`）、`saveProject`（書き込みに成功すると `RecentProjects.noteSaved`。`loadProject(from:)` は成功時に `noteOpened`）、`saveProjectAndShowConfirmation`、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
 - **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
 - **書き出し**: `beginMasterExportDialog`、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。
 - **表示**: `zoomIn`、`zoomOut`、`setPixelsPerSecond(_:)`（再生位置を基準）、`setPixelsPerSecond(_:anchorOffset:)`（ポインター位置を基準、ホイール・ピンチ用）、`snappedTimelineTime`（1 拍単位）。
+
+### `RecentProjects.swift`（v1.8 新規）
+- **`RecentProject: Codable, Identifiable`**: `path`（`.mydaw` ファイルのパス。正規化済みで `id` を兼ねる）、`lastSavedAt`。派生値 `url`、`name`（拡張子を除いたファイル名）、`exists`。
+- **`RecentProjects: ObservableObject`**（`shared`）: `entries` は新しい順で最大 `maxCount`（50）件。UserDefaults のキー `MyDAW.recentProjects` に JSON で保存。`noteSaved(_:)` は現在時刻で先頭へ、`noteOpened(_:)` はファイルの更新日時（＝最終保存）で先頭へ移動。`remove(_:)` で 1 件削除。ファイルが見つからない項目も残す（Google Drive がオフラインの場合があるため）。表示は灰色。
 
 ### `AppLanguage.swift`（v1.6 新規）
 GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言語自身の表記（English／日本語）。`current` は起動中のアプリが読み込んだ言語（`Bundle.main.preferredLocalizations`）。`select(_:)` はアプリの `AppleLanguages` 既定値に保存し、次回起動から反映。未選択時は macOS の優先言語（どちらでもなければ英語）。
@@ -175,6 +180,8 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 | `deleteTimeSelection`、`cropToTimeSelection`、`splitAtTimeSelection` | 範囲編集（1 回の UNDO 手順） |
 | `deleteSelectedClips` | 選択クリップをまとめて削除 |
 | `copySelection`、`cutSelection`、`paste()` | クリップボード。ペーストは再生位置と選択トラック基準（足りないトラックは最終トラックへ） |
+| `menuTargets`、`selectForMenu`、`splittableMenuTargets` | 右クリックの対象: 右クリックしたクリップが選択に含まれていれば選択全体、そうでなければそのクリップ（`selectForMenu` で選択）。`splittableMenuTargets` はそのうち再生位置が内側にあるもの |
+| `toggleMuteMenuTargets`、`duplicateMenuTargets`、`splitMenuTargets`、`deleteMenuTargets` | 右クリックの対象への処理。ミュートは 1 つでも未ミュートがあれば全ミュート、なければ全解除。複製は対象をかたまりのまま先頭を再生位置へ置き、複製を選択。分割は再生位置にかかる対象を分割し両側を選択。いずれも 1 回の UNDO 手順（ミュートを除く） |
 | `normalizeClips`、`reverseClips` | 右クリックの対象（選択に含まれていれば選択全体）に対する処理。ノーマライズはファイル全体のピークで 0 dBFS になるゲインを設定、逆再生は `Reverse_<トラック名>_NNN.wav`（`RecordingFileName`）を作って差し替え、フェードの前後を入れ替える |
 | `beginGroupDrag`、`updateGroupDrag(delta:)`、`endGroupDrag(trackDelta:)` | 選択クリップのまとめて移動（0 秒より前に出さない。トラック間は全クリップの移動先がある場合のみ） |
 | `duplicateSelectedClipsInPlace` | option ドラッグ開始時に、元の位置へ複製を残す（元の直下のレイヤー） |
@@ -188,7 +195,7 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター、プラグイン生成と GUI、書き出しを管理する中心クラス（@MainActor、`NSWindowDelegate`）。
 
 #### 公開状態（抜粋）
-`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`currentTime`、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。
+`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`currentTime`、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
 
 #### ノード構成（トラックごと）
 | 辞書 | 役割 |
@@ -272,6 +279,14 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 - **`captureState()`／`restoreState(_:)`**、**`attachEditor(to:)`**（`resizeView` コールバック登録）、**`currentEditorSize()`**、**`removeEditor()`**、`latencySamples`。
 - **deinit**: エディタを外して `MyDAWVST3Destroy`。
 
+### `AudioLoadMonitor.swift`（v1.8 新規）
+ステータスバー用のオーディオ処理負荷と音飛びの検出（`@MainActor`。`AudioEngineManager.loadMonitor` が保持し、`init` で `start(engine:)`、`shutdown` で `stop()`）。
+- **負荷**: `engine.outputNode.audioUnit` に `AudioUnitAddRenderNotify`（バス 0 のみ）を付け、pre／post render の間を `mach_absolute_time` で計測。負荷＝描画時間 ÷ 1 サイクルの長さ（`frames / sampleRate`）。描画スレッドは事前確保した `RenderStats` に累計とピークを書くだけ（ロック・メモリ確保なし）。
+- **音飛び**（0.3 秒以内の重複は 1 回）: 負荷 > 1 のサイクル、デバイスのサンプル時刻が先へ飛んだとき（サイクルの抜け）、出力ユニットの現在のデバイス（`kAudioOutputUnitProperty_CurrentDevice`）からの `kAudioDeviceProcessorOverload`。入力使用時はこれが入出力の集約デバイスなので `inputNode` には触れない（入力のないエンジンで触れると構成が変わるため）。
+- **再起動の扱い**: 0.25 秒を超える空白、またはサンプル時刻の巻き戻りを再起動とみなし、続く 16 サイクルは計測も判定もしない。デバイスのオーバーロード通知は 1 秒間無視。
+- **メイン側**（10 Hz Timer）: 公開するのは `load`（区間のピーク。上昇は即時、下降は 0.75 の平滑化、0.5% 単位）と `isShowingDropout`（最後の音飛びから 3 秒、`dropoutDisplaySeconds`）だけ。`averageLoad`・`peakLoad`（直近 1 秒）、`processCPU`（`getrusage`、全コア比）、`dropoutCount`、`lastDropoutDate` はツールチップ用の通常プロパティ。1 秒ごとに出力ユニットやデバイスの変化を確認し、付け直す。
+- **テスト用**: UserDefaults の `MyDAW.loadTestOffset`（%）を描画スレッドで各サイクルの負荷に加算し、色や音飛び表示の経路を確認できる（`open MyDAW.app --args -MyDAW.loadTestOffset 70`、または `defaults write com.tokada.MyDAW MyDAW.loadTestOffset -int 70`。`defaults delete …` で解除）。有効な間は黄色の「TEST +n%」を表示。
+
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID、名前、種類（AU／VST3）、bundle パス、VST3 UID、AU コンポーネント記述、有効状態、UI 互換性。
 - **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。
@@ -295,21 +310,26 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 ## 4. ビュー（`Sources/Views`）
 
 ### `MainDAWView.swift`
-上からトランスポート、アレンジャー、ミキサー、ステータスバーを配置。起動ログ（プラグイン検出の進捗。表示を終えたらビュー階層から外す）、マスター書き出しダイアログ、ウィンドウを閉じる時の確認、キー処理（`SpacebarHandler`: ⌘Z／⇧⌘Z／⌘Y、← で先頭へ、⌘X／⌘C／⌘V／⌘A を `EditCommand` として処理、Esc で選択解除（イベントは通過させる）。テキスト入力中は処理しない）を含む。
+上からトランスポート、アレンジャー、ミキサー、ステータスバー（デバイス、`AudioLoadIndicator`、録音フォルダー、ショートカットの案内）を配置。起動ログ（プラグイン検出の進捗。表示を終えたらビュー階層から外す）、マスター書き出しダイアログ、ウィンドウを閉じる時の確認、キー処理（`SpacebarHandler`: ⌘Z／⇧⌘Z／⌘Y、← で先頭へ、⌘X／⌘C／⌘V／⌘A を `EditCommand` として処理、Esc で選択解除（イベントは通過させる）。テキスト入力中は処理しない）を含む。
 - **`refreshToolTips()`**: プロジェクトを開いたとき・起動ログが消えたときに、メインウィンドウの幅を 1pt 変えて戻し、ツールチップ領域を再登録させる（オーバーレイが消えただけでは SwiftUI が再登録しないため）。
 
 ### `ProjectSelectionView.swift`
-起動画面。New Project（フォルダー指定）と Open Project（⌘O）。バージョン表示。
+起動画面。New Project（フォルダー指定）と Open Project（⌘O）。バージョン表示。ボタンの下に「最近使ったプロジェクト」一覧（`RecentProjects.shared`、スクロール可、520 × 240 pt）。各行 `RecentProjectRow` は名前をオレンジのリンクで表示（ホバーで下線と指カーソル、ツールチップにパス、クリックで `onOpenRecent`）し、右に最終保存日時。ファイルがない項目は取り消し線付きでクリック不可。右クリックメニューに Remove from List。
+
+### `AudioLoadIndicator.swift`（v1.8 新規）
+ステータスバーの「CPU [バー] 34% ●音飛び」。`AudioLoadMonitor` を監視（再描画はこのビューだけで最大 10 Hz）。バー（64 × 7 pt のカプセル、0.1 秒のリニアアニメーション）の色は緑（0）→黄（0.6）→オレンジ（0.8）→赤（1.0）を補間。数値は 100% を超えることもある。音飛びマークは非表示でも場所を確保（opacity）し、表示がずれない。ツールチップは表示時に文字列を作る AppKit のツールチップ（`DynamicToolTip`、`NSViewToolTipOwner`）で、頻繁な再描画でも表示される。
 
 ### `TransportBarView.swift`
-- ボタン: Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音）、P（パンチ有効化）、削除、保存、開く、メトロノーム、設定、スナップ。ツールチップは標準 `.help`。
+- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音）、P（パンチ有効化）、メトロノーム、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。
 - 表示: TIME（時間／小節・拍）、TEMPO（BPM 入力 20〜400）、FORMAT（24-bit WAV とサンプルレート）。幅は中身に合わせる。
 - バー全体は左寄せで、ウィンドウより幅が広いときは右端から切れる（`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` と `clipped()`）。
 - 右側: 時間軸ズーム、トラック高さ倍率、波形縦倍率、ルーラー切替、マスター音量。
 - **`BufferSettingsView`**（歯車、見出し「Settings」）: 録音フォルダ、言語（`AppLanguage`）、入力／出力デバイス、サンプルレート（44.1〜96 kHz）、録音遅延の補正、クリックの発音タイミング補正、クリック音量、バッファサイズ。言語・デバイス・サンプルレートの変更が適用されると `onAudioDevicesChanged` で再起動の確認を呼ぶ。
 
 ### `ArrangerView.swift`
-トラックヘッダーと波形レーンの並び、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、Add Track ボタン、自動スクロール、Delete キー、枠選択の矩形と範囲選択の帯の表示。
+トラックヘッダーと波形レーンの並び、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、Add Track ボタン、自動スクロール（`autoScrollEnabled` が ON のときだけ、再生位置が右端 10% に入ると先へ送る）、Delete キー、枠選択の矩形と範囲選択の帯の表示。
+- **横スクロール**: `timelineScrollTime` の変更は `setTrackScrollOffset` でトラックの `NSClipView` を直接スクロールし、次のメインキューで新しいレイアウトの後にもう一度合わせ直す（`scrollTo` は古いレイアウトで位置を決めることがあるため）。`ScrollOffsetObserver` がユーザーのスクロールを `timelineScrollTime` へ戻す。
+- **`KnobOnlySlider`**: 下部の横スクロールバー。つまみ（●）のドラッグでだけ動き、つまみ以外のクリックは無視。
 - **`ArrangerWheelMonitor`**: アレンジャー全体（ルーラー含む）でのスクロールホイールとピンチをローカルイベントモニターで受ける。ルーラー上のホイールとピンチはポインター位置を基準に時間方向ズーム、⌥＋ホイールはトラック高さ、⌥⇧＋ホイールは波形縦倍率（shift による横スクロール変換にも対応）。処理したイベントはスクロールビューへ渡さない。
 
 ### `TrackHeaderView.swift`
@@ -317,9 +337,9 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `WaveformLaneView.swift`
 1 トラック分のレーン。
-- **レーン**: 空き領域のドラッグで枠選択（⌘ で範囲選択）、クリックで選択解除、右クリックで編集メニュー、Finder からの WAV ドロップで取り込み。
+- **レーン**: 空き領域のドラッグで枠選択（⌘ で範囲選択）、クリックで選択解除、Finder からの WAV ドロップで取り込み。
 - **`AudioClipView`**: クリック（⇧／⌘ で追加・解除）、ドラッグで選択クリップをまとめて移動（⌥ で複製、⌘ で範囲選択）、左右トリム、ゲイン（上辺中央）、フェードイン／アウト（左上・右上）、フェードカーブ（フェード線中央のひし形。上下ドラッグで `FadeCurve.withMidpoint`、ダブルクリックで `.auto`）。ゲイン・フェード・カーブのハンドルは押した時点からドラッグとして扱い、値を `EditValueTooltip` で表示。
-- **右クリックメニュー**: Cut／Copy／Paste at Playhead、範囲選択時は Delete Range／Crop to Range／Split at Range Edges（`EditMenuItems`）、Normalize、Reverse、ファイル選択、ミュート、複製、分割、削除。
+- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名（複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
 - **表示**: 波形は `ClipLayering.envelope` の音量で描画し、上位クリップに完全に隠れた区間だけを暗くする。覆われた端のフェードハンドルは非表示。
 
 ### `WaveformCanvas.swift`
@@ -328,7 +348,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `MixerView.swift`
 Studio One 風ミキサー。
-- **全体**: 上端ドラッグで高さ変更（320〜1000pt）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
+- **全体**: 上端ドラッグで高さ変更（SEND とフェーダー部の境目からミキサー下端までが 220pt 以上残る高さ〜1000pt。境界は AppKit の `VerticalResizeHandle` でカーソル形状とドラッグ範囲が一致）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
 - **`StripSections`**: INSERT／SEND／コントロールの 3 区画（見出しは `SectionHeader`。`LocalizedStringKey` で翻訳される）と、区画の高さを変える境界（全ストリップ共通・UserDefaults 保存）。
 - **`TrackStripView`**: INSERT（＋メニュー、緑丸で ON/OFF、名前クリックで GUI、ドラッグで並べ替え、× で削除）、SEND（FX ごとのレベルバーと dB 値）、PAN、M／S、フェーダー値、目盛り・フェーダー・ステレオメーター、名前（クリックで選択）。
 - **`FXStripView`**: INSERT、（SEND 区画は空欄。位置合わせのためだけに残す）、PAN、「FX」表示、フェーダー、名前（ダブルクリックで改名）。右クリックメニューは「FX を追加」「FX チャンネルを削除」（削除は `confirmRemoveFXChannel` で確認ダイアログを経由）（ストリップ上ではミキサー全体のメニューより優先されるため、FX を追加も併記）。

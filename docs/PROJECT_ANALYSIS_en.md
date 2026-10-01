@@ -28,15 +28,15 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Punch in/out**: records only inside the punch range on the ruler. The whole pass is kept on disk and the take is trimmed to the range on stop (leaving handles); while recording, only the part inside the range is shown.
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
 - **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
-- **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate.
-- **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom.
+- **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate. Right-click commands apply to every selected clip (right-clicking an unselected clip selects it).
+- **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom. Auto-scroll during playback can be turned on/off.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
 - **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry.
 - **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
-- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome, master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome, master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
 
 ---
 
@@ -48,6 +48,7 @@ MyDAW/
 │   ├── MyDAWApp.swift          @main, menus, termination, VST3 scan child mode
 │   ├── Models/                 Domain model, state, persistence
 │   │   ├── ProjectState.swift      Facade between UI and engine
+│   │   ├── RecentProjects.swift    Recent-projects history (UserDefaults)
 │   │   ├── AppLanguage.swift       GUI language choice (AppleLanguages)
 │   │   ├── ProjectState+Editing.swift  Selection, range selection, clipboard, group moves, clip commands
 │   │   ├── AudioTrack.swift        Track (+ MixerGain, ChannelMode)
@@ -62,6 +63,7 @@ MyDAW/
 │   │   ├── AudioDiskWriter.swift     Asynchronous WAV writer
 │   │   ├── ClipAudioProcessing.swift Offline processing (peak measurement, reverse, import conversion)
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL (devices, channels, buffer size)
+│   │   ├── AudioLoadMonitor.swift    Audio processing load and dropout detection
 │   │   ├── PluginManager.swift       AU / VST3 discovery (VST3 via child process + cache)
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
@@ -74,6 +76,7 @@ MyDAW/
 │   └── Views/                  SwiftUI screens
 │       ├── MainDAWView.swift         Root view, startup log, export dialog, key handling
 │       ├── ProjectSelectionView.swift Project chooser at launch
+│       ├── AudioLoadIndicator.swift  Status bar CPU meter and dropout mark
 │       ├── TransportBarView.swift    Transport, view scaling, audio settings
 │       ├── ArrangerView.swift        Timeline, ruler, punch range
 │       ├── TrackHeaderView.swift     Track header, colour palette
@@ -201,6 +204,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 | Audio render thread | AVAudioEngine rendering, `VST3AudioUnit` / `InputMonitorAudioUnit` render blocks | Lock-free (preallocated buffers); a `std::mutex` inside the VST3 bridge only (uncontended) |
 | Input tap thread | `processInputAudioBuffer` (peaks, recording extraction) | `captureLock`, `recordingTimingLock`, `peakLock` |
 | Writer queue | `AudioDiskWriter` WAV writes | Serial `DispatchQueue` |
+| Load monitor timer (10 Hz) | `AudioLoadMonitor`: collects the output unit's render notify timings (measured on the render thread), detects dropouts, updates the CPU meter | The render thread only writes aligned 64-bit values (no locks); the main thread takes differences of running totals |
 | Meter timer (30 Hz) | Peak collection, notifications, punch state. Published properties are assigned only when the value changes (assigning every tick keeps observing views redrawing and stops tooltips from appearing) | `peakLock` |
 | Child process | VST3 scan | stdout (JSON) |
 
@@ -210,7 +214,8 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - `.mydaw` is JSON (`ProjectDocument` version 4). Audio is referenced by relative WAV paths, never embedded.
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
 - New fields (e.g. `isInputMonitoring`, a clip's `fadeInCurve` / `fadeOutCurve`) are decoded with `decodeIfPresent`, so older files still load.
-- UI preferences such as mixer section heights live in `UserDefaults` (app-wide).
+- UI preferences such as mixer section heights, snap (`MyDAW.snapToGrid`) and auto-scroll (`MyDAW.autoScroll`) live in `UserDefaults` (app-wide).
+- The start screen's Recent Projects (up to 50 `.mydaw` paths with their last-saved dates) are also kept in `UserDefaults` (key `MyDAW.recentProjects`).
 
 ---
 
@@ -254,6 +259,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Clipboard**: `ClipboardClip` (file, range, gain, fades, and time/track offsets from the copied block). Paste creates new clips relative to the playhead and the selected track.
 - **Group moves**: selected clips' start times are recorded when a drag begins and all move by the same delta (never before zero). A move across tracks happens only if every clip has a destination track. Option-drag inserts copies at the original positions when the drag starts (directly below each original in layer order).
 - **Clip commands**: Normalize measures the whole file's peak and sets the clip gain (non-destructive). Reverse writes the clip's range backwards to a new WAV and switches the clip to it (the original file stays, so Undo restores it).
+- **Right-click menu**: targets come from `menuTargets` (the whole selection when the clicked clip is selected, otherwise that clip). Mute mutes all if any is unmuted; Duplicate places the targets as one block starting at the playhead; Split cuts only targets the playhead is inside. Inside a selected range the range menu opens.
 - **Undo**: each operation is one step via `beginClipEdit()` / `endClipEdit()`; nothing is recorded if the clips did not change.
 
 ### 4.5 WAV import
@@ -285,6 +291,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - Fader, pan and send changes go through `updateMixerLevels` / `setSend` straight to the mixer nodes.
 - After a volume change the mixer is `reset()` so its volume ramp completes immediately (a stopped input does not advance the ramp and would otherwise leak the old level on its next note).
 - Solo and mute are implemented through the track output mixer volume.
+- The lowest mixer height is "fixed top parts + INSERT + SEND + 220 pt" (220 pt kept between the SEND/fader divider and the bottom edge). Section dividers and the mixer edge use `VerticalResizeHandle`.
 
 ---
 
@@ -311,6 +318,9 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.8, and how they
 | No tooltips right after opening a project (they appear after resizing the window) | When a full-window overlay (start screen, the plug-in scan log left in place but transparent) goes away the layout below is unchanged, so SwiftUI does not re-register tooltip areas | Remove the scan log from the view hierarchy when hidden; when an overlay goes away, widen the window by 1 pt and back (`refreshToolTips`) |
 | Toggling input monitoring (I) freezes the UI or crashes | With input monitoring on, `syncTracks` disconnected and reconnected every send into the FX inputs on each sync and AVAudioEngine threw `required condition is false: mixingDest`. AppKit swallows ObjC exceptions raised inside button actions, leaving Swift state broken so a later button action crashed | Wire a send only when its target changes (`wireSend`). Reproduced outside a button action with a temporary env-var test hook to read the exception |
 | Turning I on while playing, then stopping, cuts the FX reverb tail with a replayed-block sound | The stop-time rewiring of the deferred input monitor paused the engine; the recording finalisation also called `syncTracks` even without a recording, rewiring at once | Rewire only once the master output is below -60 dB; sync after finalisation only after a recording. Verified by capturing the master output around the stop and comparing the decay |
+| After Rewind the song start flag is sometimes off screen (stopping right after an auto-scroll) | `ScrollViewReader.scrollTo` finds its target in the layout of the moment. Rewind also shrinks the timeline width, and the position was taken from the old layout, so the view stayed where it was | The tracks' horizontal scroll sets the `NSClipView` directly and repeats it once the new width is laid out (`setTrackScrollOffset`) |
+| The resize cursor shows on the mixer edge only sometimes (dragging works with the arrow) | SwiftUI `onHover` with `NSCursor.push()` / `pop()` gets out of step and is overridden by other views' cursors | The edge is an AppKit `VerticalResizeHandle` (cursor rect and drag in the same `NSView`) |
+| "Delete Recording" from the right-click menu hit a clip that was not selected, or only one of several selected | A SwiftUI `.contextMenu` is built before the click and cannot run code as it opens; each item acted on the clicked clip alone | The lane's `LaneMenuMonitor` (a local right-click monitor) selects the clicked clip and then builds an AppKit `NSMenu`; targets come from `menuTargets` |
 
 ---
 

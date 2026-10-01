@@ -26,8 +26,9 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 - **`init()`**: first calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
 - **`body`**: a `WindowGroup` with `MainDAWView`, plus menus:
   - About (shows the version; falls back to `1.8` without Info.plist)
-  - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), Export Master Mix…
+  - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), separator, Export Master Mix…, separator, Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
+  - Help: MyDAW Help (⌘?). Opens `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` for `AppLanguage.current` with `NSWorkspace.open` (the system picks the app)
 - **`requestAudioPermissions()`**: calls the microphone permission API appropriate for the OS version.
 
 #### `MyDAWApplicationDelegate: NSApplicationDelegate`
@@ -141,20 +142,24 @@ Every decoder uses `decodeIfPresent` with defaults, so files from older versions
 
 `ProjectState: ObservableObject` (@MainActor) is the facade between UI and engine.
 
-- **Published state**: `tracks`, `fxChannels`, `masterPlugins`, `selectedTrackId`, `pixelsPerSecond` (20–400), `timelineScrollTime`, `punchRange`, `showsBeats`, `snapToGrid` (stored in UserDefaults), `waveformVerticalScale` (1–32), `trackHeightScale` (0.5–3), `timeSelection` (range selection), `marqueeRect` (marquee while dragging), `clipboard`, export dialog state, startup log, `pluginManager`, `audioEngine`, `deviceManager`.
+- **Published state**: `tracks`, `fxChannels`, `masterPlugins`, `selectedTrackId`, `pixelsPerSecond` (20–400), `timelineScrollTime`, `punchRange`, `showsBeats`, `snapToGrid` (stored in UserDefaults), `autoScrollEnabled` (UserDefaults `MyDAW.autoScroll`), `waveformVerticalScale` (1–32), `trackHeightScale` (0.5–3), `timeSelection` (range selection), `marqueeRect` (marquee while dragging), `clipboard`, export dialog state, startup log, `pluginManager`, `audioEngine`, `deviceManager`.
 - **Initialisation**: applies devices and buffer size to the engine, subscribes to peak notifications, creates two default tracks, starts plug-in discovery.
 - **Tracks**: `addTrack`, `deleteTrack` (the UI calls `confirmDeleteTrack`, which asks first), `toggleRecordArm`, `toggleInputMonitoring`, `toggleMute`, `toggleSolo`, `setInputRouting(for:channelMode:inputChannelIndex:)` (syncs the engine immediately).
-- **Clips**: `selectClip` (selects only that clip and clears the range selection), `moveClip` (across tracks), `deleteSelectedClip` (deletes inside the range selection if there is one, otherwise every selected clip) / `deleteClip`, `toggleClipMute`, `duplicateClip`, `splitSelectedClip` / `splitClip`, drag preview (`beginClipDragPreview` etc.). Selection, ranges, clipboard and group moves live in `ProjectState+Editing.swift`.
+- **Clips**: `selectClip` (selects only that clip and clears the range selection), `moveClip` (across tracks), `deleteSelectedClip` (deletes inside the range selection if there is one, otherwise every selected clip), `splitSelectedClip` / `splitClip`, drag preview (`beginClipDragPreview` etc.). Selection, ranges, clipboard and group moves live in `ProjectState+Editing.swift`.
 - **Undo/redo**: `beginClipEdit()` takes a snapshot (clip position, range, gain, mute, fades and curves, file, and each track's selection); `endClipEdit()` pushes it unless the clips are unchanged (for example after just clicking a handle). `undo()` / `redo()` do nothing while playing or recording.
 - **Punch**: `setPunchRange`, `setPunchStartBeat`, `setPunchEndBeat`, `setPunchEnabled`.
 - **Unused recordings**: `moveUnusedRecordings()` (File menu; `canMoveUnusedRecordings` = project open, stopped, no recording being finalised) first asks to save (Save Project and Continue / Cancel) and saves, then moves WAV files directly in Recordings that no clip or clipboard entry refers to into `Recordings/Unused` (numbered on a name clash) and lists them in an NSAlert. If a moved file appears in an Undo / Redo snapshot, both stacks are cleared.
 - **Song flags**: `songRange` (pushes `songEndTime` to the engine), `songStartTime` / `songEndTime` (seconds), `setSongStart(time:)` / `setSongEnd(time:)` (nil removes; kept at least `minimumSongLengthBeats` apart), `canPlaceSongStart(at:)` / `canPlaceSongEnd(at:)`. `toggleTransport(recordArmedTracks:)` passes the punch range and song end to the engine and starts or pauses (used by the play / record buttons and Space). `rewindToSongStart()` goes to the start flag, or to 0 when on or before it. The engine's `onReachSongEnd` calls `stop(tracks:)`.
 - **Plug-ins**: tracks `insertPlugin(_:into:)` / `removePlugin(_:from:)` / `movePlugin(_:before:on:)` / `togglePlugin(_:on:)`; FX `…intoFX:` / `…fromFX:` / `…onFX:`; master `insertMasterPlugin` / `removeMasterPlugin` / `moveMasterPlugin` / `toggleMasterPlugin`; `openPluginUI`.
 - **FX**: `addFXChannel()`, `renameFXChannel(id:to:)` (ignores empty names), `removeFXChannel(id:)` (the UI calls `confirmRemoveFXChannel(id:)`; the NSAlert makes Return and Esc cancel), `setSend(trackID:fxChannelID:level:)`.
-- **Files**: `createNewProject`, `loadProject`, `saveProject`, `saveProjectAndShowConfirmation`, `importAudioFile(_:intoTrackId:)` (copies 24-bit integer PCM at the current rate as is; otherwise converts it with `ClipAudioProcessing.writeConverted` into `Recordings/`), `locateClipFile` (matching sample rate only).
+- **Files**: `createNewProject`, `loadProject`, `openRecentProject(_:)` (checks the file exists, then `loadProject(from:projectFolderURL:)` with the file's folder), `saveProject` (a successful write calls `RecentProjects.noteSaved`; a successful `loadProject(from:)` calls `noteOpened`), `saveProjectAndShowConfirmation`, `importAudioFile(_:intoTrackId:)` (copies 24-bit integer PCM at the current rate as is; otherwise converts it with `ClipAudioProcessing.writeConverted` into `Recordings/`), `locateClipFile` (matching sample rate only).
 - **Restart**: `promptRestartForAudioSettings()` (after a device, sample-rate or language change, asks Save and Restart / Restart Without Saving / Cancel), `relaunch()` (a `/bin/sh` waits for this process to exit, then `open -n` relaunches with the project as an argument).
 - **Export**: `beginMasterExportDialog`, `exportMasterMix(startTime:endTime:)`, `cancelMasterExport`.
 - **View**: `zoomIn`, `zoomOut`, `setPixelsPerSecond(_:)` (keeps the playhead in place), `setPixelsPerSecond(_:anchorOffset:)` (keeps the pointer position in place; for wheel and pinch), `snappedTimelineTime` (one beat).
+
+### `RecentProjects.swift` (new in v1.8)
+- **`RecentProject: Codable, Identifiable`**: `path` (the `.mydaw` file, standardised; also the `id`), `lastSavedAt`; derived `url`, `name` (file name without extension), `exists`.
+- **`RecentProjects: ObservableObject`** (`shared`): `entries`, most recent first, at most `maxCount` (50), stored as JSON in UserDefaults under `MyDAW.recentProjects`. `noteSaved(_:)` moves the project to the top with the current time; `noteOpened(_:)` moves it to the top with the file's modification date (the last save); `remove(_:)` drops one entry. Entries whose file is missing are kept (a Google Drive folder may be offline) and shown greyed out.
 
 ### `AppLanguage.swift` (new in v1.6)
 The GUI language (`english = "en"` / `japanese = "ja"`). `displayName` is written in the language itself (English / 日本語). `current` is the language the running app loaded (`Bundle.main.preferredLocalizations`). `select(_:)` stores it as the app's `AppleLanguages` default, used from the next launch. Unset, the macOS preferred languages decide (English if neither matches).
@@ -175,6 +180,8 @@ An extension of `ProjectState` that gathers selection and editing operations.
 | `deleteTimeSelection`, `cropToTimeSelection`, `splitAtTimeSelection` | Range edits (one undo step each) |
 | `deleteSelectedClips` | Deletes all selected clips |
 | `copySelection`, `cutSelection`, `paste()` | Clipboard. Paste is relative to the playhead and the selected track (tracks beyond the last fold onto it) |
+| `menuTargets`, `selectForMenu`, `splittableMenuTargets` | Right-click targets: the whole selection when the right-clicked clip is part of it, otherwise that clip (selected by `selectForMenu`). `splittableMenuTargets` keeps those the playhead is inside |
+| `toggleMuteMenuTargets`, `duplicateMenuTargets`, `splitMenuTargets`, `deleteMenuTargets` | Commands on the right-click targets. Mute mutes all if any is unmuted, otherwise unmutes all; Duplicate copies them as a block whose start lands on the playhead and selects the copies; Split cuts those the playhead is inside and keeps both halves selected. Each is one undo step (except mute) |
 | `normalizeClips`, `reverseClips` | Act on the right-clicked clip, or the whole selection if it is part of one. Normalize sets the gain that brings the whole file's peak to 0 dBFS; Reverse writes `Reverse_<track name>_NNN.wav` (`RecordingFileName`), switches the clip to it and swaps the fades |
 | `beginGroupDrag`, `updateGroupDrag(delta:)`, `endGroupDrag(trackDelta:)` | Moves the selected clips together (never before zero; across tracks only when every clip has a destination) |
 | `duplicateSelectedClipsInPlace` | At the start of an option-drag, leaves copies at the original positions (directly below each original) |
@@ -188,7 +195,7 @@ An extension of `ProjectState` that gathers selection and editing operations.
 The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, playback, recording, metronome, meters, plug-in creation and GUIs, and export.
 
 #### Published state (excerpt)
-`engine`, `isPlaying`, `isRecording`, `isPunchRecording`, `currentTime`, `bpm`, metronome (enabled, timing offset, volume), `hardwareSampleRate`, `masterVolume`, `masterPeak`, `masterStereoPeak` (both updated only when they change), `recordingsDirectory`, `inputBufferFrameSize`, `manualRecordingCompensationMs`, selected input/output devices.
+`engine`, `isPlaying`, `isRecording`, `isPunchRecording`, `currentTime`, `bpm`, metronome (enabled, timing offset, volume), `hardwareSampleRate`, `masterVolume`, `masterPeak`, `masterStereoPeak` (both updated only when they change), `recordingsDirectory`, `inputBufferFrameSize`, `manualRecordingCompensationMs`, selected input/output devices. `loadMonitor` (`AudioLoadMonitor`, a separate `ObservableObject` so its updates do not republish the engine).
 
 #### Node layout (per track)
 | Dictionary | Role |
@@ -272,6 +279,14 @@ Swift wrapper holding the C++ bridge handle (`@unchecked Sendable`).
 - **`captureState()` / `restoreState(_:)`**, **`attachEditor(to:)`** (registers the `resizeView` callback), **`currentEditorSize()`**, **`removeEditor()`**, `latencySamples`.
 - **deinit**: detaches the editor and calls `MyDAWVST3Destroy`.
 
+### `AudioLoadMonitor.swift` (new in v1.8)
+Audio processing load and dropouts for the status bar (`@MainActor`, owned by `AudioEngineManager.loadMonitor`; `start(engine:)` in `init`, `stop()` in `shutdown`).
+- **Load**: an `AudioUnitAddRenderNotify` on `engine.outputNode.audioUnit` (bus 0 only) times each I/O cycle between pre- and post-render with `mach_absolute_time`; load = render time ÷ cycle length (`frames / sampleRate`). The render thread writes running totals and the peak into a preallocated `RenderStats` (no locks, no allocation).
+- **Dropouts** (events within 0.3 s count once): a cycle with load > 1; a forward jump of the device sample time (skipped cycles); `kAudioDeviceProcessorOverload` from the output unit's current device (`kAudioOutputUnitProperty_CurrentDevice`; with input in use this is the engine's aggregate of input and output, so `inputNode` is never touched — doing so would reconfigure an engine without input).
+- **Restarts**: an idle gap > 0.25 s or the sample time going back marks a restart; the next 16 cycles are not measured or counted, and device overload reports are ignored for 1 s.
+- **Main side** (10 Hz timer): publishes only `load` (window peak; rises at once, falls with 0.75 smoothing, rounded to 0.5%) and `isShowingDropout` (3 s after the last dropout, `dropoutDisplaySeconds`). `averageLoad`, `peakLoad` (last second), `processCPU` (`getrusage` over all cores), `dropoutCount`, `lastDropoutDate` are plain properties for the tooltip. Every second it re-attaches if the output unit or device changed.
+- **Test aid**: `MyDAW.loadTestOffset` (UserDefaults, percent) is added to every cycle's load on the render thread, so the colours and the dropout path can be checked (`open MyDAW.app --args -MyDAW.loadTestOffset 70`, or `defaults write com.tokada.MyDAW MyDAW.loadTestOffset -int 70`; `defaults delete …` to turn off). A yellow “TEST +n%” badge is shown while it is on.
+
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID, name, kind (AU/VST3), bundle path, VST3 UID, AU component description, enabled flag, UI compatibility.
 - **`discoverAvailablePlugins(onLog:completion:)`**: discovers AUs (`AudioComponentFindNext`) and VST3s in the background. **VST3s with a same-named AU are excluded.**
@@ -295,21 +310,26 @@ Generic UI that builds sliders from an AU's parameter tree (used when there is n
 ## 4. Views (`Sources/Views`)
 
 ### `MainDAWView.swift`
-Stacks the transport, arranger, mixer and status bar. Contains the startup log (plug-in discovery progress; removed from the view hierarchy once done), the master export dialog, the close-window confirmation and key handling (`SpacebarHandler`: ⌘Z / ⇧⌘Z / ⌘Y, ← to rewind, ⌘X / ⌘C / ⌘V / ⌘A as `EditCommand`s, Esc clears the selection and is passed on; nothing is handled while typing in a text field).
+Stacks the transport, arranger, mixer and status bar (device, `AudioLoadIndicator`, recordings folder, shortcut hints). Contains the startup log (plug-in discovery progress; removed from the view hierarchy once done), the master export dialog, the close-window confirmation and key handling (`SpacebarHandler`: ⌘Z / ⇧⌘Z / ⌘Y, ← to rewind, ⌘X / ⌘C / ⌘V / ⌘A as `EditCommand`s, Esc clears the selection and is passed on; nothing is handled while typing in a text field).
 - **`refreshToolTips()`**: when a project opens or the startup log goes away, widens the main window by 1 pt and back so tooltip areas are re-registered (SwiftUI does not do so when only an overlay disappears).
 
 ### `ProjectSelectionView.swift`
-Launch screen: New Project (choose a folder) and Open Project (⌘O); shows the version.
+Launch screen: New Project (choose a folder) and Open Project (⌘O); shows the version. Below the buttons, the Recent Projects list (`RecentProjects.shared`, scrollable, 520 × 240 pt): each `RecentProjectRow` shows the name as an orange link (underlined with a pointing-hand cursor on hover, path as tooltip; click → `onOpenRecent`) and the last-saved date and time. Missing files are struck through and not clickable. Context menu: Remove from List.
+
+### `AudioLoadIndicator.swift` (new in v1.8)
+Status bar item “CPU [bar] 34% ● Dropout” observing `AudioLoadMonitor` (only this view redraws, at most 10 Hz). The bar (64 × 7 pt capsule, 0.1 s linear animation) is coloured by interpolating green (0) → yellow (0.6) → orange (0.8) → red (1.0); the percentage can exceed 100. The dropout mark keeps its space while hidden (opacity), so the bar does not shift. The tooltip is an AppKit tooltip (`DynamicToolTip`, `NSViewToolTipOwner`) whose text is built when shown, so the frequent redraws do not keep it from appearing.
 
 ### `TransportBarView.swift`
-- Buttons: Undo, Redo, Rewind, Play/Pause (Space), Record (records armed tracks), P (enable punch), Delete, Save, Open, Metronome, Settings, Snap. Tooltips use the standard `.help`.
+- Buttons (left to right): Settings, Undo, Redo, Rewind, Play/Pause (Space), Record (records armed tracks), P (enable punch), Metronome, Save, Open, Snap, Auto-scroll (`ProjectState.autoScrollEnabled`, kept in UserDefaults `MyDAW.autoScroll`). Tooltips use the standard `.help`.
 - Displays: TIME (time or bars/beats), TEMPO (BPM entry 20–400), FORMAT (24-bit WAV and sample rate); the panel is as wide as its contents.
 - The bar is left-aligned; when the window is narrower, the right end is cut off (`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` plus `clipped()`).
 - Right side: timeline zoom, track height scale, waveform vertical scale, ruler toggle, master volume.
 - **`BufferSettingsView`** (gear, titled “Settings”): recordings folder, language (`AppLanguage`), input/output device, sample rate (44.1–96 kHz), recording delay compensation, click timing offset, click volume, buffer size. When a language, device or sample-rate change is applied it calls `onAudioDevicesChanged` to offer a restart.
 
 ### `ArrangerView.swift`
-Track headers and lanes, the ruler (seconds or bars/beats; click to seek), playhead, punch range (drag the left/right handles on the ruler in beat steps), Add Track button, auto-scroll, Delete key, and drawing of the marquee rectangle and range-selection band.
+Track headers and lanes, the ruler (seconds or bars/beats; click to seek), playhead, punch range (drag the left/right handles on the ruler in beat steps), Add Track button, auto-scroll (only when `autoScrollEnabled` is on; moves on when the playhead enters the right 10%), Delete key, and drawing of the marquee rectangle and range-selection band.
+- **Horizontal scrolling**: a `timelineScrollTime` change scrolls the tracks' `NSClipView` directly through `setTrackScrollOffset`, and again on the next main-queue turn after the new layout (`scrollTo` can take the position from an outdated layout). `ScrollOffsetObserver` feeds the user's own scrolling back into `timelineScrollTime`.
+- **`KnobOnlySlider`**: the horizontal scroll bar at the bottom. It moves only when its knob (●) is dragged; clicks elsewhere are ignored.
 - **`ArrangerWheelMonitor`**: a local event monitor for scroll-wheel and pinch events over the whole arranger (ruler included). A wheel over the ruler and a pinch zoom horizontally around the pointer; ⌥+wheel sets track height; ⌥⇧+wheel sets waveform height (also when shift turns the wheel into horizontal scrolling). Handled events are not passed to the scroll views.
 
 ### `TrackHeaderView.swift`
@@ -317,9 +337,9 @@ Colour bar on the left (click for `TrackColorPalette`: 16 presets + custom), nam
 
 ### `WaveformLaneView.swift`
 One track lane.
-- **Lane**: dragging over empty space draws a marquee (⌘ for a range selection); a click clears the selection; right-click opens the edit menu; WAV files can be dropped from Finder.
+- **Lane**: dragging over empty space draws a marquee (⌘ for a range selection); a click clears the selection; WAV files can be dropped from Finder.
 - **`AudioClipView`**: click (⇧/⌘ to add or remove), drag to move the selected clips together (⌥ to duplicate, ⌘ for a range selection), left/right trim, gain (top centre), fade in/out (top-left / top-right), fade curve (the diamond in the middle of a fade line; vertical drag via `FadeCurve.withMidpoint`, double-click for `.auto`). Gain, fade and curve handles start dragging on mouse-down and show their value in an `EditValueTooltip`.
-- **Context menu**: Cut / Copy / Paste at Playhead, and with a range selected Delete Range / Crop to Range / Split at Range Edges (`EditMenuItems`); Normalize, Reverse, choose file, mute, duplicate, split, delete.
+- **Context menu**: `LaneMenuMonitor` (a local monitor for right-clicks and Control-clicks) builds an AppKit `NSMenu` at the click (a SwiftUI menu is built beforehand and cannot reflect a selection made by the click). Inside the selected range it shows the range menu; on a clip it selects the clip with `selectForMenu` and shows the clip menu; elsewhere Cut / Copy / Paste (`LaneMenu`). Clip menu: file name (or the count), Cut / Copy / Paste, Normalize, Reverse, choose file (single clip only), mute, duplicate, split, delete; with several clips the items show the count.
 - **Display**: waveforms are drawn at the `ClipLayering.envelope` level; only parts fully hidden by upper clips are darkened. Fade handles at covered edges are hidden.
 
 ### `WaveformCanvas.swift`
@@ -328,7 +348,7 @@ Draws `WaveformCache` peaks with SwiftUI `Canvas` (per channel, gain scaling, am
 
 ### `MixerView.swift`
 Studio One-style mixer.
-- **Overall**: drag the top edge to resize (320–1000 pt), horizontally scrolling track/FX strips, MASTER pinned on the right, right-click for Add FX.
+- **Overall**: drag the top edge to resize (from the height that keeps 220 pt between the SEND/fader divider and the bottom edge, up to 1000 pt; the edge is an AppKit `VerticalResizeHandle`, so cursor and drag area always match), horizontally scrolling track/FX strips, MASTER pinned on the right, right-click for Add FX.
 - **`StripSections`**: INSERT / SEND / controls sections (headings via `SectionHeader`, localised through `LocalizedStringKey`) with draggable dividers (shared by all strips, stored in UserDefaults).
 - **`TrackStripView`**: INSERT (+ menu, green dot on/off, click name for GUI, drag to reorder, × to remove), SEND (level bar and dB value per FX), pan, M/S, fader value, scale / fader / stereo meter, name (click to select).
 - **`FXStripView`**: INSERT, (an empty SEND section kept only for alignment), pan, "FX" label, fader, name (double-click to rename). Its context menu has Add FX and Remove FX channel (removal goes through the `confirmRemoveFXChannel` confirmation dialog) (it overrides the mixer-wide menu on the strip, so Add FX is repeated there).
