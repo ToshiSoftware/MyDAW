@@ -195,6 +195,9 @@ public final class PluginManager: ObservableObject {
         return String(pluginPart.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(Character.init))
     }
 
+    /// Manufacturer code ('MyDW') of the audio units MyDAW registers for itself.
+    private static let internalAUManufacturer: OSType = 0x4D794457
+
     private func discoverAUComponents() -> [TrackPluginDescriptor] {
         var plugins: [TrackPluginDescriptor] = []
         var effectDescription = AudioComponentDescription(
@@ -218,6 +221,13 @@ public final class PluginManager: ObservableObject {
 
             var desc = AudioComponentDescription()
             AudioComponentGetDescription(validComponent, &desc)
+            // MyDAW's own processing units (mono downmix, VST3 host, delay
+            // compensation, input monitor) are registered in-process as
+            // effects; they are not for the user to insert.
+            guard desc.componentManufacturer != Self.internalAUManufacturer else {
+                component = AudioComponentFindNext(validComponent, &effectDescription)
+                continue
+            }
             let descriptor = TrackPluginDescriptor(
                 name: componentName,
                 kind: .au,
