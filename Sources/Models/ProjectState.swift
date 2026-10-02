@@ -124,8 +124,14 @@ public final class ProjectState: ObservableObject {
         trackHeightScale = scale
     }
 
-    public var currentProjectURL: URL?
+    @Published public var currentProjectURL: URL?
     public private(set) var projectFolderURL: URL?
+
+    /// The open project's file name without `.mydaw`, shown in the title bar.
+    public var openProjectName: String? {
+        guard isProjectOpen else { return nil }
+        return currentProjectURL?.deletingPathExtension().lastPathComponent
+    }
 
     public var audioContentEndTime: Double {
         tracks
@@ -1051,12 +1057,67 @@ public final class ProjectState: ObservableObject {
 
     public func saveProjectAndShowConfirmation() {
         guard saveProject() else { return }
+        showSaveConfirmation()
+    }
+
+    private func showSaveConfirmation() {
         saveConfirmationTask?.cancel()
         saveConfirmationMessage = String(localized: "Project saved.")
         saveConfirmationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
             self?.saveConfirmationMessage = nil
+        }
+    }
+
+    /// Saves the project under a new name in the same folder, so it keeps
+    /// using that folder's Recordings. Asks only for the name; the folder
+    /// cannot be changed.
+    public func saveProjectAs() {
+        guard isProjectOpen, !audioEngine.isPlaying, !audioEngine.isRecording,
+              let oldURL = currentProjectURL else { return }
+        let folderURL = oldURL.deletingLastPathComponent()
+
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        nameField.stringValue = oldURL.deletingPathExtension().lastPathComponent
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Save Project As")
+        alert.informativeText = String(localized: "Enter a new project name. The project is saved in the same folder:\n\(folderURL.path)")
+        alert.accessoryView = nameField
+        alert.addButton(withTitle: String(localized: "Save"))
+        let cancelButton = alert.addButton(withTitle: String(localized: "Cancel"))
+        cancelButton.keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = nameField
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.lowercased().hasSuffix(".mydaw") {
+            name = String(name.dropLast(".mydaw".count))
+        }
+        guard !name.isEmpty, !name.hasPrefix("."),
+              name.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) == nil else {
+            presentProjectError(String(localized: "The name cannot be empty, start with “.”, or contain “/” or “:”."))
+            return
+        }
+
+        let newURL = folderURL.appendingPathComponent("\(name).mydaw")
+        if newURL.standardizedFileURL.path != oldURL.standardizedFileURL.path,
+           FileManager.default.fileExists(atPath: newURL.path) {
+            let replace = NSAlert()
+            replace.messageText = String(localized: "\(newURL.lastPathComponent) already exists. Do you want to replace it?")
+            replace.informativeText = String(localized: "The other project is replaced. Its recordings stay in the Recordings folder.")
+            replace.alertStyle = .warning
+            replace.addButton(withTitle: String(localized: "Replace"))
+            let keepButton = replace.addButton(withTitle: String(localized: "Cancel"))
+            keepButton.keyEquivalent = "\u{1b}"
+            guard replace.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        currentProjectURL = newURL
+        if saveProject() {
+            showSaveConfirmation()
+        } else {
+            currentProjectURL = oldURL
         }
     }
 
@@ -1140,22 +1201,14 @@ public final class ProjectState: ObservableObject {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
         let panel = NSOpenPanel()
         panel.title = String(localized: "Open MyDAW Project")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
+        panel.allowedContentTypes = [Self.projectFileType]
+        panel.directoryURL = projectPanelStartDirectory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let projectFiles = (try? FileManager.default.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ))?.filter { $0.pathExtension.lowercased() == "mydaw" } ?? []
-        guard let url = projectFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).first else {
-            presentProjectError(String(localized: "This folder does not contain a .mydaw project file."))
-            return
-        }
-
-        loadProject(from: url, projectFolderURL: folderURL)
+        loadProject(from: url, projectFolderURL: url.deletingLastPathComponent())
     }
 
     /// Opens a project from the start screen's recent list.
@@ -1168,18 +1221,68 @@ public final class ProjectState: ObservableObject {
         loadProject(from: entry.url, projectFolderURL: entry.url.deletingLastPathComponent())
     }
 
+    /// Opens a .mydaw file double-clicked in the Finder (or dropped on the
+    /// Dock icon). An open project is offered for saving first.
+    func openProjectFile(_ url: URL) {
+        NSApp.activate(ignoringOtherApps: true)
+        let url = url.standardizedFileURL
+        if isProjectOpen, currentProjectURL?.standardizedFileURL.path == url.path { return }
+        guard !audioEngine.isPlaying && !audioEngine.isRecording else {
+            presentProjectError(String(localized: "Stop playback and recording before opening another project."))
+            return
+        }
+        if isProjectOpen {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Save the current project before opening \(url.lastPathComponent)?")
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: String(localized: "Save"))
+            alert.addButton(withTitle: String(localized: "Don't Save"))
+            let cancelButton = alert.addButton(withTitle: String(localized: "Cancel"))
+            cancelButton.keyEquivalent = "\u{1b}"
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                guard saveProject() else { return }
+            case .alertSecondButtonReturn:
+                break
+            default:
+                return
+            }
+        }
+        loadProject(from: url, projectFolderURL: url.deletingLastPathComponent())
+    }
+
+    /// The .mydaw file type, so the panels show and accept project files only.
+    private static let projectFileType = UTType(filenameExtension: "mydaw", conformingTo: .data) ?? .data
+
+    /// Where the New and Open panels start: the folder holding the last
+    /// project's folder, so a new project gets a folder of its own beside it
+    /// rather than sharing the last one's Recordings.
+    private var projectPanelStartDirectory: URL? {
+        guard let lastProjectURL = currentProjectURL ?? RecentProjects.shared.entries.first?.url else { return nil }
+        return lastProjectURL.deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// Asks for the new project's file name and folder; the .mydaw file and
+    /// its Recordings folder are created side by side in that folder.
     public func createNewProject() -> Bool {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
-        let panel = NSOpenPanel()
-        panel.title = String(localized: "Choose New MyDAW Project Folder")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        // Open the panel expanded, so its New Folder button shows at once.
+        UserDefaults.standard.set(true, forKey: "NSNavPanelExpandedStateForSaveMode")
+        UserDefaults.standard.set(true, forKey: "NSNavPanelExpandedStateForSaveMode2")
+        let panel = NSSavePanel()
+        panel.title = String(localized: "New MyDAW Project")
+        panel.message = String(localized: "The project file and its Recordings folder are created in the chosen folder.")
+        panel.prompt = String(localized: "Create")
+        panel.nameFieldStringValue = String(localized: "MyDAW Project")
+        panel.allowedContentTypes = [Self.projectFileType]
         panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let folderURL = panel.url else { return false }
+        panel.directoryURL = projectPanelStartDirectory
+        guard panel.runModal() == .OK, let chosenURL = panel.url else { return false }
 
-        let projectName = folderURL.lastPathComponent.isEmpty ? "MyDAW Project" : folderURL.lastPathComponent
-        let projectURL = folderURL.appendingPathComponent("\(projectName).mydaw")
+        let projectURL = chosenURL.pathExtension.lowercased() == "mydaw"
+            ? chosenURL
+            : chosenURL.appendingPathExtension("mydaw")
+        let folderURL = projectURL.deletingLastPathComponent()
         do {
             let recordingsURL = folderURL.appendingPathComponent("Recordings", isDirectory: true)
             try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
@@ -1191,7 +1294,7 @@ public final class ProjectState: ObservableObject {
             isProjectOpen = true
             return saveProject()
         } catch {
-            presentProjectError(String(localized: "Could not create project folder: \(error.localizedDescription)"))
+            presentProjectError(String(localized: "Could not create the Recordings folder: \(error.localizedDescription)"))
             return false
         }
     }
@@ -1334,6 +1437,8 @@ public final class ProjectState: ObservableObject {
 
     /// Moves the WAV files directly in the project's Recordings folder that no
     /// clip or clipboard entry uses into Recordings/Unused, then lists them.
+    /// Other .mydaw files in the same folder share that Recordings folder, so
+    /// the files their clips use are kept too.
     /// A deleted take is still in the Undo history, so it counts as unused;
     /// when a moved file was in that history, the history is cleared so Undo
     /// never brings back a clip whose file has gone.
@@ -1359,6 +1464,18 @@ public final class ProjectState: ObservableObject {
         }
         var usedPaths = Set(tracks.flatMap { $0.clips.map { key($0.fileURL) } })
         usedPaths.formUnion(clipboard.map { key($0.fileURL) })
+        let otherProjectCount: Int
+        do {
+            let otherPaths = try clipPathsOfOtherProjects()
+            otherProjectCount = otherPaths.projectCount
+            usedPaths.formUnion(otherPaths.paths.map { key($0) })
+        } catch let error as OtherProjectReadError {
+            presentProjectError(String(localized: "Could not read the project \(error.fileName) in the same folder, so no files were moved.\n\n\(error.reason)"))
+            return
+        } catch {
+            presentProjectError(String(localized: "Could not read the project folder.\n\n\(error.localizedDescription)"))
+            return
+        }
         var historyPaths = Set<String>()
         for snapshot in undoStack + redoStack {
             for clips in snapshot.clipsByTrack.values {
@@ -1418,19 +1535,66 @@ public final class ProjectState: ObservableObject {
             redoStack.removeAll()
             updateHistoryAvailability()
         }
-        presentUnusedRecordingsResult(moved: moved, failed: failed, unusedURL: unusedURL, clearedHistory: clearsHistory)
+        presentUnusedRecordingsResult(
+            moved: moved,
+            failed: failed,
+            unusedURL: unusedURL,
+            clearedHistory: clearsHistory,
+            otherProjectCount: otherProjectCount
+        )
     }
 
-    private func presentUnusedRecordingsResult(moved: [String], failed: [String], unusedURL: URL, clearedHistory: Bool) {
+    private struct OtherProjectReadError: Error {
+        let fileName: String
+        let reason: String
+    }
+
+    /// The clip files used by the other .mydaw files in this project's folder.
+    private func clipPathsOfOtherProjects() throws -> (paths: [URL], projectCount: Int) {
+        guard let projectFolderURL else { return ([], 0) }
+        let currentPath = currentProjectURL?.standardizedFileURL.path
+        let projectFiles = try FileManager.default.contentsOfDirectory(
+            at: projectFolderURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "mydaw" && $0.standardizedFileURL.path != currentPath }
+
+        var paths: [URL] = []
+        for url in projectFiles {
+            do {
+                let document = try JSONDecoder().decode(ProjectDocument.self, from: Data(contentsOf: url))
+                for track in document.tracks {
+                    paths += track.clips.map { resolveClipURL($0.filePath, relativeTo: projectFolderURL) }
+                }
+            } catch {
+                throw OtherProjectReadError(fileName: url.lastPathComponent, reason: error.localizedDescription)
+            }
+        }
+        return (paths, projectFiles.count)
+    }
+
+    private func presentUnusedRecordingsResult(
+        moved: [String],
+        failed: [String],
+        unusedURL: URL,
+        clearedHistory: Bool,
+        otherProjectCount: Int
+    ) {
         let alert = NSAlert()
         alert.alertStyle = failed.isEmpty ? .informational : .warning
         if moved.isEmpty && failed.isEmpty {
             alert.messageText = String(localized: "No unused recordings")
-            alert.informativeText = String(localized: "Every WAV file in the Recordings folder is used by the project.")
+            alert.informativeText = otherProjectCount > 0
+                ? String(localized: "Every WAV file in the Recordings folder is used by this project or by the other projects in the same folder (\(otherProjectCount)).")
+                : String(localized: "Every WAV file in the Recordings folder is used by the project.")
         } else {
             alert.messageText = String(localized: "Moved \(moved.count) unused recordings")
             alert.informativeText = String(localized: "These files are not used by the project and were moved to:\n\(unusedURL.path)")
             var lines = moved
+            if otherProjectCount > 0 {
+                lines += ["", String(localized: "Files used by the other projects in the same folder (\(otherProjectCount)) were left in place.")]
+            }
             if clearedHistory {
                 lines += ["", String(localized: "The Undo history was cleared, since it referred to moved files.")]
             }

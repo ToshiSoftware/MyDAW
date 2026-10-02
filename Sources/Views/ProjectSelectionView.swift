@@ -9,7 +9,7 @@ struct ProjectSelectionView: View {
     @ObservedObject private var recentProjects = RecentProjects.shared
 
     private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.9"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.0"
     }
 
     var body: some View {
@@ -30,7 +30,7 @@ struct ProjectSelectionView: View {
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(.white.opacity(0.55))
 
-                Text("Choose a project folder to get started")
+                Text("Create a new project or open a project file")
                     .foregroundColor(.white.opacity(0.7))
 
                 HStack(spacing: 14) {

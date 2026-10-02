@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="1.9"
+BASE_VERSION="2.0"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -100,12 +100,22 @@ if [ -f "AppIcon.icns" ]; then
 else
     echo "Warning: AppIcon.icns not found in project root"
 fi
+# The .mydaw document icon (made by scripts/make-document-icon.swift).
+if [ -f "DocumentIcon.icns" ]; then
+    cp "DocumentIcon.icns" "$RESOURCES_DIR/DocumentIcon.icns"
+else
+    echo "Warning: DocumentIcon.icns not found in project root"
+fi
 
 # Code signing with entitlements for audio input
 echo "Signing application bundle with entitlements..."
 # Google Drive attaches extended attributes that codesign rejects.
 xattr -cr "$APP_BUNDLE"
 codesign --force --deep --sign - --entitlements "MyDAW.entitlements" "$APP_BUNDLE"
+
+# Register the .mydaw document type, so a double-click in the Finder opens
+# the project in this build.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" || true
 
 echo "========================================"
 echo " Build Succeeded!                       "

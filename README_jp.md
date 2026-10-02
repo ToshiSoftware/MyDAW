@@ -1,6 +1,6 @@
 # MyDAW — プロフェッショナル オーディオ ワークステーション for Mac（Apple Silicon）
 
-**バージョン 1.9** ・ [English README](README.md)
+**バージョン 2.0** ・ [English README](README.md)
 
 MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ録音／編集／ミキシング DAW（Digital Audio Workstation）です。Core Audio（AVAudioEngine / Core Audio HAL）を基盤とし、Audio Unit と VST3 のエフェクトを使用できます。
 
@@ -66,10 +66,10 @@ MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ�
 - プラグイン設定のプロジェクト保存。
 
 ### プロジェクト
-- プロジェクトはフォルダー単位（`MySong/MySong.mydaw` と `MySong/Recordings/`）。フォルダーごと別の Mac へ移行できます。
+- プロジェクトは `.mydaw` ファイルと、同じ場所の `Recordings/` フォルダー（例: `MySong/Ballad.mydaw` と `MySong/Recordings/`）。ファイル名とフォルダー名は自由で、フォルダーごと別の Mac へ移行できます。1 つのフォルダーに複数の `.mydaw` を置くと `Recordings/` を共有します。**名前を変えて保存**（⇧⌘S）は同じフォルダーにのみ保存します。Finder で `.mydaw` をダブルクリックすると、そのプロジェクトが開きます（ファイルには MyDAW の書類アイコンが付きます）。
 - 起動画面の**最近使ったプロジェクト**: 最大 50 件を最後に保存した日時とともに表示し、名前をクリックすると開きます。
 - マスター出力を 24-bit WAV へ書き出し。開始・終了位置でサンプル単位に正確に切り出します（プラグインの遅延も補正）。
-- **未使用の録音ファイルの移動**: プロジェクトで使われなくなった `Recordings/` 内の WAV（削除したパンチのテイクなど）を `Recordings/Unused/` へ移動します。
+- **未使用の録音ファイルの移動**: プロジェクトで使われなくなった `Recordings/` 内の WAV（削除したパンチのテイクなど）を `Recordings/Unused/` へ移動します。同じフォルダーのほかの `.mydaw` が使っているファイルは残します。
 
 ### オーディオデバイス
 - 入力と出力に別々のデバイスを選択可能（例: 入力はオーディオインターフェース、出力はモニターのスピーカー）。MyDAW の起動中は選んだデバイスを macOS の既定の入出力に切り替え、終了時に元に戻します。
@@ -110,7 +110,7 @@ Google Drive のフォルダー内でビルドする場合、スクリプトが�
 
 ## クイックスタート
 
-1. MyDAW を起動し、**New Project**（フォルダーを選択）または **Open Project** を選びます。**最近使ったプロジェクト**の一覧から開くこともできます。
+1. MyDAW を起動し、**New Project**（保存パネルで保存先と名前を指定）または **Open Project**（`.mydaw` ファイルを選択）を選びます。**最近使ったプロジェクト**の一覧から開くこともできます。
 2. macOS がマイクへのアクセスを求めたら許可します。
 3. 歯車ボタンで入出力デバイスとバッファサイズを選びます。
 4. トラックの **R** をオンにして入力チャンネルを選び、メーターが動くことを確認します。
@@ -129,9 +129,12 @@ MyDAW/
 ├── VST3Host/           C++ VST3 ホストブリッジ
 ├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
 ├── Resources/          翻訳（en.lproj、ja.lproj）
-├── scripts/            build.sh、run.sh、extract-strings.sh（翻訳漏れの確認）
+├── scripts/            build.sh、run.sh、extract-strings.sh（翻訳漏れの確認）、
+│                       make-document-icon.swift（.mydaw のアイコン作成）
 ├── docs/               解析書、仕様書、マニュアル原稿（docs/manual）
 ├── OperationManual_*.pdf
+├── AppIcon.icns        アプリのアイコン
+├── DocumentIcon.icns   .mydaw ファイルのアイコン（書類＋アプリアイコン）
 └── snapshots/          作業ごとのソーススナップショット
 ```
 
@@ -152,4 +155,4 @@ MyDAW/
 
 ## バージョン
 
-現在の About ダイアログのバージョンは **1.9** です。
+現在の About ダイアログのバージョンは **2.0** です。v2.0 では、プロジェクトをフォルダーではなく `.mydaw` ファイルで指定するようになり、ファイル名とフォルダー名を揃える必要がなくなりました。

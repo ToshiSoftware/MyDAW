@@ -1,1 +1,2 @@
 "NSMicrophoneUsageDescription" = "オーディオトラックを 24-bit でディスクに直接録音するために、MyDAW はオーディオ入力（マイク）へのアクセスを必要とします。";
+"MyDAW Project" = "MyDAW プロジェクト";

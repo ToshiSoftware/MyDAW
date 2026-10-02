@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 public struct MainDAWView: View {
     @ObservedObject private var projectState: ProjectState
@@ -103,6 +104,26 @@ public struct MainDAWView: View {
         .preferredColorScheme(.dark)
         .background(WindowCloseHandler(projectState: projectState))
         .background(TitleBarZoomHandler())
+        .overlay {
+            // The open project's name, centred in the title bar strip above
+            // the transport bar (the window's own title is hidden).
+            // The content starts just below the strip, so its distance from
+            // the window top is the strip's height (0 in full screen).
+            GeometryReader { geometry in
+                let stripHeight = geometry.frame(in: .global).minY
+                if let projectName = projectState.openProjectName, stripHeight > 0 {
+                    Text(projectName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 90)
+                        .frame(width: geometry.size.width, height: stripHeight)
+                        .offset(y: -stripHeight)
+                }
+            }
+            .allowsHitTesting(false)
+        }
         .sheet(isPresented: $projectState.isShowingMasterExportDialog) {
             MasterExportDialog(projectState: projectState)
         }

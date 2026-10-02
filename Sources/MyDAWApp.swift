@@ -6,6 +6,26 @@ final class MyDAWApplicationDelegate: NSObject, NSApplicationDelegate {
     /// Asks whether to save the project; false cancels the quit.
     var confirmQuit: (() -> Bool)?
 
+    /// Opens a .mydaw file from the Finder. Files that arrive before the
+    /// window has set this (MyDAW launched by a double-click) wait here.
+    var openProjectFile: ((URL) -> Void)? {
+        didSet { openPendingProjectFile() }
+    }
+    private var pendingProjectURL: URL?
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // Only one project is open at a time, so the last file wins.
+        guard let url = urls.last(where: { $0.isFileURL && $0.pathExtension.lowercased() == "mydaw" }) else { return }
+        pendingProjectURL = url
+        openPendingProjectFile()
+    }
+
+    private func openPendingProjectFile() {
+        guard let openProjectFile, let url = pendingProjectURL else { return }
+        pendingProjectURL = nil
+        DispatchQueue.main.async { openProjectFile(url) }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -44,7 +64,12 @@ struct MyDAWApp: App {
     var body: some Scene {
         WindowGroup {
             MainDAWView(projectState: projectState)
-                .navigationTitle("MyDAW - Professional Audio Workstation")
+                // Shown in the Window menu and Mission Control; the plug-in
+                // windows are told apart from this one by the "MyDAW" prefix.
+                .navigationTitle(
+                    projectState.openProjectName.map { Text(verbatim: "MyDAW - \($0)") }
+                        ?? Text("MyDAW - Professional Audio Workstation")
+                )
                 .onAppear {
                     applicationDelegate.shutdownAudioEngine = {
                         projectState.audioEngine.shutdown()
@@ -52,8 +77,14 @@ struct MyDAWApp: App {
                     applicationDelegate.confirmQuit = {
                         projectState.confirmQuit()
                     }
+                    applicationDelegate.openProjectFile = { url in
+                        projectState.openProjectFile(url)
+                    }
                 }
         }
+        // Finder opens arrive through the delegate; without this SwiftUI
+        // would also open a second window for each file.
+        .handlesExternalEvents(matching: [])
         .windowStyle(.hiddenTitleBar)
         // The window cannot get shorter than its content's minimum, so the
         // tracks shrink to their minimum and the transport bar and mixer are
@@ -65,7 +96,7 @@ struct MyDAWApp: App {
                 Button("About MyDAW") {
                     let version = Bundle.main.object(
                         forInfoDictionaryKey: "CFBundleShortVersionString"
-                    ) as? String ?? "1.9"
+                    ) as? String ?? "2.0"
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationVersion: version
                     ])
@@ -89,6 +120,12 @@ struct MyDAWApp: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command])
                 .disabled(projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
+
+                Button("Save Project As…") {
+                    projectState.saveProjectAs()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!projectState.isProjectOpen || projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording)
 
                 Divider()
 

@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 1.9** · [日本語版 README](README_jp.md)
+**Version 2.0** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -66,10 +66,10 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Plug-in state saved with the project.
 
 ### Project
-- One folder per project (`MySong/MySong.mydaw` + `MySong/Recordings/`), fully portable.
+- A project is a `.mydaw` file plus the `Recordings/` folder next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). File and folder names are free, and the folder is fully portable. Several `.mydaw` files in one folder share its `Recordings/`. **Save Project As** (⇧⌘S) saves only into the same folder. Double-clicking a `.mydaw` file in the Finder opens it (the file shows a MyDAW document icon).
 - **Recent Projects** on the start screen: up to 50 projects with their last-saved date; click a name to open it.
 - Master mix export to 24-bit WAV, cut to the sample at the start and end positions (plug-in latency included).
-- **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`.
+- **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`. Files used by other `.mydaw` files in the same folder are kept.
 
 ### Audio devices
 - Separate input and output devices (for example, an audio interface for input and a monitor's speakers for output). While MyDAW runs, the chosen devices become the macOS default input and output; the previous defaults are restored on quit.
@@ -110,7 +110,7 @@ When the project is inside a Google Drive folder, the script removes extended at
 
 ## Quick start
 
-1. Launch MyDAW and choose **New Project** (pick a folder) or **Open Project**, or click a project in **Recent Projects**.
+1. Launch MyDAW and choose **New Project** (choose a folder and name in the save panel) or **Open Project** (choose a `.mydaw` file), or click a project in **Recent Projects**.
 2. Allow microphone access when macOS asks.
 3. Click the gear button and choose your input/output device and buffer size.
 4. Arm a track with **R**, choose its input channel, and check the meter moves.
@@ -129,9 +129,12 @@ MyDAW/
 ├── VST3Host/           C++ VST3 host bridge
 ├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
 ├── Resources/          Translations (en.lproj, ja.lproj)
-├── scripts/            build.sh, run.sh, extract-strings.sh (translation check)
+├── scripts/            build.sh, run.sh, extract-strings.sh (translation check),
+│                       make-document-icon.swift (draws the .mydaw icon)
 ├── docs/               Analysis, specification, manual sources (docs/manual)
 ├── OperationManual_*.pdf
+├── AppIcon.icns        App icon
+├── DocumentIcon.icns   .mydaw file icon (a page with the app icon)
 └── snapshots/          Source snapshots taken around each change
 ```
 
@@ -152,4 +155,4 @@ MyDAW/
 
 ## Version
 
-The About dialog shows version **1.9**.
+The About dialog shows version **2.0**. Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.
