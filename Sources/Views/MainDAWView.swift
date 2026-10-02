@@ -3,6 +3,11 @@ import SwiftUI
 public struct MainDAWView: View {
     @ObservedObject private var projectState: ProjectState
     @State private var didInitializePlayhead = false
+    /// Current height of the tracks area, which the mixer may take from
+    /// down to `minimumArrangerHeight` when it is resized upward.
+    @State private var arrangerHeight: CGFloat = 0
+
+    static let minimumArrangerHeight: CGFloat = 180
 
     public init(projectState: ProjectState) {
         self.projectState = projectState
@@ -21,9 +26,17 @@ public struct MainDAWView: View {
                 projectState: projectState,
                 audioEngine: projectState.audioEngine
             )
-            .frame(minHeight: 180, maxHeight: .infinity)
+            .frame(minHeight: Self.minimumArrangerHeight, maxHeight: .infinity)
+            .background(GeometryReader { geometry in
+                Color.clear
+                    .onAppear { arrangerHeight = geometry.size.height }
+                    .onChange(of: geometry.size.height) { arrangerHeight = $0 }
+            })
 
-            MixerView(projectState: projectState)
+            MixerView(
+                projectState: projectState,
+                growthLimit: Double(max(0, arrangerHeight - Self.minimumArrangerHeight))
+            )
                 .layoutPriority(1)
 
             // 3. Bottom Status Bar
@@ -85,10 +98,11 @@ public struct MainDAWView: View {
                     .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
             )
         }
-        .frame(minWidth: 800, minHeight: 450)
+        .frame(minWidth: 800)
         .background(Color(red: 0.10, green: 0.11, blue: 0.13))
         .preferredColorScheme(.dark)
         .background(WindowCloseHandler(projectState: projectState))
+        .background(TitleBarZoomHandler())
         .sheet(isPresented: $projectState.isShowingMasterExportDialog) {
             MasterExportDialog(projectState: projectState)
         }

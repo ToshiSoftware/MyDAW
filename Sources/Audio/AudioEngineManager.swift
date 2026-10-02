@@ -953,15 +953,26 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
               let accentClickBuffer else { return }
 
         let interval = 60.0 / max(20.0, min(400.0, bpm))
-        let beatPosition = currentTime / interval
+        // With the transport starting, its start time and position are given.
+        // Switched on (or re-armed) while it runs, the clicks start at the
+        // next moment a player can start without losing its opening, at the
+        // position the transport clock has then: the on-screen playhead lags.
+        let transportStartTime: AVAudioTime
+        let startPosition: Double
+        if let sharedStartTime {
+            transportStartTime = sharedStartTime
+            startPosition = currentTime
+        } else {
+            let hostTime = earliestPlayerStartHostTime()
+            transportStartTime = AVAudioTime(hostTime: hostTime)
+            startPosition = transportPosition(atHostTime: hostTime) ?? currentTime
+        }
+        let beatPosition = startPosition / interval
         let nearestBeat = round(beatPosition)
         let isOnBeat = abs(beatPosition - nearestBeat) < 0.0001
         let nextBeatPosition = isOnBeat ? nearestBeat : ceil(beatPosition)
         let timingOffset = metronomeTimingOffsetMs / 1000.0
-        let delay = max(0.0, (nextBeatPosition * interval) - currentTime + timingOffset)
-        let transportStartTime = sharedStartTime ?? AVAudioTime(
-            hostTime: mach_absolute_time() + AudioConvertNanosToHostTime(50_000_000)
-        )
+        let delay = max(0.0, (nextBeatPosition * interval) - startPosition + timingOffset)
         metronomeBeat = Int(nextBeatPosition) % 4
         metronomeGeneration += 1
         let generation = metronomeGeneration

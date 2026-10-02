@@ -55,6 +55,10 @@ struct MyDAWApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        // The window cannot get shorter than its content's minimum, so the
+        // tracks shrink to their minimum and the transport bar and mixer are
+        // never cut off.
+        .windowResizability(.contentMinSize)
         .defaultSize(width: 1400, height: 900)
         .commands {
             CommandGroup(replacing: .appInfo) {

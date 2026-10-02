@@ -48,3 +48,66 @@ struct WindowCloseHandler: NSViewRepresentable {
         }
     }
 }
+
+/// Double-clicking an empty spot of the title bar strip (the band holding
+/// the close / minimise / zoom buttons) zooms the window to fill the screen
+/// beside the menu bar and Dock, and back. With the hidden title bar the
+/// strip lies over the content, so the click is caught before it gets there.
+struct TitleBarZoomHandler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        context.coordinator.startMonitoring()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stopMonitoring()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        private var monitor: Any?
+
+        func startMonitoring() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard event.clickCount == 2,
+                      let window = self?.view?.window,
+                      event.window === window,
+                      Self.isInEmptyTitleBar(event.locationInWindow, of: window) else {
+                    return event
+                }
+                window.zoom(nil)
+                return nil
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        /// Above the content layout area (the title bar strip), and not on one
+        /// of the window buttons.
+        private static func isInEmptyTitleBar(_ point: NSPoint, of window: NSWindow) -> Bool {
+            guard !window.styleMask.contains(.fullScreen),
+                  point.y >= window.contentLayoutRect.maxY else { return false }
+            let buttons: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+            return !buttons.contains { type in
+                guard let button = window.standardWindowButton(type), let superview = button.superview else {
+                    return false
+                }
+                return superview.convert(button.frame, to: nil).contains(point)
+            }
+        }
+    }
+}

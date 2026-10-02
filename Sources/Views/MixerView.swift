@@ -9,6 +9,10 @@ public struct MixerView: View {
     @AppStorage("mixer.pluginSectionHeight") private var pluginSectionHeight: Double = 110
     @AppStorage("mixer.sendSectionHeight") private var sendSectionHeight: Double = 80
     @State private var heightDragStart: Double?
+    /// How much taller the mixer may get before the tracks above it reach
+    /// their minimum height.
+    private let growthLimit: Double
+    @State private var dragGrowthLimit: Double?
 
     static let stripWidth: CGFloat = 92
     /// Smallest distance from the divider above the fader section to the
@@ -22,8 +26,9 @@ public struct MixerView: View {
         Self.chromeHeight + pluginSectionHeight + sendSectionHeight + Self.minControlHeight
     }
 
-    public init(projectState: ProjectState) {
+    public init(projectState: ProjectState, growthLimit: Double = .infinity) {
         self.projectState = projectState
+        self.growthLimit = growthLimit
     }
 
     public var body: some View {
@@ -39,12 +44,21 @@ public struct MixerView: View {
                 .frame(height: 5)
                 .overlay(
                     VerticalResizeHandle(
-                        onBegin: { heightDragStart = height },
+                        onBegin: {
+                            heightDragStart = height
+                            // Fixed for the drag: the limit shrinks as the
+                            // mixer grows into the tracks' space.
+                            dragGrowthLimit = growthLimit
+                        },
                         onDrag: { translation in
                             let start = heightDragStart ?? height
-                            mixerHeight = min(1000, max(minimumMixerHeight, start - Double(translation)))
+                            let tallest = min(1000, start + (dragGrowthLimit ?? growthLimit))
+                            mixerHeight = max(minimumMixerHeight, min(tallest, start - Double(translation)))
                         },
-                        onEnd: { heightDragStart = nil }
+                        onEnd: {
+                            heightDragStart = nil
+                            dragGrowthLimit = nil
+                        }
                     )
                 )
 

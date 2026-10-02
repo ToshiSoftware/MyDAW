@@ -30,7 +30,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Sample-accurate placement of takes, with automatic and manual latency compensation.
 - **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
 - **Input monitoring** (`I` button): hear the live input through the track's effects while it is armed (the recording stays dry).
-- Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume.
+- Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume. It can be switched on/off while playing or recording.
 - **Song start / end flags** on the ruler: Rewind goes to the start flag (again: to 00:00), playback and recording stop at the end flag, and the flags set the export range.
 - Mono/stereo can be switched on recorded tracks too, without rewriting files (a mono track plays stereo clips as (L+R)/2).
 - The playhead has a ball that bounces on every beat; green while playing, red while recording. Clicking the ruler snaps the playhead to the grid.
@@ -52,7 +52,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Auto-scroll**: the view follows the playhead while playing or recording; turn it on/off with the |→ button at the right end of the transport bar. The horizontal scroll bar moves only when its knob (●) is dragged.
 
 ### Mixing
-- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge.
+- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge. Shrinking the window shrinks only the track area; the transport bar and the mixer are never cut off.
 - dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
 - Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return.
 - Track colours selectable from a palette.

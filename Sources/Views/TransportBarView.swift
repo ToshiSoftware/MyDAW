@@ -161,7 +161,6 @@ public struct TransportBarView: View {
                 .toggleStyle(.button)
                 .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
                 .frame(width: 34, height: 28)
-                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
                 .help("Toggle Metronome Click")
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
