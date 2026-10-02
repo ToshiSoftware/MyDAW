@@ -24,7 +24,7 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 
 #### `MyDAWApp: App` (`@main`)
 - **`init()`**: first calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
-- **`body`**: a `WindowGroup` with `MainDAWView`, plus menus:
+- **`body`**: a `WindowGroup` with `MainDAWView`, plus menus. The window uses `.hiddenTitleBar` (a transparent title bar with the content running under it) and `.windowResizability(.contentMinSize)` (it cannot get smaller than its content's minimum). Menus:
   - About (shows the version; falls back to `1.9` without Info.plist)
   - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), separator, Export Master Mix…, separator, Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
@@ -225,6 +225,7 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 #### Main internals
 | Method | Purpose |
 | --- | --- |
+| `startMetronome(at:)` | Schedules 256 clicks and schedules the next run from the last one. When the transport starts it uses that start time and position; when switched on during playback, after a BPM change and for each next run it uses the earliest time a player can start without losing its opening (`earliestPlayerStartHostTime`) and the transport position at that time (`transportPosition(atHostTime:)`), aligned to the next beat |
 | `setupEngine()` | Reads the input format, builds the master path and final meter, click, input tap, input monitors, raises slice limits, starts the engine |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | Makes the chosen devices the macOS default input and output (AVAudioEngine with input runs on an aggregate of the defaults). Records the original defaults the first time; `restoreOriginalDefaultDevices()` puts them back in `shutdown()` |
 | `startMeterTimer` | Collects peaks at 30 Hz and posts them. `masterPeak` / `masterStereoPeak` are assigned only on change (values below -100 dB become 0) |
@@ -291,7 +292,7 @@ Audio processing load and dropouts for the status bar (`@MainActor`, owned by `A
 
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID, name, kind (AU/VST3), bundle path, VST3 UID, AU component description, enabled flag, UI compatibility.
-- **`discoverAvailablePlugins(onLog:completion:)`**: discovers AUs (`AudioComponentFindNext`) and VST3s in the background. **VST3s with a same-named AU are excluded.**
+- **`discoverAvailablePlugins(onLog:completion:)`**: discovers AUs (`AudioComponentFindNext`) and VST3s in the background. **VST3s with a same-named AU are excluded.** MyDAW's own internal AUs (manufacturer code `MyDW`: Mono Downmix, VST3 Host, Delay Compensation, Input Monitor) are left out of the list.
 - **VST3 discovery**: `scanVST3Bundle` → checks the cache (path + modification date) → otherwise `runScanChild` (`MyDAW --scan-vst3 <path>`, 60 s timeout; a crashed scan caches an empty result).
 - **`runVST3ScanChildIfRequested()`**: the child side (enumerates and prints JSON prefixed with `MYDAW_VST3_SCAN_RESULT:`).
 
@@ -313,6 +314,9 @@ Generic UI that builds sliders from an AU's parameter tree (used when there is n
 
 ### `MainDAWView.swift`
 Stacks the transport, arranger, mixer and status bar (device, `AudioLoadIndicator`, recordings folder, shortcut hints). Contains the startup log (plug-in discovery progress; removed from the view hierarchy once done), the master export dialog, the close-window confirmation and key handling (`SpacebarHandler`: ⌘Z / ⇧⌘Z / ⌘Y, ← to rewind, ⌘X / ⌘C / ⌘V / ⌘A as `EditCommand`s, Esc clears the selection and is passed on; nothing is handled while typing in a text field).
+- **Minimum size**: the outer frame is only `.frame(minWidth: 800)`, with no height floor (one would hide the content's minimum height, letting the window get shorter than its content and cut off the transport and mixer). The window's minimum height is the transport + the arranger's minimum (`minimumArrangerHeight` = 180 pt) + the mixer + the status bar.
+- **Arranger height**: `arrangerHeight` is read and handed to `MixerView` as `growthLimit` (the room left before the arranger reaches its minimum).
+- **`TitleBarZoomHandler`** sits in the background (`WindowCloseHandler.swift`).
 - **`refreshToolTips()`**: when a project opens or the startup log goes away, widens the main window by 1 pt and back so tooltip areas are re-registered (SwiftUI does not do so when only an overlay disappears).
 
 ### `ProjectSelectionView.swift`
@@ -322,7 +326,7 @@ Launch screen: New Project (choose a folder) and Open Project (⌘O); shows the 
 Status bar item “CPU [bar] 34% ● Dropout” observing `AudioLoadMonitor` (only this view redraws, at most 10 Hz). The bar (64 × 7 pt capsule, 0.1 s linear animation) is coloured by interpolating green (0) → yellow (0.6) → orange (0.8) → red (1.0); the percentage can exceed 100. The dropout mark keeps its space while hidden (opacity), so the bar does not shift. The tooltip is an AppKit tooltip (`DynamicToolTip`, `NSViewToolTipOwner`) whose text is built when shown, so the frequent redraws do not keep it from appearing.
 
 ### `TransportBarView.swift`
-- Buttons (left to right): Settings, Undo, Redo, Rewind, Play/Pause (Space), Record (records armed tracks), P (enable punch), Metronome, Save, Open, Snap, Auto-scroll (`ProjectState.autoScrollEnabled`, kept in UserDefaults `MyDAW.autoScroll`). Tooltips use the standard `.help`.
+- Buttons (left to right): Settings, Undo, Redo, Rewind, Play/Pause (Space), Record (records armed tracks), P (enable punch), Metronome (can be switched while playing or recording), Save, Open, Snap, Auto-scroll (`ProjectState.autoScrollEnabled`, kept in UserDefaults `MyDAW.autoScroll`). Tooltips use the standard `.help`.
 - Displays: TIME (time or bars/beats), TEMPO (BPM entry 20–400), FORMAT (24-bit WAV and sample rate); the panel is as wide as its contents.
 - The bar is left-aligned; when the window is narrower, the right end is cut off (`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` plus `clipped()`).
 - Right side: timeline zoom, track height scale, waveform vertical scale, ruler toggle, master volume.
@@ -353,7 +357,7 @@ Draws `WaveformCache` peaks with SwiftUI `Canvas` (per channel, gain scaling, am
 
 ### `MixerView.swift`
 Studio One-style mixer.
-- **Overall**: drag the top edge to resize (from the height that keeps 220 pt between the SEND/fader divider and the bottom edge, up to 1000 pt; the edge is an AppKit `VerticalResizeHandle`, so cursor and drag area always match), horizontally scrolling track/FX strips, MASTER pinned on the right, right-click for Add FX.
+- **Overall**: drag the top edge to resize (from the height that keeps 220 pt between the SEND/fader divider and the bottom edge, up to 1000 pt, and never more than the `growthLimit` at the start of the drag, so the arranger keeps 180 pt; the edge is an AppKit `VerticalResizeHandle`, so cursor and drag area always match), horizontally scrolling track/FX strips, MASTER pinned on the right, right-click for Add FX.
 - **`StripSections`**: INSERT / SEND / controls sections (headings via `SectionHeader`, localised through `LocalizedStringKey`) with draggable dividers (shared by all strips, stored in UserDefaults).
 - **`TrackStripView`**: INSERT (+ menu, green dot on/off, click name for GUI, drag to reorder, × to remove), SEND (level bar and dB value per FX), pan, M/S, fader value, scale / fader / stereo meter, name (click to select).
 - **`FXStripView`**: INSERT, (an empty SEND section kept only for alignment), pan, "FX" label, fader, name (double-click to rename). Its context menu has Add FX and Remove FX channel (removal goes through the `confirmRemoveFXChannel` confirmation dialog) (it overrides the mixer-wide menu on the strip, so Add FX is repeated there).
@@ -373,6 +377,8 @@ Studio One-style mixer.
 
 ### `WindowCloseHandler.swift`
 Closing the window calls `NSApp.terminate`, so the save prompt comes from `applicationShouldTerminate` (`ProjectState.confirmQuit()`), the same as the Quit menu and ⌘Q.
+
+**`TitleBarZoomHandler`**: a local monitor catches double-clicks on the title bar strip (above `contentLayoutRect`, except on the close / minimise / zoom buttons) and calls `window.zoom(nil)`, switching between filling the screen beside the menu bar and Dock and the previous size (with the title bar hidden, the click would otherwise reach the content views and the standard behaviour would not happen). Nothing happens in full screen.
 
 ---
 

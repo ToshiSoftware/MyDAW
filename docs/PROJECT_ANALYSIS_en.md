@@ -37,7 +37,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
-- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome, master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
 
 ---
 
@@ -85,7 +85,7 @@ MyDAW/
 │       ├── WaveformCanvas.swift      Waveform drawing (SwiftUI Canvas)
 │       ├── MixerView.swift           Mixer (three-section strips)
 │       ├── MixerControls.swift       Fader, pan, meter, dB scale
-│       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler)
+│       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler); title-bar double-click zooms
 ├── VST3Host/                   C++ VST3 host bridge (static library via CMake)
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  Translations (Localizable.strings and InfoPlist.strings in en.lproj / ja.lproj)
@@ -293,7 +293,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - Fader, pan and send changes go through `updateMixerLevels` / `setSend` straight to the mixer nodes.
 - After a volume change the mixer is `reset()` so its volume ramp completes immediately (a stopped input does not advance the ramp and would otherwise leak the old level on its next note).
 - Solo and mute are implemented through the track output mixer volume.
-- The lowest mixer height is "fixed top parts + INSERT + SEND + 220 pt" (220 pt kept between the SEND/fader divider and the bottom edge). Section dividers and the mixer edge use `VerticalResizeHandle`.
+- The lowest mixer height is "fixed top parts + INSERT + SEND + 220 pt" (220 pt kept between the SEND/fader divider and the bottom edge). The highest is where the arranger keeps 180 pt (at most 1000 pt), and the window's minimum height follows the mixer's height. Section dividers and the mixer edge use `VerticalResizeHandle`.
 
 ---
 
@@ -322,6 +322,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | Turning I on while playing, then stopping, cuts the FX reverb tail with a replayed-block sound | The stop-time rewiring of the deferred input monitor paused the engine; the recording finalisation also called `syncTracks` even without a recording, rewiring at once | Rewire only once the master output is below -60 dB; sync after finalisation only after a recording. Verified by capturing the master output around the stop and comparing the decay |
 | After Rewind the song start flag is sometimes off screen (stopping right after an auto-scroll) | `ScrollViewReader.scrollTo` finds its target in the layout of the moment. Rewind also shrinks the timeline width, and the position was taken from the old layout, so the view stayed where it was | The tracks' horizontal scroll sets the `NSClipView` directly and repeats it once the new width is laid out (`setTrackScrollOffset`) |
 | The resize cursor shows on the mixer edge only sometimes (dragging works with the arrow) | SwiftUI `onHover` with `NSCursor.push()` / `pop()` gets out of step and is overridden by other views' cursors | The edge is an AppKit `VerticalResizeHandle` (cursor rect and drag in the same `NSView`) |
+| Shrinking the window cut off the transport bar and the mixer | The outer `.frame(minHeight: 450)` hid the content's minimum height, so the window could get smaller than its content (it stayed at 450 even with `.windowResizability(.contentMinSize)`) | The outer height floor is gone and the window's minimum height comes from the content. Checked by shrinking the window on the start screen |
 | "Delete Recording" from the right-click menu hit a clip that was not selected, or only one of several selected | A SwiftUI `.contextMenu` is built before the click and cannot run code as it opens; each item acted on the clicked clip alone | The lane's `LaneMenuMonitor` (a local right-click monitor) selects the clicked clip and then builds an AppKit `NSMenu`; targets come from `menuTargets` |
 | A range or marquee selection always started at track 1, wherever it was pressed | The scroll-sync fix dropped `.coordinateSpace(name: "timelineScroll")` from the waveform lanes. A coordinate space with an unknown name silently falls back to each lane's own coordinates, so the vertical position always fell in the first track | The declaration is back where it was (on the lanes' ZStack). `trackTopY` / `trackID(atTimelineY:)`, the marquee and clip moves across tracks all depend on this space |
 | A clip moved to another track was silent | Clip players are reused by clip ID and were rewired only when the track's output mixer was new; a moved clip played through its old track, which was silent when that track was armed or muted | The output mixer each player feeds is recorded in `clipPlayerOutputs`, and a player is rewired when it differs from the clip's current track |

@@ -24,7 +24,7 @@
 
 #### `MyDAWApp: App`（`@main`）
 - **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
-- **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。
+- **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。
   - About（バージョン表示。Info.plist が無い場合の既定値は `1.9`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、区切り線、Export Master Mix…、区切り線、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
@@ -225,6 +225,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 #### 主な内部処理
 | メソッド | 内容 |
 | --- | --- |
+| `startMetronome(at:)` | クリックを 256 拍分予約し、最後のクリックで続きを予約。トランスポート開始時はその開始時刻と位置から、再生中の ON・BPM 変更・続きの予約では、頭が欠けずに鳴らせる最も早い時刻（`earliestPlayerStartHostTime`）とその時刻のトランスポート位置（`transportPosition(atHostTime:)`）から、次の拍に合わせる |
 | `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | 選択デバイスを macOS の既定入力・既定出力に設定する（入力を使う AVAudioEngine は既定入出力の集約デバイスで動作するため）。初回に元の既定を記録し、`restoreOriginalDefaultDevices()` が `shutdown()` で戻す |
 | `startMeterTimer` | 30 Hz でピークを集計し通知。`masterPeak`／`masterStereoPeak` は値が変わったときだけ代入（-100 dB 未満は 0） |
@@ -291,7 +292,7 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID、名前、種類（AU／VST3）、bundle パス、VST3 UID、AU コンポーネント記述、有効状態、UI 互換性。
-- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。
+- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。MyDAW 自身が登録する内部 AU（メーカーコード `MyDW`：Mono Downmix、VST3 Host、Delay Compensation、Input Monitor）は一覧に出さない。
 - **VST3 検出**: `scanVST3Bundle` → キャッシュ（パスと更新日時）を確認 → なければ `runScanChild`（`MyDAW --scan-vst3 <path>`、60 秒でタイムアウト、クラッシュ時は空結果をキャッシュ）。
 - **`runVST3ScanChildIfRequested()`**: 子プロセス側の処理（列挙して `MYDAW_VST3_SCAN_RESULT:` 付き JSON を出力）。
 
@@ -313,6 +314,9 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `MainDAWView.swift`
 上からトランスポート、アレンジャー、ミキサー、ステータスバー（デバイス、`AudioLoadIndicator`、録音フォルダー、ショートカットの案内）を配置。起動ログ（プラグイン検出の進捗。表示を終えたらビュー階層から外す）、マスター書き出しダイアログ、ウィンドウを閉じる時の確認、キー処理（`SpacebarHandler`: ⌘Z／⇧⌘Z／⌘Y、← で先頭へ、⌘X／⌘C／⌘V／⌘A を `EditCommand` として処理、Esc で選択解除（イベントは通過させる）。テキスト入力中は処理しない）を含む。
+- **最小サイズ**: 外枠は `.frame(minWidth: 800)` だけで、高さの下限は付けない（付けると内容の最小の高さが隠れ、ウィンドウが内容より小さくなってトランスポートとミキサーが切れる）。ウィンドウの最小の高さ＝トランスポート＋アレンジャーの最小（`minimumArrangerHeight` = 180pt）＋ミキサー＋ステータスバー。
+- **アレンジャーの高さ**: `arrangerHeight` を読み取り、`MixerView` へ `growthLimit`（アレンジャーが最小になるまでの余り）として渡す。
+- **`TitleBarZoomHandler`** を背景に置く（`WindowCloseHandler.swift`）。
 - **`refreshToolTips()`**: プロジェクトを開いたとき・起動ログが消えたときに、メインウィンドウの幅を 1pt 変えて戻し、ツールチップ領域を再登録させる（オーバーレイが消えただけでは SwiftUI が再登録しないため）。
 
 ### `ProjectSelectionView.swift`
@@ -322,7 +326,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 ステータスバーの「CPU [バー] 34% ●音飛び」。`AudioLoadMonitor` を監視（再描画はこのビューだけで最大 10 Hz）。バー（64 × 7 pt のカプセル、0.1 秒のリニアアニメーション）の色は緑（0）→黄（0.6）→オレンジ（0.8）→赤（1.0）を補間。数値は 100% を超えることもある。音飛びマークは非表示でも場所を確保（opacity）し、表示がずれない。ツールチップは表示時に文字列を作る AppKit のツールチップ（`DynamicToolTip`、`NSViewToolTipOwner`）で、頻繁な再描画でも表示される。
 
 ### `TransportBarView.swift`
-- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音）、P（パンチ有効化）、メトロノーム、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。
+- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音）、P（パンチ有効化）、メトロノーム（再生・録音中も切り替え可）、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。
 - 表示: TIME（時間／小節・拍）、TEMPO（BPM 入力 20〜400）、FORMAT（24-bit WAV とサンプルレート）。幅は中身に合わせる。
 - バー全体は左寄せで、ウィンドウより幅が広いときは右端から切れる（`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` と `clipped()`）。
 - 右側: 時間軸ズーム、トラック高さ倍率、波形縦倍率、ルーラー切替、マスター音量。
@@ -353,7 +357,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `MixerView.swift`
 Studio One 風ミキサー。
-- **全体**: 上端ドラッグで高さ変更（SEND とフェーダー部の境目からミキサー下端までが 220pt 以上残る高さ〜1000pt。境界は AppKit の `VerticalResizeHandle` でカーソル形状とドラッグ範囲が一致）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
+- **全体**: 上端ドラッグで高さ変更（SEND とフェーダー部の境目からミキサー下端までが 220pt 以上残る高さ〜1000pt。さらに、ドラッグ開始時の `growthLimit` を超えては広げない＝アレンジャーを 180pt 未満にしない。境界は AppKit の `VerticalResizeHandle` でカーソル形状とドラッグ範囲が一致）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
 - **`StripSections`**: INSERT／SEND／コントロールの 3 区画（見出しは `SectionHeader`。`LocalizedStringKey` で翻訳される）と、区画の高さを変える境界（全ストリップ共通・UserDefaults 保存）。
 - **`TrackStripView`**: INSERT（＋メニュー、緑丸で ON/OFF、名前クリックで GUI、ドラッグで並べ替え、× で削除）、SEND（FX ごとのレベルバーと dB 値）、PAN、M／S、フェーダー値、目盛り・フェーダー・ステレオメーター、名前（クリックで選択）。
 - **`FXStripView`**: INSERT、（SEND 区画は空欄。位置合わせのためだけに残す）、PAN、「FX」表示、フェーダー、名前（ダブルクリックで改名）。右クリックメニューは「FX を追加」「FX チャンネルを削除」（削除は `confirmRemoveFXChannel` で確認ダイアログを経由）（ストリップ上ではミキサー全体のメニューより優先されるため、FX を追加も併記）。
@@ -373,6 +377,8 @@ Studio One 風ミキサー。
 
 ### `WindowCloseHandler.swift`
 ウィンドウを閉じると `NSApp.terminate` を呼ぶ。保存確認は `applicationShouldTerminate`（`ProjectState.confirmQuit()`）で行うため、終了メニューや ⌘Q と同じ確認になる。
+
+**`TitleBarZoomHandler`**: タイトルバーの帯（`contentLayoutRect` より上。赤黄緑のボタンの上を除く）でのダブルクリックをローカルモニターで受け、`window.zoom(nil)` でメニューバーと Dock を残した画面全体表示と元の大きさを切り替える（タイトルバーが隠れているため、そのままでは内容のビューにクリックが届き、標準の動作にならない）。フルスクリーン中は何もしない。
 
 ---
 
