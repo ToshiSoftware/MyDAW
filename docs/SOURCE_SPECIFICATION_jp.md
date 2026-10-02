@@ -55,7 +55,7 @@
 | `channelMode`, `inputChannelIndex` | 録音チャンネル数と入力の先頭チャンネル（0 起点）。`channelMode` は再生にも使われ、モノラルのトラックではステレオのクリップをモノラル化します（`MonoDownmixAudioUnit`）。ファイルは書き換えません |
 | `isRecordArmed`, `isInputMonitoring` | 録音待機（R）、インプットモニター（I） |
 | `isMuted`, `isSoloed`, `volume`, `pan` | ミキサー値 |
-| `trackHeight` | レーンの高さ（最低 120pt） |
+| `trackHeight` | レーンの高さ（標準 170pt = `AudioTrack.defaultTrackHeight`。表示は × `trackHeightScale`） |
 | `clips` | クリップ配列。**配列順がレイヤー順**（後ろほど上） |
 | `selectedClipIDs` | 選択中のクリップ（集合）。`selectedClipId` は先頭の選択クリップを返し、設定するとそのクリップだけを選ぶ互換用の計算プロパティ |
 | `plugins`, `fxSends` | インサートと FX 送り |
@@ -142,7 +142,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 `ProjectState: ObservableObject`（@MainActor）は UI とエンジンの間の Facade です。
 
-- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（0.5〜3）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
+- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（`TrackHeaderView.minimumRowHeight` 56pt ÷ 170 ≒ 0.33 〜 3。スライダーと ⌥＋ホイールは `setTrackHeightScale` 経由で、全トラックの `trackHeight` を標準値に戻してから倍率を設定）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
 - **初期化**: デバイスとバッファサイズをエンジンへ適用、ピーク通知を購読、既定トラック 2 本を作成、プラグイン検出を開始。
 - **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`moveTrack(id:to:)`（並べ替え。アレンジャーとミキサーは `tracks` の順で並ぶ。グラフはつなぎ直さない。範囲選択は解除）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
 - **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`ClipDragPreview`：移動中のクリップ ID の集合、縦の移動量、移動先までのトラック数。`beginClipDragPreview()`／`updateClipDragPreview(verticalOffset:trackDelta:)`／`endClipDragPreview()`。移動先がないクリップがあるときトラック数は 0）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
@@ -336,13 +336,13 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 トラックヘッダーと波形レーンの並び、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、Add Track ボタン、自動スクロール（`autoScrollEnabled` が ON のときだけ、再生位置が右端 10% に入ると先へ送る）、Delete キー、枠選択の矩形と範囲選択の帯の表示。
 - **座標空間 `timelineScroll`**: 波形レーン全体の ZStack に付ける。`trackTopY`、`trackID(atTimelineY:)`、枠選択、範囲選択、クリップのドラッグはこの座標で測る。
 - **クリップのドラッグ表示**: `clipDragPreviews` が `clipDragPreview` の全クリップを、自分のトラックの位置から縦の移動量だけずらして描く（波形・フェードは移動先の重なりで表示）。
-- **トラックの並べ替え**: ヘッダの `DragGesture`（`reorderGesture`、4pt 以上、グローバル座標）。`reorderTargetIndex` は中心がドラッグ中の行の中心より上にあるトラック数。`reorderOffset` でドラッグ中の行はポインタに追従し、通過した行はその行の高さ分よける。`ReorderLift` はヘッダとレーンの両方に掛け、ドラッグ中の行に枠・影を付けて手前に出す。離すと `moveTrack` をアニメーション付きで実行。
+- **トラックの並べ替え**: 波形レーンの領域は表示域の下端まで広げてあり、最後のトラックより下へドラッグしたレーンも切れない。ヘッダの `DragGesture`（`reorderGesture`、4pt 以上、グローバル座標）。`reorderTargetIndex` は中心がドラッグ中の行の中心より上にあるトラック数。`reorderOffset` でドラッグ中の行はポインタに追従し、通過した行はその行の高さ分よける。`ReorderLift` はヘッダとレーンの両方に掛け、ドラッグ中の行に枠・影を付けて手前に出す。離すと `moveTrack` をアニメーション付きで実行。
 - **横スクロール**: `timelineScrollTime` の変更は `setTrackScrollOffset` でトラックの `NSClipView` を直接スクロールし、次のメインキューで新しいレイアウトの後にもう一度合わせ直す（`scrollTo` は古いレイアウトで位置を決めることがあるため）。`ScrollOffsetObserver` がユーザーのスクロールを `timelineScrollTime` へ戻す。
 - **`KnobOnlySlider`**: 下部の横スクロールバー。つまみ（●）のドラッグでだけ動き、つまみ以外のクリックは無視。
 - **`ArrangerWheelMonitor`**: アレンジャー全体（ルーラー含む）でのスクロールホイールとピンチをローカルイベントモニターで受ける。ルーラー上のホイールとピンチはポインター位置を基準に時間方向ズーム、⌥＋ホイールはトラック高さ、⌥⇧＋ホイールは波形縦倍率（shift による横スクロール変換にも対応）。処理したイベントはスクロールビューへ渡さない。
 
 ### `TrackHeaderView.swift`
-左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム）、名前（ダブルクリックで編集）、モノ／ステレオ切替（1／2）、削除、R／M／S／I、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更。それ以外の所のドラッグはトラックの並べ替え（ジェスチャーは `ArrangerView` が付ける）。
+左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム）、名前（ダブルクリックで編集）、モノ／ステレオ切替（1／2）、削除、R／M／S／I、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更（`VerticalResizeHandle`。画面座標で測り、倍率で割って `trackHeight` に反映。表示の高さは `minimumRowHeight` 56pt 以上）。中身は上詰めで、低いときはメーターから下が不透明な下端の帯の裏に隠れる。それ以外の所のドラッグはトラックの並べ替え（ジェスチャーは `ArrangerView` が付ける）。
 
 ### `WaveformLaneView.swift`
 1 トラック分のレーン。
