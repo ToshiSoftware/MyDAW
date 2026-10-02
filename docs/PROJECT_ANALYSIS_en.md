@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v1.9)
+# MyDAW Project Analysis (v2.0)
 
-> Version covered: **1.9** (source as of 2026-10-01, v1.9 release)
+> Version covered: **2.0** (source as of 2026-10-03)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -211,7 +211,8 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 ### 3.5 Persistence
 
-- A project is a **folder**: `MySong/MySong.mydaw` + `MySong/Recordings/*.wav`.
+- A project is a **`.mydaw` file**; recordings go to `Recordings/*.wav` next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). The project folder is the `.mydaw` file's parent and its name need not match (since v2.0; v1.9 projects named after their folder open unchanged).
+- Several `.mydaw` files in one folder share its `Recordings/`. Recording names take the next free number, so nothing is overwritten, and moving unused recordings treats clips of every `.mydaw` in the folder as in use. Save Project As saves only into the same folder, so no recordings need copying and the relative paths stay valid.
 - `.mydaw` is JSON (`ProjectDocument` version 4). Audio is referenced by relative WAV paths, never embedded.
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
 - New fields (e.g. `isInputMonitoring`, a clip's `fadeInCurve` / `fadeOutCurve`) are decoded with `decodeIfPresent`, so older files still load.

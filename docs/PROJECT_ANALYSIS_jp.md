@@ -1,6 +1,6 @@
-# MyDAW プロジェクト解析（v1.9）
+# MyDAW プロジェクト解析（v2.0）
 
-> 対象バージョン: **1.9**（2026-10-01 時点のソース。v1.9 確定版）
+> 対象バージョン: **2.0**（2026-10-03 時点のソース）
 > 英語版: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 > 型・関数単位の詳細: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 
@@ -211,7 +211,8 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 
 ### 3.5 データ保存
 
-- プロジェクトは **フォルダー単位**（`MySong/MySong.mydaw` + `MySong/Recordings/*.wav`）。
+- プロジェクトは **`.mydaw` ファイル単位**。録音は `.mydaw` と同じ場所の `Recordings/*.wav`（例 `MySong/Ballad.mydaw` + `MySong/Recordings/`）。プロジェクトフォルダー＝`.mydaw` の親フォルダーで、名前の一致は不要（v2.0 から。v1.9 以前の「フォルダー名＝ファイル名」のプロジェクトもそのまま開ける）。
+- 同じフォルダーに複数の `.mydaw` を置くと `Recordings/` を共有する。録音ファイル名は空き番号で採番するので上書きはなく、未使用ファイルの移動は同じフォルダーの全 `.mydaw` のクリップを使用中として扱う。「名前を変えて保存」は同じフォルダーにのみ保存する（録音ファイルをコピーせずに済み、相対パスもそのまま使えるため）。
 - `.mydaw` は JSON（`ProjectDocument` バージョン 4）。音声は WAV への相対パスで参照し、埋め込みません。
 - AU の状態は `fullStateForDocument` を binary plist 化、VST3 の状態は `getState` のバイト列を `format: "vst3-state"` で保存します。
 - 新しい項目（`isInputMonitoring`、クリップの `fadeInCurve`／`fadeOutCurve` など）は `decodeIfPresent` で後方互換を保ちます。
