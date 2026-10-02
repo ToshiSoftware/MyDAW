@@ -103,11 +103,25 @@ public final class ProjectState: ObservableObject {
     }
     @Published public var trackHeightScale: CGFloat = 1.0 {
         didSet {
-            let clamped = min(3.0, max(0.5, trackHeightScale))
+            let clamped = min(Self.maximumTrackHeightScale, max(Self.minimumTrackHeightScale, trackHeightScale))
             if clamped != trackHeightScale {
                 trackHeightScale = clamped
             }
         }
+    }
+    /// The smallest scale still shows a standard track's name and buttons.
+    public static let minimumTrackHeightScale: CGFloat =
+        TrackHeaderView.minimumRowHeight / AudioTrack.defaultTrackHeight
+    public static let maximumTrackHeightScale: CGFloat = 3.0
+
+    /// Sets the all-tracks height scale from the user's controls. Any change
+    /// first returns manually resized tracks to the standard height, so every
+    /// track follows the scale from the same size.
+    public func setTrackHeightScale(_ scale: CGFloat) {
+        for track in tracks where track.trackHeight != AudioTrack.defaultTrackHeight {
+            track.trackHeight = AudioTrack.defaultTrackHeight
+        }
+        trackHeightScale = scale
     }
 
     public var currentProjectURL: URL?
@@ -1276,7 +1290,7 @@ public final class ProjectState: ObservableObject {
             audioEngine.masterVolume = document.masterVolume
             audioEngine.manualRecordingCompensationMs = document.manualRecordingCompensationMs
             waveformVerticalScale = CGFloat(min(32.0, max(1.0, document.waveformVerticalScale)))
-            trackHeightScale = CGFloat(min(3.0, max(0.5, document.trackHeightScale)))
+            trackHeightScale = CGFloat(document.trackHeightScale)
             currentProjectURL = url
             self.projectFolderURL = projectFolderURL
             audioEngine.recordingsDirectory = recordingsURL

@@ -357,7 +357,13 @@ public struct TransportBarView: View {
                 Image(systemName: "rectangle.split.3x1")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.white.opacity(0.6))
-                Slider(value: $projectState.trackHeightScale, in: 0.5...3.0)
+                Slider(
+                    value: Binding(
+                        get: { projectState.trackHeightScale },
+                        set: { projectState.setTrackHeightScale($0) }
+                    ),
+                    in: ProjectState.minimumTrackHeightScale...ProjectState.maximumTrackHeightScale
+                )
                     .frame(width: 70)
                     .accentColor(.yellow)
                 Text("×\(String(format: "%.1f", projectState.trackHeightScale))")

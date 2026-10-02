@@ -35,6 +35,8 @@ public final class AudioTrack: Identifiable, ObservableObject {
     @Published public var volume: Float         // 0.0 ... MixerGain.maximum (1.0 = 0dB)
     @Published public var pan: Float            // -1.0 ... 1.0 (0.0 = Center)
     @Published public var trackHeight: CGFloat
+    /// Height of a track nobody has resized.
+    public static let defaultTrackHeight: CGFloat = 170.0
     @Published public var color: Color
     @Published public var audioFileURL: URL?
     @Published public private(set) var clips: [AudioClip] = [] {
@@ -61,7 +63,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         isInputMonitoring: Bool = false,
         volume: Float = 1.0,
         pan: Float = 0.0,
-        trackHeight: CGFloat = 170.0,
+        trackHeight: CGFloat = AudioTrack.defaultTrackHeight,
         color: Color = Color.cyan,
         audioFileURL: URL? = nil,
         plugins: [TrackPluginDescriptor] = [],
@@ -77,7 +79,7 @@ public final class AudioTrack: Identifiable, ObservableObject {
         self.isInputMonitoring = isInputMonitoring
         self.volume = volume
         self.pan = pan
-        self.trackHeight = max(120.0, trackHeight)
+        self.trackHeight = max(1.0, trackHeight)
         self.color = color
         self.audioFileURL = audioFileURL
         self.plugins = plugins

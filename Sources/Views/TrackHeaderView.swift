@@ -24,8 +24,13 @@ public struct TrackHeaderView: View {
     }
 
     public static func rowHeight(for track: AudioTrack) -> CGFloat {
-        max(120.0, track.trackHeight) * 1.0
+        track.trackHeight
     }
+
+    /// Shortest drawn row: top padding 6 + name row 16 + spacing 5 +
+    /// button row 22 + resize handle 4 + gap 3. The level meter below
+    /// them may be cut off.
+    public static let minimumRowHeight: CGFloat = 56.0
 
     public var body: some View {
         let meterPeak = track.isRecordArmed ? track.currentInputPeak : track.currentOutputPeak
@@ -221,8 +226,12 @@ public struct TrackHeaderView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            // minHeight 0 lets the frame be shorter than its content, so the
+            // content stays pinned to the top and only the meter is cut off.
+            .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         }
         .frame(width: 230, height: Self.rowHeight(for: track) * projectState.trackHeightScale)
+        .clipped()
         .background(
             isSelected
                 ? Color(red: 0.18, green: 0.20, blue: 0.24)
@@ -236,24 +245,31 @@ public struct TrackHeaderView: View {
             projectState.selectedTrackId = track.id
         }
         .overlay(alignment: .bottom) {
+            // Opaque, so a meter cut off at the row's bottom stays hidden
+            // under the border instead of showing through it.
             Rectangle()
-                .fill(Color.white.opacity(0.18))
+                .fill(Color(white: 0.29))
                 .frame(height: 4)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { value in
-                            if resizeStartHeight == nil {
-                                resizeStartHeight = track.trackHeight
-                            }
+                .overlay(
+                    // AppKit handle: shows the resize cursor and measures the
+                    // drag in screen space, so the moving edge doesn't skew it.
+                    VerticalResizeHandle(
+                        onBegin: {
+                            resizeStartHeight = track.trackHeight
+                        },
+                        onDrag: { translation in
+                            // The row is drawn at trackHeight × scale, so undo
+                            // the scale to keep the edge under the pointer.
+                            let scale = max(projectState.trackHeightScale, 0.01)
                             track.trackHeight = max(
-                                120.0,
-                                (resizeStartHeight ?? track.trackHeight) + value.translation.height
+                                Self.minimumRowHeight / scale,
+                                (resizeStartHeight ?? track.trackHeight) + translation / scale
                             )
-                        }
-                        .onEnded { _ in
+                        },
+                        onEnd: {
                             resizeStartHeight = nil
                         }
+                    )
                 )
                 .help("Resize track height")
         }

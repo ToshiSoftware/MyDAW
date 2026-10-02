@@ -143,7 +143,7 @@ public struct ArrangerView: View {
         guard delta != 0 else { return true }
 
         if modifiers == [.option] {
-            projectState.trackHeightScale += delta * 0.1
+            projectState.setTrackHeightScale(projectState.trackHeightScale + delta * 0.1)
         } else {
             projectState.waveformVerticalScale *= pow(1.1, delta)
         }
@@ -518,6 +518,10 @@ public struct ArrangerView: View {
                                 .coordinateSpace(name: "timelineScroll")
                             }
                             .frame(width: max(timelineWidth, viewport.size.width - 230), alignment: .leading)
+                            // Down to the bottom of the visible area (less the
+                            // ruler and scroll bar rows), so a lane dragged
+                            // below the last track is not clipped away.
+                            .frame(minHeight: max(0, viewport.size.height - 52), alignment: .topLeading)
                         }
                         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
                     }
