@@ -27,7 +27,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Recording**: per-track input channel assignment (mono/stereo), 24-bit WAV written directly to disk, sample-accurate placement. Mono/stereo can also be switched on recorded tracks, without rewriting files (a mono track plays stereo clips as (L+R)/2).
 - **Punch in/out**: records only inside the punch range on the ruler. The whole pass is kept on disk and the take is trimmed to the range on stop (leaving handles); while recording, only the part inside the range is shown.
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
-- **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
+- **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, strip silence, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
 - **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate. Right-click commands apply to every selected clip (right-clicking an unselected clip selects it).
 - **Track reordering**: drag a track header to move the track. While dragging, the header and its waveform lane follow the pointer together and the other tracks step aside to show where it will land. The mixer strips follow the same order.
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom. Auto-scroll during playback can be turned on/off.
@@ -62,13 +62,14 @@ MyDAW/
 │   ├── Audio/                  Audio engine, devices, plug-ins
 │   │   ├── AudioEngineManager.swift  AVAudioEngine graph, playback, recording, meters
 │   │   ├── AudioDiskWriter.swift     Asynchronous WAV writer
-│   │   ├── ClipAudioProcessing.swift Offline processing (peak measurement, reverse, import conversion)
+│   │   ├── ClipAudioProcessing.swift Offline processing (peak measurement, silence detection, reverse, import conversion)
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL (devices, channels, buffer size)
 │   │   ├── AudioLoadMonitor.swift    Audio processing load and dropout detection
 │   │   ├── PluginManager.swift       AU / VST3 discovery (VST3 via child process + cache)
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
+│   │   ├── TrackRenderer.swift Track playback (AVAudioSourceNode + read-ahead thread)
 │   │   ├── DelayCompensationAudioUnit.swift In-app AUv3 delay for FX latency compensation
 │   │   ├── VST3NativeInstance.swift  Swift wrapper around the C++ VST3 instance
 │   │   ├── VST3HostBridge.swift      Swift wrapper around the VST3 enumeration API
@@ -138,7 +139,7 @@ flowchart TD
 #### Track
 
 ```
-Per-clip AVAudioPlayerNode (one node per clip)
+TrackRenderer (AVAudioSourceNode, one per track; clip audio read ahead)
  + InputMonitorAudioUnit (only when R and I are on)
       │
       ▼
@@ -226,18 +227,14 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 ### 4.1 Starting playback
 
 1. `startPlayOrRecord` waits until the plug-in graph is ready (`isPluginGraphReady`).
-2. For each track, `scheduleClips` (player-relative sample times, so no start time is needed yet):
-   - splits every clip with `ClipLayering.segments` into plain / hidden / shaped pieces;
-   - plain pieces are streamed with `scheduleSegment`, shaped pieces are rendered with gain, fades and crossfades and scheduled with `scheduleBuffer`, hidden pieces are not scheduled;
-   - times are explicit sample times so adjacent pieces join seamlessly;
-   - each track is scheduled `P − (its insert latency + D)` after the players start, where P is the transport pre-roll and D the FX compensation (3.2).
-3. The start time is chosen only now: past what the engine has already rendered (`lastRenderTime` + two IO buffers, at least 50 ms), plus enough time to start the players. Each `play(at:)` blocks for one render cycle, and a player started after its time drops its opening, so the players are started in the order their audio begins and the start leaves each of them its cycle before its first sound.
-4. Things that must be ready at the start (the metronome, a recording) are started before the clip players (`beforePlayersStart`).
-5. Only clip nodes that received audio are started with `play(at:)`. The playhead timer, metronome and recording use the transport start, P after the players.
+2. Every track's renderer (`TrackRenderer`) is told the start position (`prepare`), and the background `TrackStreamer` reads the blocks from there out of the files, applies gain, fades and crossfades, and mixes them (a few ms for 24 tracks). Pieces come from `ClipLayering.segments` (hidden pieces are not read).
+3. The start time: past what the engine has already rendered (`lastRenderTime` + two IO buffers, at least 50 ms), plus P, where P is the transport pre-roll and D the FX compensation (3.2).
+4. Things that must be ready at the start (the metronome, a recording) are started first (`beforePlayersStart`).
+5. The renderers start; each track plays its own insert latency + D early. The playhead timer, metronome and recording use the transport start. There are no per-clip players and no `play(at:)`, so neither the main thread nor the engine waits at the start. An edit during playback is picked up as the renderer re-reads from a little past the playhead.
 
 ### 4.2 Recording
 
-1. Record button → clips are scheduled and the start time chosen as in 4.1; then, before any player starts, an `AudioDiskWriter` and a new clip per armed track are created and capture is armed.
+1. Record button → the renderers read ahead and the start time is chosen as in 4.1; then, before the renderers start, an `AudioDiskWriter` and a new clip per armed track are created and capture is armed.
 2. For every input tap buffer (~100 ms), the timeline position of each sample is derived from the buffer's host time; audio captured before the transport started is trimmed sample-accurately before writing.
 3. While recording, the armed track's existing clips are muted (only inside the range when punching).
 4. Stop → writers are finalised and clip metadata loaded. Punch takes are trimmed to the range and get 10 ms fades.
@@ -261,7 +258,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Clipboard**: `ClipboardClip` (file, range, gain, fades, and time/track offsets from the copied block). Paste creates new clips relative to the playhead and the selected track.
 - **Group moves**: selected clips' start times are recorded when a drag begins and all move by the same delta (never before zero). A move across tracks happens only if every clip has a destination track. Option-drag inserts copies at the original positions when the drag starts (directly below each original in layer order). While dragging, the selected clips are hidden in their lanes and drawn as one block from `clipDragPreview` (the whole selection, the vertical travel and the track delta): each clip is drawn from its own track, moved by the vertical travel. While clips are dragged to another track, `layeringClips(for:)` drops them from the source track's layering and counts them on top in the destination (so the source shows no false "hidden" shading and the destination shows its crossfades in advance).
 - **Track reordering**: `ProjectState.moveTrack(id:to:)` only changes the order of `tracks`, which both the arranger and the mixer follow. The audio graph is keyed by track ID, so nothing is rewired. A time selection is cleared, since it assumes adjacent tracks. The drag display lives in `ArrangerView` (`reorderOffset`, `ReorderLift`).
-- **Clip commands**: Normalize measures the whole file's peak and sets the clip gain (non-destructive). Reverse writes the clip's range backwards to a new WAV and switches the clip to it (the original file stays, so Undo restores it).
+- **Clip commands**: Normalize measures the whole file's peak and sets the clip gain (non-destructive). Reverse writes the clip's range backwards to a new WAV and switches the clip to it (the original file stays, so Undo restores it). Strip Silence splits clips around runs of samples at or below a silence level (−72 dB by default) of at least a given length and deletes the silent pieces, adding short fades (non-destructive).
 - **Right-click menu**: targets come from `menuTargets` (the whole selection when the clicked clip is selected, otherwise that clip). Mute mutes all if any is unmuted; Duplicate places the targets as one block starting at the playhead; Split cuts only targets the playhead is inside. Inside a selected range the range menu opens.
 - **Undo**: each operation is one step via `beginClipEdit()` / `endClipEdit()`; nothing is recorded if the clips did not change.
 
@@ -328,6 +325,10 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | A range or marquee selection always started at track 1, wherever it was pressed | The scroll-sync fix dropped `.coordinateSpace(name: "timelineScroll")` from the waveform lanes. A coordinate space with an unknown name silently falls back to each lane's own coordinates, so the vertical position always fell in the first track | The declaration is back where it was (on the lanes' ZStack). `trackTopY` / `trackID(atTimelineY:)`, the marquee and clip moves across tracks all depend on this space |
 | A clip moved to another track was silent | Clip players are reused by clip ID and were rewired only when the track's output mixer was new; a moved clip played through its old track, which was silent when that track was armed or muted | The output mixer each player feeds is recorded in `clipPlayerOutputs`, and a player is rewired when it differs from the clip's current track |
 | During playback, only clips moved from a lower track to a higher one were silent | Rescheduling after an edit went through the tracks from the top and, per track, stopped the players of clips that had left it; the source (lower) stopped the shared player after the destination (higher) had restarted it | `rescheduleEditedClips` works in two passes: stop every departed clip on all tracks first, then reschedule |
+| The whole UI (playhead, meters) froze for about 0.5 s at the start of playback with many clips | Each per-clip `AVAudioPlayerNode.play(at:)` waits a render cycle (~23 ms at a 1024 buffer) while holding the engine lock. Even called in the background, any main-thread engine call waited until all of them were done (measured ~440 ms) | v2.0 replaced them with one `TrackRenderer` per track (`AVAudioSourceNode` + read-ahead thread); starting takes a few ms and stays sample-aligned |
+| Trying to grab a clip's start or end sometimes moved the fade handle instead | The fade dot's hit area (`contentShape(Rectangle().size(...))`) reached right and down from the dot and covered the top of the trim handle; the overlay added later wins | Trim handles are not drawn: a 10 pt strip at each clip edge takes the drag. A fade dot takes clicks only in a 16 pt square centred on it. The pointer shape shows which control is under it (→ at the start, ← at the end, pointing hand on fade dots and curve diamonds, up-down arrow on gain) |
+| The pointer shape over a handle went back to the arrow at once | A cursor pushed with `NSCursor.push()` from `onHover` is reset by the NSHostingView's own cursor updates | `pointerStyle` (`.columnResize(directions:)` / `.link` / `.rowResize`) on macOS 15 and later; `NSCursor.set()` on every `onContinuousHover` move before that |
+| Horizontal zoom and track height changes dropped to about 5 fps | `sample` showed the main thread almost entirely inside SwiftUI (graph updates, adding NSViews, layout). An unused `@Published` rebuilt the whole timeline, and every clip's handles and the lane grid were rebuilt on each step. Scrolling the `NSClipView` from the slider action forces a synchronous SwiftUI graph update | Removed the unused `@Published zoomRevision`; handles are left out while the waveform render scale differs from the live scale; the grid is drawn only inside the draw window. Afterwards the main thread had about 20% idle time. The synchronous scroll during slider drags (about 20%) was left as it is |
 
 ---
 
@@ -348,8 +349,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
 - **Plug-in latency changes**: AU latency changes are followed (property listener); a VST3's latency is read once when it is created.
 - **Bypass and latency**: a bypassed plug-in keeps counting its latency. MyDAW's VST3 wrapper delays its bypass signal to match; an AU's bypass relies on the plug-in keeping its delay.
-- **Restarts during playback**: after a clip edit or a latency change, the affected clips restart at a time chosen beforehand; with many clips restarting at once their openings can be cut briefly.
-- **Many clips starting at once**: each clip player costs a render cycle (~12 ms at 512 frames) to start, so playback starts later when many clips begin right at the play position.
+- **Edits during playback**: the renderer re-reads from two blocks past the playhead (about 0.1–0.2 s ahead), so an edit is heard that much later.
+- **Read-ahead and the disk**: about 4 s per track is read ahead. If the disk cannot keep up, silence plays and the stop logs it (`[Playback] … render cycles found no audio read ahead`).
 
 ---
 

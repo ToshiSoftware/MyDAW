@@ -23,7 +23,7 @@
 ### `Sources/MyDAWApp.swift`
 
 #### `MyDAWApp: App`（`@main`）
-- **`init()`**: 最初に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
+- **`init()`**: 最初に `raiseOpenFileLimit()` で同時に開けるファイル数の上限（RLIMIT_NOFILE の soft 値、既定 256）を `kern.maxfilesperproc` と hard 値の範囲で最大 65,536 まで上げる（再生用にクリップごとに WAV を開いたままにするため、クリップが数百になると上限を超え、AppKit がメニューの部品を読めずにクラッシュした）。次に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。`.handlesExternalEvents(matching: [])` で、Finder から開いたファイルごとに SwiftUI が新しいウィンドウを作るのを防ぐ。
 - **Finder から開く**: Info.plist の `CFBundleDocumentTypes`／`UTExportedTypeDeclarations` で `.mydaw`（`com.tokada.mydaw.project`、`public.data`／`public.content` に準拠。`public.json` にすると Finder が中身のテキストをサムネイルにしてアイコンが出ない）を宣言し、`MyDAWApplicationDelegate.application(_:open:)` が受け取る（複数なら最後の 1 つ）。ウィンドウの `onAppear` で `openProjectFile` が設定されるまでは `pendingProjectURL` に保持し、設定後に `ProjectState.openProjectFile(_:)` を呼ぶ。`build.sh` は署名後に `lsregister -f` でビルドを LaunchServices に登録する。書類のアイコンは `DocumentIcon.icns`（`scripts/make-document-icon.swift` が `AppIcon.iconset` から、折り返し付きの白い書類の中央にアプリアイコンを角丸で描いて作る。アプリアイコンを変えたら再実行する）。
   - About（バージョン表示。Info.plist が無い場合の既定値は `2.0`）
@@ -60,7 +60,7 @@
 | `clips` | クリップ配列。**配列順がレイヤー順**（後ろほど上） |
 | `selectedClipIDs` | 選択中のクリップ（集合）。`selectedClipId` は先頭の選択クリップを返し、設定するとそのクリップだけを選ぶ互換用の計算プロパティ |
 | `plugins`, `fxSends` | インサートと FX 送り |
-| `currentInputPeak`, `currentOutputPeak`, `outputStereoPeak` | メーター値 |
+| `meter`（`TrackMeter`）、`currentInputPeak`, `currentOutputPeak`, `outputStereoPeak` | メーター値。値は別オブジェクト `TrackMeter` が持ち（`update(inputPeak:outputPeak:)` は変化したときだけ通知）、30 Hz の更新でトラックを監視する全ビュー（ヘッダ・波形レーン・ミキサー）が再描画されないようにしている。表示はメーター専用のサブビュー（`TrackHeaderMeter`、`TrackFaderColumn`）だけが `meter` を監視する。3 つのプロパティは読み取り専用 |
 
 - `clips` の変更時、各クリップの `objectWillChange` をトラックへ中継する（下のクリップの重なり表示を更新するため）。
 - **`addClip(startTime:fileURL:)`**、**`moveClip(id:to:)`**、**`deleteClip(id:removeFile:)`**（他から参照されないファイルのみ削除）、**`duplicateClip(id:)`**（直後に複製）、**`splitClip(id:at:)`**（左右 20 ms 未満の分割は拒否）、**`removeClipForTransfer(id:)`**、**`restoreClip(_:)`**、**`insertClip(_:below:)`**（指定クリップの直下のレイヤーへ挿入）、**`replaceClips(_:)`**（選択は残ったクリップに絞る）。
@@ -80,7 +80,7 @@
 
 ### `ClipLayering.swift`
 
-クリップの重なりとフェードカーブを扱う純粋関数群。再生（`AudioEngineManager.scheduleClips`）と表示（`WaveformLaneView`、`WaveformCanvas`）が共有します。
+クリップの重なりとフェードカーブを扱う純粋関数群。再生（`TrackRenderer`）と表示（`WaveformLaneView`、`WaveformCanvas`）が共有します。波形の点ごと・サンプルごとに評価するゲインは `ClipLayering.Envelope`（カーブの解決、重なる上のクリップの抽出、区間分けを一度だけ行い、plain／hidden の区間は計算せずに 1／0 を返す。`gain(_:clip:at:)` と同じ値）を使う。毎回すべてを調べていた頃は、フェード付きクリップの多いトラックの描画 1 回に 100 ms 以上かかった。
 
 #### `FadeCurve: Codable, Equatable`（v1.6 新規）
 | ケース | 内容 |
@@ -121,7 +121,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 ### `WaveformCache.swift`
 - `PeakPoint`（min/max）の列を合成（`peaks`）とチャンネル別（`channelPeaks`）で保持。既定 512 サンプル／ピーク。
-- **`loadPeaks(from:)`**: `Task.detached` でファイルを読み、結果をメインスレッドで公開。
+- **`loadPeaks(from:)`**: `Task.detached` でファイルを読み、結果をメインスレッドで公開。ピークはファイル単位で共有する（キーはパス・サイズ・更新日時・`samplesPerPeak`）。読み込み済みならすぐ反映し、読み込み中なら完了を待つキャッシュの一覧に加わるので、分割したクリップが同じファイルを何度も読むことはない。
 - **`appendLivePeaks`／`appendLiveChannelPeaks`**: 録音中のライブ波形追加。
 
 ### `ProjectDocument.swift`（`.mydaw` JSON）
@@ -143,7 +143,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 
 `ProjectState: ObservableObject`（@MainActor）は UI とエンジンの間の Facade です。
 
-- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond`（20〜400）、`timelineScrollTime`、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜32）、`trackHeightScale`（`TrackHeaderView.minimumRowHeight` 56pt ÷ 170 ≒ 0.33 〜 3。スライダーと ⌥＋ホイールは `setTrackHeightScale` 経由で、全トラックの `trackHeight` を標準値に戻してから倍率を設定）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
+- **公開状態**: `tracks`、`fxChannels`、`masterPlugins`、`selectedTrackId`、`pixelsPerSecond` と `trackHeightScale`（値は別オブジェクト `timelineGeometry`（`TimelineGeometry`）が持つ。操作のたびに ProjectState 全体を通知するとミキサーを含む全画面が再描画されるため。タイムラインの部品（`ArrangerView`、ルーラーの各部品、`WaveformLaneView`、`AudioClipView`、`TrackHeaderView`、`TransportBarView`）だけが環境オブジェクトとして監視する）。`pixelsPerSecond`（5〜800、`minimumPixelsPerSecond`／`maximumPixelsPerSecond`。スライダーは対数）、`timelineScrollTime`（値は別オブジェクト `timelineScroll`（`TimelineScrollPosition`）が持つ。スクロールのたびに ProjectState 全体を通知すると全トラックのヘッダとレーンが再描画されるため。ルーラーのずらし（`TimelineScrollOffset`）とスクロールつまみ（`TimelineScrollSlider`）だけが監視し、トラック側は、値が変わった直後に `TimelineScrollPosition.onChange`（ArrangerView が登録する `followScrollTime`）が同期的にスクロールするので、ルーラーと同じフレームで動く）、`punchRange`、`showsBeats`、`snapToGrid`（UserDefaults 保存）、`autoScrollEnabled`（UserDefaults `MyDAW.autoScroll`）、`waveformVerticalScale`（1〜256、`maximumWaveformVerticalScale`。スライダーは対数。はみ出す波形は `WaveformCanvas` がレーン内に収める）、`trackHeightScale`（`TrackHeaderView.minimumRowHeight` 56pt ÷ 170 ≒ 0.33 〜 3。スライダーと ⌥＋ホイールは `setTrackHeightScale` 経由で、全トラックの `trackHeight` を標準値に戻してから倍率を設定）、`timeSelection`（範囲選択）、`marqueeRect`（枠選択中の矩形）、`clipboard`、書き出しダイアログ状態、起動ログ、`pluginManager`、`audioEngine`、`deviceManager`。
 - **初期化**: デバイスとバッファサイズをエンジンへ適用、ピーク通知を購読、既定トラック 2 本を作成、プラグイン検出を開始。
 - **トラック**: `addTrack`、`deleteTrack`（UI からは確認ダイアログ付きの `confirmDeleteTrack` 経由）、`moveTrack(id:to:)`（並べ替え。アレンジャーとミキサーは `tracks` の順で並ぶ。グラフはつなぎ直さない。範囲選択は解除）、`toggleRecordArm`、`toggleInputMonitoring`、`toggleMute`、`toggleSolo`、`setInputRouting(for:channelMode:inputChannelIndex:)`（変更後に即エンジン同期）。
 - **クリップ**: `selectClip`（そのクリップだけを選択し、範囲選択を解除）、`moveClip`（トラック間移動）、`deleteSelectedClip`（範囲選択があれば範囲内を削除、なければ選択クリップすべてを削除）、`splitSelectedClip`／`splitClip`、ドラッグプレビュー（`ClipDragPreview`：移動中のクリップ ID の集合、縦の移動量、移動先までのトラック数。`beginClipDragPreview()`／`updateClipDragPreview(verticalOffset:trackDelta:)`／`endClipDragPreview()`。移動先がないクリップがあるときトラック数は 0）。選択・範囲・クリップボード・まとめて移動は `ProjectState+Editing.swift`。
@@ -184,6 +184,7 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 | `menuTargets`、`selectForMenu`、`splittableMenuTargets` | 右クリックの対象: 右クリックしたクリップが選択に含まれていれば選択全体、そうでなければそのクリップ（`selectForMenu` で選択）。`splittableMenuTargets` はそのうち再生位置が内側にあるもの |
 | `toggleMuteMenuTargets`、`duplicateMenuTargets`、`splitMenuTargets`、`deleteMenuTargets` | 右クリックの対象への処理。ミュートは 1 つでも未ミュートがあれば全ミュート、なければ全解除。複製は対象をかたまりのまま先頭を再生位置へ置き、複製を選択。分割は再生位置にかかる対象を分割し両側を選択。いずれも 1 回の UNDO 手順（ミュートを除く） |
 | `normalizeClips`、`reverseClips` | 右クリックの対象（選択に含まれていれば選択全体）に対する処理。ノーマライズはファイル全体のピークで 0 dBFS になるゲインを設定、逆再生は `Reverse_<トラック名>_NNN.wav`（`RecordingFileName`）を作って差し替え、フェードの前後を入れ替える |
+| `stripSilenceClips` | 対象クリップの無音（全チャンネルのサンプルの絶対値が無音レベル以下）が指定秒数以上続く区間を `silenceRanges` で求め、残す区間ごとに `piece(from:to:)` を作って `AudioTrack.replaceClip(id:with:)` で差し替える（無音区間は捨てる）。音のある区間を、無音と接する端だけフェードの長さぶん無音側へ広げてピースにし、その端にフェード（既定 10 ms。無音の最短の長さの半分までに制限するので、隣のピースとは重ならない）を付ける。元のクリップと共有する端は元のフェードを保つ。20 ms 未満のピースは捨てられる。できたピースは選択される。設定値は `askStripSilenceSettings`（NSAlert）で尋ね、UserDefaults の `MyDAW.stripSilenceThresholdDB`（既定 −72 dB、−144〜0）、`MyDAW.stripSilenceMinimumDuration`（既定 1 秒）と `MyDAW.stripSilenceFadeMilliseconds`（既定 10）に保存する。音声ファイルは変更しない |
 | `beginGroupDrag`、`updateGroupDrag(delta:)`、`endGroupDrag(trackDelta:)` | 選択クリップのまとめて移動（0 秒より前に出さない。トラック間は全クリップの移動先がある場合のみ＝`canMoveSelectedClips(trackDelta:)`） |
 | `layeringClips(for:)` | レーンの重なり計算に使うクリップ列。別トラックへのドラッグ中は、移動中のクリップを移動元から外し、移動先の最上位に加える |
 | `duplicateSelectedClipsInPlace` | option ドラッグ開始時に、元の位置へ複製を残す（元の直下のレイヤー） |
@@ -197,14 +198,12 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター、プラグイン生成と GUI、書き出しを管理する中心クラス（@MainActor、`NSWindowDelegate`）。
 
 #### 公開状態（抜粋）
-`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`currentTime`、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
+`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`currentTime`（値は別オブジェクト `transportClock`（`TransportClock`）が持つ。再生中は毎秒 60 回変わり、エンジンから通知するとエンジンを監視する全ビュー（アレンジ・ミキサー・トランスポート）が再描画されるため。監視するのは `PlayheadLine`、`PlayheadBall`、`TransportTimeText`、録音中のテイク（`LiveRecordingClipView`）だけで、自動スクロールは `onReceive` で受け取る）、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`（値は別オブジェクト `masterVolumeState`。ドラッグのたびにエンジン全体を通知しないため。`MasterFaderColumn` とトランスポートの `MasterVolumeSlider` だけが監視）、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
 
 #### ノード構成（トラックごと）
 | 辞書 | 役割 |
 | --- | --- |
-| `playerNodes` | トラック用予備プレイヤー（通常未使用） |
-| `clipPlayerNodes` | クリップ 1 つにつき 1 つの `AVAudioPlayerNode`（クリップがトラック間を移っても使い回す） |
-| `clipPlayerOutputs` | 各クリップのプレイヤーの接続先（トラック出力ミキサー）。今のトラックと違えば `syncTracks` がつなぎ直す |
+| `trackRenderers` | トラック 1 つにつき 1 つの `TrackRenderer`（`AVAudioSourceNode`）。トラック出力ミキサーのバス 0 につなぐ。サンプルレートが変わると作り直す |
 | `trackOutputNodes` | トラック出力ミキサー（フェーダー音量・ソロ・ミュート）。ミュート・ソロは `audibility(tracks:fxChannels:)` で決まります。トラックをソロにすると送り先の FX も聞こえます。FX をソロにするとその FX のリターンだけが聞こえます（送り元トラックはセンドへは送り続け、splitter → mainMixer の接続音量だけを `setTrackDryAudible` で 0 にします） |
 | `trackDownmixNodes` | 各トラックのチェーン先頭（インサートの前）にある `MonoDownmixAudioUnit` |
 | `trackDryDelayNodes`／`fxReturnDelayNodes` | 各トラックのドライ経路（分岐 → mainMixer。遅延 D。FX ソロ時のドライ消音も担当）と各 FX のリターン（PAN → 出力。遅延 D − 自分の遅延）にある `DelayCompensationAudioUnit`。`updateLatencyCompensation()` が設定 |
@@ -229,7 +228,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `startMetronome(at:)` | クリックを 256 拍分予約し、最後のクリックで続きを予約。トランスポート開始時はその開始時刻と位置から、再生中の ON・BPM 変更・続きの予約では、頭が欠けずに鳴らせる最も早い時刻（`earliestPlayerStartHostTime`）とその時刻のトランスポート位置（`transportPosition(atHostTime:)`）から、次の拍に合わせる |
 | `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | 選択デバイスを macOS の既定入力・既定出力に設定する（入力を使う AVAudioEngine は既定入出力の集約デバイスで動作するため）。初回に元の既定を記録し、`restoreOriginalDefaultDevices()` が `shutdown()` で戻す |
-| `startMeterTimer` | 30 Hz でピークを集計し通知。`masterPeak`／`masterStereoPeak` は値が変わったときだけ代入（-100 dB 未満は 0） |
+| `startMeterTimer` | 30 Hz でピークを集計し通知。マスターのレベルは別オブジェクト `masterMeter`（`TrackMeter`）が持ち、変わったときだけ通知する（`MasterFaderColumn` だけが監視）。`masterPeak` は通知しない内部値 |
 | `wireSend` | Send のゲインミキサーを FX 入力へ接続。`wiredSendTargets` で接続先を覚え、変わったときだけつなぎ直す（毎回の再接続はインプットモニター有効時に `mixingDest` 例外になるため） |
 | `applyDeferredRewiresWhenQuiet` | 停止時に、保留した分岐の組み替えとインプットモニターの接続を、マスター出力が -60 dB 未満になるまで（最大 8 秒）待ってから行う。待機中は `isWaitingForQuietRewire` が立ち、`syncTracks` も組み替えをこちらに任せる。再生が始まれば中止し、次の停止で再試行 |
 | 停止時の録音確定（`stop` 内のタスク） | writer を確定してクリップを読み込む。録音したファイルがあるときだけ `syncTracks` を呼ぶ |
@@ -237,8 +236,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `connectTrackChainTail` | チェーン末尾 → PAN → 分岐 → mainMixer＋Send の配線。1 対多接続は**エンジン停止中のみ**（再生中は `pendingSplitterRewires` で停止時まで保留） |
 | `connectReformatting` | 接続先／元の AU が描画リソース確保済みでフォーマットが変わる場合、先に解放してから接続（-10865 例外の回避） |
 | `setMixerVolume` | 音量変更後にミキサーを `reset()`（無音入力で音量ランプが止まる問題の回避） |
-| `scheduleClips` | `ClipLayering.segments` に従い、plain は `scheduleSegment`、shaped は `makeClipPlaybackBuffer`（エンベロープ適用済み）を `scheduleBuffer`、hidden は予約しない。サンプル時刻指定・プラグイン遅延補正 |
-| `startPlayback` | 全トラックを予約し、予約済みノードのみ `play(at:)` |
+| `syncTracks` の再生計画 | トラックごとに `TrackPlaybackPlan.make(for:)`（ファイルのあるミュートでないクリップ、`ClipLayering.segments` の hidden を除いた区間、`spans`）を作り、`setPlan` で渡す。再生中でも再起動はしない。`setClipMuted` も計画を作り直す |
+| `startPlayback` | 全レンダラーを `prepare(renderFrom:)` し、開始位置のブロックが読み終わるのを待ってから（24 トラックで数 ms、最大 2 秒）、開始時刻（`nextTransportStartTime`。メトロノームの `play(at:)` 2 回分だけ余裕を足す）を決め、`beforePlayersStart`（録音・メトロノーム）の後に各レンダラーを `start(anchorHost:anchorFrame:)`。anchorFrame は「開始位置 ＋ そのトラックの先読み（自分のインサートの遅延 ＋ D）」。`play(at:)` を使わないので、エンジンのロックを長く握ることも、メインスレッドが待たされることもない。停止は `stopRenderers`（先読みが間に合わなかったサイクル数をログに出す） |
 | `processInputAudioBuffer` | 入力タップ。ピーク計算、hostTime によるサンプル単位のトリミング、armed トラックのチャンネル抽出と書き込み |
 | `startRecording`／`stop` | writer 作成、録音中クリップのミュート、パンチ時は通し録音 → 停止時 `trimToPunchRange`（10 ms フェード付与） |
 | `updatePunchRecordingState` | 30 Hz タイマーでパンチ範囲の入退出を判定し、範囲内のみ既存クリップをミュート |
@@ -253,6 +252,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 ### `ClipAudioProcessing.swift`（v1.6 新規）
 クリップが参照するファイル範囲に対するオフライン処理（メインスレッドで同期実行）。
 - **`peakAmplitude(of:sourceStartTime:duration:)`**: 全チャンネルの最大絶対値（ノーマライズ用）。
+- **`silenceRanges(of:sourceStartTime:duration:thresholdDB:minimumDuration:)`**: 範囲を 65,536 フレーム単位で読み、全チャンネルのサンプルの絶対値が `thresholdDB`（dBFS を線形に換算）以下のフレームが `minimumDuration` 以上続く区間を、範囲の先頭からの秒で返す（無音部分をトリム用）。判定はサンプル単位で、RMS などの時間平均は取らない。
 - **`writeReversed(from:sourceStartTime:duration:to:)`**: 範囲を末尾から 65,536 フレーム単位で読み、各チャンクを反転して 32-bit float WAV へ書く。
 - **`is24BitPCM(_:sampleRate:)`**: 指定レートの 24-bit 整数 PCM かどうか（取り込み時に変換が必要かの判定）。
 - **`writeConverted(from:to:sampleRate:)`**: AVAudioConverter（最高品質のサンプルレート変換）でファイル全体を指定レートの 24-bit 整数 WAV に変換（チャンネル数は維持）。
@@ -268,13 +268,22 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 ### `InputMonitorAudioUnit.swift`
 多チャンネル入力から、トラックの入力チャンネル（モノは L/R 両方へ複製）を抽出するアプリ内 AUv3（`aufx`/`inmn`/`MyDW`）。`configure(channelOffset:isStereo:)` は停止中に設定。入力バス数はデバイスのチャンネル数に合わせて確保します。
 
+### `TrackRenderer.swift`（v2.0 新規）
+トラックのクリップを再生する仕組み。以前はクリップ 1 つにつき 1 つの `AVAudioPlayerNode` を使っていたが、`play(at:)` は 1 回ごとにレンダー 1 回分待たされ、その間エンジンのロックを握るため、クリップが多いと再生開始時に UI 全体（カーソル・メーター）が止まった。
+
+- **`TrackPlaybackPlan`**: メインスレッドでクリップから作る値（ファイル、位置、ゲイン、区間、`spans`）。読み込みスレッドは `AudioClip` に触れない。
+- **`TrackRenderer`**: `AVAudioSourceNode` を 1 つ持つ。描画スレッドは、先読み済みのブロック（4,096 フレーム × 48 スロット、約 4 秒）から自分の位置の分をコピーするだけ。タイムラインのフレーム位置は「`anchorFrame` が `anchorHost` に聞こえる」対応を、最初のサイクルでサンプル時刻に換算して求める。スロットは連番（書き込み中は奇数）で守り、描画スレッドは待たず、書きかけのブロックは鳴らさない（無音にして `underruns` を数える）。録音中のミュートは約 5 ms のランプ。
+- **`TrackStreamer`**: 全レンダラーを順番に回るバックグラウンドスレッド（1 回に各トラック最大 4 ブロック）。再生位置の先のブロックを、計画に従ってファイルから読み、ゲインとフェード・クロスフェード（`ClipLayering.Envelope`）を掛けてミックスする。計画が変わると、再生位置の 2 ブロック先以降を読み直す（直前のブロックは書き換えない）。ファイルは先読みの範囲で使うものだけを開く。
+- **`ClipReader`**: ファイルを出力レートのステレオとして読む。レートが違うファイルは `AVAudioConverter` で連続的に変換する。
+- **アトミック操作**: Swift の Atomics は macOS 15 以降のため、`VST3Host/RealtimeAtomics.cpp` の `MyDAWAtomicLoad64`／`MyDAWAtomicStore64`／`MyDAWMemoryFence` を `@_silgen_name` で呼ぶ。
+
 ### `DelayCompensationAudioUnit.swift`（v1.8 新規）
 `StereoDelayLine`（レンダースレッド用のリングバッファ。保持できない遅延は素通し）と、`delayFrames`・`isMuted`（約 5 ms のランプ）を持つアプリ内 AUv3（`aufx`/`dlcp`/`MyDW`）。最大 1 秒まで。自身のレイテンシーは 0 と報告します。`VST3AudioUnit` も `StereoDelayLine` を使い、バイパス時の出力をプラグインのレイテンシー分だけ遅らせます。
 
-`AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（バイパス中も含む）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら再スケジュールします。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。プレイヤーはトランスポートの時計より P だけ早く動き始めます。`startPlayback` は先に予約してから開始時刻を決めます（`nextTransportStartTime(extraLead:)`：エンジンの計算済み区間の先 ＝ `lastRenderTime` から IO バッファ 2 つ分・最低 50 ms、に加えて、レンダー 1 回分待たされる `play(at:)` を、音が始まる順に全プレイヤーへ呼び終える時間）。録音は、開始時刻が決まった後・プレイヤーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます、各トラックは「P −（自分の遅延 ＋ D）」だけ遅らせて予約するので、開始位置以降の音は欠けません。再生中の再予約（`includePreRoll`）では先読み区間の音も予約します。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
+`AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（バイパス中も含む）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら各レンダラーの `anchorFrame` を合わせ直します（`updateRendererAnchors`）。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。トランスポートの開始時刻はエンジンの計算済み区間の先（`lastRenderTime` から IO バッファ 2 つ分・最低 50 ms）に P を足した時刻で、各トラックのレンダラーは自分の先読み（自分の遅延 ＋ D）だけ早く音を出すので、開始位置以降の音は欠けません。録音は、開始時刻が決まった後・レンダラーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
 
 ### `MonoDownmixAudioUnit.swift`
-各トラックの出力ミキサーの直後に置くアプリ内 AUv3（`aufx`/`mndx`/`MyDW`）。`isMono`（トラックがモノラル）のときは `(L + R) / 2` を L/R 両方に書き、それ以外はそのまま通します。モノラルのクリップはプレイヤーが L = R に展開して届くので、どちらの場合も変化しません。
+各トラックの出力ミキサーの直後に置くアプリ内 AUv3（`aufx`/`mndx`/`MyDW`）。`isMono`（トラックがモノラル）のときは `(L + R) / 2` を L/R 両方に書き、それ以外はそのまま通します。モノラルのクリップは `TrackRenderer` が L = R に展開して届けるので、どちらの場合も変化しません。
 
 ### `VST3NativeInstance.swift`
 C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked Sendable`）。
@@ -348,12 +357,15 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 ### `WaveformLaneView.swift`
 1 トラック分のレーン。
 - **レーン**: 空き領域のドラッグで枠選択（⌘ で範囲選択）、クリックで選択解除、Finder からの WAV ドロップで取り込み。
-- **`AudioClipView`**: クリック（⇧／⌘ で追加・解除）、ドラッグで選択クリップをまとめて移動（⌥ で複製、⌘ で範囲選択）、左右トリム、ゲイン（上辺中央）、フェードイン／アウト（左上・右上）、フェードカーブ（フェード線中央のひし形。上下ドラッグで `FadeCurve.withMidpoint`、ダブルクリックで `.auto`）。ゲイン・フェード・カーブのハンドルは押した時点からドラッグとして扱い、値を `EditValueTooltip` で表示。
-- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名（複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
+- **`AudioClipView`**: クリック（⇧／⌘ で追加・解除）、ドラッグで選択クリップをまとめて移動（⌥ で複製、⌘ で範囲選択）、左右トリム、ゲイン（上辺中央）、フェードイン／アウト（左上・右上）、フェードカーブ（フェード線中央のひし形。上下ドラッグで `FadeCurve.withMidpoint`、ダブルクリックで `.auto`）。ゲイン・フェード・カーブのハンドルは押した時点からドラッグとして扱い、値を `EditValueTooltip` で表示。トリムのハンドルは描かず、クリップ左右の幅 10 pt の透明な帯で受け、ポインタを矢印にする（開始側は右向き、終了側は左向きのみ）。フェードの点はその点を中心とした 16 pt 四方だけで受け、ポインタを指の形にする（カーブのひし形も同じ。ゲインの線は 24×13 pt で受け、上下矢印。ファイル末尾の `hoverCursor`。macOS 15 以降は `pointerStyle`（`.columnResize(directions: .trailing／.leading)`／`.link`／`.rowResize`）、それより前は `onContinuousHover` で移動のたびに `NSCursor.set()`（`resizeRight`／`resizeLeft`／`pointingHand`／`resizeUpDown`）。`onHover` で push した形はホストビューにすぐ矢印へ戻される）。
+- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名（複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、Strip Silence、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
 - **表示**: 波形は `ClipLayering.envelope` の音量で描画し、上位クリップに完全に隠れた区間だけを暗くする。覆われた端のフェードハンドルは非表示。
 
+### `PreviewStretch.swift`（v2.0 新規）
+**横の拡大・縮小とトラックの縦幅**: ルーラー・ヘッダ・クリップの箱はすぐに新しい値で描くが、波形だけは `ProjectState.waveformRenderPixelsPerSecond`／`waveformRenderTrackHeightScale`（波形を描く倍率）で描いたまま、`scaleEffect` で今の箱の大きさに伸縮する。`WaveformCanvas` は `Equatable`（`.equatable()`。エンベロープは値型の `ClipLayering.Envelope`）なので、入力が変わらなければ描き直さない。倍率の変更が 0.1 秒止まると `syncWaveformRender` が描く倍率を合わせ、波形を正しく描き直す（描画範囲 `drawWindow` もこのときに合わせ直す）。プロジェクトを開いたときはすぐに合わせる。この 2 つの倍率がずれている間（変更中）は、`AudioClipView` がトリム・ゲイン・フェード・カーブのハンドルを作らない（クリップごとに何個もの部品を毎ステップ動かさずに済む）。レーンのグリッド線も `drawWindow` の中だけ描く。`ArrangerView` がスクロール追従のために持つ値（最後に読んだスクロール時刻、向かっている位置）は `@State` でなく参照型の `ScrollFollow` に置く：ズームの 1 ステップごとに書くので、`@State` だとそのたびにアレンジャー全体がもう一度作り直されていた。**波形の縦倍率**（スライダー、⌥⇧＋ホイール）は `previewWaveformVerticalScale` を呼び、操作中は値を変えずに `waveformScalePreview` の `scale` だけを変えて、描画済みの波形を `VerticalStretch`（中心基準）で伸縮する。0.1 秒止まると `commitPreviews` が本当の値を設定する。
+
 ### `WaveformCanvas.swift`
-`WaveformCache` のピークを SwiftUI `Canvas` で描画（チャンネル別、ゲイン倍率、`envelope` による振幅）。
+`WaveformCache` のピークを SwiftUI `Canvas` で描画（チャンネル別、ゲイン倍率、`envelope` による振幅）。1 ピクセルに複数のピークが入るほど縮小したときは、まとめて最大・最小だけを描く。描くのは `drawWindow`（`ProjectState.waveformDrawWindow`（`DrawWindowState`）：見えている範囲と左右 2 画面分。`ProjectState.refreshDrawWindow` が、見えている範囲が端から半画面以内に近づいたときと、波形を描く倍率・表示幅が変わったときだけ動かす）の中だけなので、拡大・高さ変更の描き直しは曲全体でなく数画面分で済み、スクロール中もほとんど描き直さない。`WaveformLaneView` はこの範囲（と選択中・録音中のクリップ）以外のクリップの部品を作らない。
 - **`FadeLinesOverlay`**: フェードイン／アウトの線をクリップの高さ全体にカーブの形で描く（ステレオでも 1 本）。
 
 ### `MixerView.swift`
