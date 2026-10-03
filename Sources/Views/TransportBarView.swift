@@ -2,6 +2,9 @@ import SwiftUI
 import CoreAudio
 
 public struct TransportBarView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject public var audioEngine: AudioEngineManager
     @ObservedObject public var projectState: ProjectState
     @State private var showingBufferSettings = false
@@ -15,20 +18,6 @@ public struct TransportBarView: View {
     public init(audioEngine: AudioEngineManager, projectState: ProjectState) {
         self.audioEngine = audioEngine
         self.projectState = projectState
-    }
-
-    private var timeString: String {
-        let totalSeconds = audioEngine.currentTime
-        let minutes = Int(totalSeconds) / 60
-        let seconds = Int(totalSeconds) % 60
-        let milliseconds = Int((totalSeconds.truncatingRemainder(dividingBy: 1.0)) * 1000)
-        return String(format: "%02d:%02d:%02d.%03d", minutes / 60, minutes % 60, seconds, milliseconds)
-    }
-
-    private var barBeatString: String {
-        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-        let totalBeats = max(0, Int(floor(audioEngine.currentTime / beatDuration)))
-        return String(format: "%03d:%02d", totalBeats / 4 + 1, totalBeats % 4 + 1)
     }
 
     private var isTransportActive: Bool {
@@ -222,7 +211,11 @@ public struct TransportBarView: View {
                     Text("TIME")
                         .font(.system(size: 8, weight: .black))
                         .foregroundColor(.white.opacity(0.4))
-                    Text(projectState.showsBeats ? barBeatString : timeString)
+                    TransportTimeText(
+                        clock: audioEngine.transportClock,
+                        showsBeats: projectState.showsBeats,
+                        bpm: audioEngine.bpm
+                    )
                         .font(.system(size: 17, weight: .bold, design: .monospaced))
                         .foregroundColor(audioEngine.isRecording ? Color.red : Color.cyan)
                         .lineLimit(1)
@@ -337,12 +330,13 @@ public struct TransportBarView: View {
                 Image(systemName: "timeline.selection")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.white.opacity(0.6))
+                // Logarithmic, so each step zooms by the same ratio.
                 Slider(
                     value: Binding(
-                        get: { Double(projectState.pixelsPerSecond) },
-                        set: { projectState.setPixelsPerSecond(CGFloat($0)) }
+                        get: { log2(Double(projectState.pixelsPerSecond)) },
+                        set: { projectState.setPixelsPerSecond(CGFloat(pow(2.0, $0))) }
                     ),
-                    in: 20.0...400.0
+                    in: log2(Double(ProjectState.minimumPixelsPerSecond))...log2(Double(ProjectState.maximumPixelsPerSecond))
                 )
                 .frame(width: 90)
                 .accentColor(.cyan)
@@ -377,14 +371,16 @@ public struct TransportBarView: View {
                     .foregroundColor(.white.opacity(0.6))
                 Slider(
                     value: Binding(
-                        get: { Double(projectState.waveformVerticalScale) },
-                        set: { projectState.waveformVerticalScale = CGFloat($0) }
+                        get: { log2(Double(projectState.waveformScalePreview.target ?? projectState.waveformVerticalScale)) },
+                        set: { projectState.previewWaveformVerticalScale(CGFloat(pow(2.0, $0))) }
                     ),
-                    in: 1.0...32.0
+                    in: 0.0...log2(Double(ProjectState.maximumWaveformVerticalScale))
                 )
                 .frame(width: 70)
                 .accentColor(.orange)
-                Text("×\(String(format: "%.1f", projectState.waveformVerticalScale))")
+                PreviewValueText(preview: projectState.waveformScalePreview, value: projectState.waveformVerticalScale) {
+                    "×\(String(format: $0 < 10.0 ? "%.1f" : "%.0f", $0))"
+                }
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
                     .frame(width: 30, alignment: .trailing)
@@ -409,7 +405,7 @@ public struct TransportBarView: View {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.6))
-                Slider(value: $audioEngine.masterVolume, in: 0.0...MixerGain.maximum)
+                MasterVolumeSlider(level: audioEngine.masterVolumeState, audioEngine: audioEngine)
                     .frame(width: 80)
                     .accentColor(.cyan)
             }
@@ -440,6 +436,55 @@ public struct TransportBarView: View {
                 }
             )
         }
+    }
+}
+
+/// A control's value label that follows its preview while the control moves.
+private struct PreviewValueText: View {
+    @ObservedObject var preview: PreviewScale
+    let value: CGFloat
+    let format: (CGFloat) -> String
+
+    var body: some View {
+        Text(verbatim: format(preview.target ?? value))
+    }
+}
+
+/// The master volume slider, observing only the master level.
+private struct MasterVolumeSlider: View {
+    @ObservedObject var level: MasterVolumeState
+    let audioEngine: AudioEngineManager
+
+    var body: some View {
+        Slider(
+            value: Binding(get: { level.value }, set: { audioEngine.masterVolume = $0 }),
+            in: 0.0...MixerGain.maximum
+        )
+    }
+}
+
+/// The time counter, observing only the playhead.
+private struct TransportTimeText: View {
+    @ObservedObject var clock: TransportClock
+    let showsBeats: Bool
+    let bpm: Double
+
+    var body: some View {
+        Text(showsBeats ? barBeatString : timeString)
+    }
+
+    private var timeString: String {
+        let totalSeconds = clock.time
+        let minutes = Int(totalSeconds) / 60
+        let seconds = Int(totalSeconds) % 60
+        let milliseconds = Int((totalSeconds.truncatingRemainder(dividingBy: 1.0)) * 1000)
+        return String(format: "%02d:%02d:%02d.%03d", minutes / 60, minutes % 60, seconds, milliseconds)
+    }
+
+    private var barBeatString: String {
+        let beatDuration = 60.0 / max(20.0, min(400.0, bpm))
+        let totalBeats = max(0, Int(floor(clock.time / beatDuration)))
+        return String(format: "%03d:%02d", totalBeats / 4 + 1, totalBeats % 4 + 1)
     }
 }
 

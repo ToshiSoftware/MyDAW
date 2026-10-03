@@ -21,12 +21,15 @@ public struct MainDAWView: View {
                 audioEngine: projectState.audioEngine,
                 projectState: projectState
             )
+            .environmentObject(projectState.timelineGeometry)
 
             // 2. Center Arranger & Tracks View
             ArrangerView(
                 projectState: projectState,
                 audioEngine: projectState.audioEngine
             )
+            .environmentObject(projectState.timelineGeometry)
+            .environmentObject(projectState.waveformDrawWindow)
             .frame(minHeight: Self.minimumArrangerHeight, maxHeight: .infinity)
             .background(GeometryReader { geometry in
                 Color.clear

@@ -39,6 +39,58 @@ enum ClipAudioProcessing {
         return peak
     }
 
+    /// Runs of silence at least `minimumDuration` long inside the range, in
+    /// seconds from its start. A frame is silent when every channel's sample
+    /// is at or below `thresholdDB` (dBFS), judged sample by sample.
+    static func silenceRanges(
+        of url: URL,
+        sourceStartTime: Double,
+        duration: Double,
+        thresholdDB: Double,
+        minimumDuration: Double
+    ) throws -> [Range<Double>] {
+        let file = try AVAudioFile(forReading: url)
+        let sampleRate = file.processingFormat.sampleRate
+        let range = frameRange(of: file, sourceStartTime: sourceStartTime, duration: duration)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunkFrames) else {
+            return []
+        }
+        let threshold = Float(pow(10.0, thresholdDB / 20.0))
+        let minimumFrames = max(1, AVAudioFramePosition((minimumDuration * sampleRate).rounded()))
+        var runs: [Range<Double>] = []
+        var runStart: AVAudioFramePosition?
+        func closeRun(at end: AVAudioFramePosition) {
+            if let start = runStart, end - start >= minimumFrames {
+                runs.append(Double(start - range.lowerBound) / sampleRate..<Double(end - range.lowerBound) / sampleRate)
+            }
+            runStart = nil
+        }
+
+        file.framePosition = range.lowerBound
+        while file.framePosition < range.upperBound {
+            let chunkStart = file.framePosition
+            let frames = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), range.upperBound - chunkStart))
+            try file.read(into: buffer, frameCount: frames)
+            guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { break }
+            let channelCount = Int(buffer.format.channelCount)
+            for frame in 0..<Int(buffer.frameLength) {
+                var isSilent = true
+                for channel in 0..<channelCount where abs(channels[channel][frame]) > threshold {
+                    isSilent = false
+                    break
+                }
+                let position = chunkStart + AVAudioFramePosition(frame)
+                if isSilent {
+                    if runStart == nil { runStart = position }
+                } else if runStart != nil {
+                    closeRun(at: position)
+                }
+            }
+        }
+        closeRun(at: file.framePosition)
+        return runs
+    }
+
     /// Writes the range reversed to a new 32-bit float WAV at `destination`.
     static func writeReversed(
         from url: URL,

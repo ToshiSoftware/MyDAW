@@ -36,7 +36,9 @@ public final class AudioTrack: Identifiable, ObservableObject {
     @Published public var pan: Float            // -1.0 ... 1.0 (0.0 = Center)
     @Published public var trackHeight: CGFloat
     /// Height of a track nobody has resized.
-    public static let defaultTrackHeight: CGFloat = 170.0
+    /// A plain constant, so default arguments (evaluated outside the main
+    /// actor) can use it.
+    public nonisolated static let defaultTrackHeight: CGFloat = 170.0
     @Published public var color: Color
     @Published public var audioFileURL: URL?
     @Published public private(set) var clips: [AudioClip] = [] {
@@ -48,9 +50,12 @@ public final class AudioTrack: Identifiable, ObservableObject {
     @Published public var plugins: [TrackPluginDescriptor] = []
     @Published public var fxSends: [FXSend] = []
     @Published public var selectedClipIDs: Set<UUID> = []
-    @Published public var currentInputPeak: Float = 0.0
-    @Published public var currentOutputPeak: Float = 0.0
-    @Published public var outputStereoPeak: StereoPeak = .zero
+    /// Meter levels, kept in their own object so their 30 Hz updates redraw
+    /// only the meters and not every view that observes the track.
+    public let meter = TrackMeter()
+    public var currentInputPeak: Float { meter.inputPeak }
+    public var currentOutputPeak: Float { meter.outputPeak.maximum }
+    public var outputStereoPeak: StereoPeak { meter.outputPeak }
 
     public init(
         id: UUID = UUID(),
@@ -229,6 +234,14 @@ public final class AudioTrack: Identifiable, ObservableObject {
         selectedClipIDs.formIntersection(clips.map(\.id))
     }
 
+    /// Replaces the clip with `id` by `pieces`, at its place in layer order.
+    public func replaceClip(id: UUID, with pieces: [AudioClip]) {
+        guard let index = clips.firstIndex(where: { $0.id == id }) else { return }
+        var rebuilt = clips
+        rebuilt.replaceSubrange(index...index, with: pieces)
+        replaceClips(rebuilt)
+    }
+
     /// Copies of the audio between two timeline times, in layer order.
     public func clipPieces(from start: Double, to end: Double) -> [AudioClip] {
         clips.compactMap { $0.piece(from: start, to: end) }
@@ -292,3 +305,17 @@ public final class AudioTrack: Identifiable, ObservableObject {
     }
 }
 
+/// A track's input and output meter levels.
+@MainActor
+public final class TrackMeter: ObservableObject {
+    @Published public private(set) var inputPeak: Float = 0.0
+    @Published public private(set) var outputPeak: StereoPeak = .zero
+
+    /// Publishes only what changed, so idle meters cause no redraws. Levels
+    /// below -100 dB drop to exactly zero.
+    public func update(inputPeak newInput: Float, outputPeak newOutput: StereoPeak) {
+        let input = newInput < 1e-5 ? 0 : newInput
+        if input != inputPeak { inputPeak = input }
+        if newOutput != outputPeak { outputPeak = newOutput }
+    }
+}

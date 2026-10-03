@@ -25,7 +25,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     @Published public private(set) var isPunchRecording: Bool = false
     @Published public private(set) var hasPendingRecording: Bool = false
     @Published public private(set) var isStartingPlayback: Bool = false
-    @Published public var currentTime: Double = 0.0 // Playhead in seconds
+    /// The playhead in seconds, kept in its own object: it changes 60 times
+    /// a second while playing, and publishing it from the engine redrew
+    /// every view observing the engine (arranger, mixer, transport) each time.
+    public let transportClock = TransportClock()
+    public var currentTime: Double {
+        get { transportClock.time }
+        set { if transportClock.time != newValue { transportClock.time = newValue } }
+    }
     @Published public var bpm: Double = 120.0 {
         didSet {
             if isPlaying || isRecording {
@@ -78,13 +85,22 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// UI display/preference only — the real rate is always hardwareSampleRate.
     @Published public var sampleRate: Double = 44100.0
 
-    @Published public var masterVolume: Float = 1.0 {
-        didSet {
-            masterOutputNode?.outputVolume = masterVolume
+    /// The master fader, kept in its own object: publishing it from the
+    /// engine redrew every view observing the engine on each step of a drag.
+    public let masterVolumeState = MasterVolumeState()
+    public var masterVolume: Float {
+        get { masterVolumeState.value }
+        set {
+            guard newValue != masterVolumeState.value else { return }
+            masterVolumeState.value = newValue
+            masterOutputNode?.outputVolume = newValue
         }
     }
-    @Published public var masterPeak: Float = 0.0
-    @Published public private(set) var masterStereoPeak: StereoPeak = .zero
+    /// Master output level; its own object for the same reason as
+    /// `transportClock` (30 Hz updates while audio plays).
+    public let masterMeter = TrackMeter()
+    public private(set) var masterPeak: Float = 0.0
+    public var masterStereoPeak: StereoPeak { masterMeter.outputPeak }
     @Published public var recordingsDirectory: URL
     @Published public var inputHardwareChannels: Int = 2
     @Published public var isAudioInputActive: Bool = false
@@ -112,12 +128,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// macOS default input/output found before MyDAW replaced them.
     private var originalDefaultDevices: (input: AudioDeviceID, output: AudioDeviceID)?
 
-    // Player node and file mapping per track ID
-    private var playerNodes: [UUID: AVAudioPlayerNode] = [:]
-    private var clipPlayerNodes: [UUID: AVAudioPlayerNode] = [:]
-    /// Track output mixer each clip's player feeds. A clip moved to another
-    /// track keeps its player, which must then be rewired to the new track.
-    private var clipPlayerOutputs: [UUID: ObjectIdentifier] = [:]
+    /// Each track's clips play through one renderer (see `TrackRenderer`)
+    /// into the track's output mixer.
+    private var trackRenderers: [UUID: TrackRenderer] = [:]
     // Last node of each track's insert chain; fans out to the main mixer and
     // to every active send, so sends carry the post-insert signal.
     private var trackChainTails: [UUID: AVAudioNode] = [:]
@@ -139,22 +152,17 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var trackDryDelayNodes: [UUID: AVAudioUnitEffect] = [:]
     private var fxReturnDelayNodes: [UUID: AVAudioUnitEffect] = [:]
     private var fxCompensationLatency: Double = 0.0
-    /// The largest track pre-roll (own inserts + FX compensation). Players
-    /// start this long before the transport clock, so no audio right after
-    /// the start position is lost.
+    /// The largest track pre-roll (own inserts + FX compensation). The
+    /// transport starts at least this far ahead, so every renderer can play
+    /// its track this much early and no audio after the start is lost.
     private var transportPreRoll: Double = 0.0
     private var syncedTracks: [AudioTrack] = []
     /// Plug-ins whose latency changes are listened to, retained until the
     /// listener is removed.
     private var latencyListenedUnits: [ObjectIdentifier: AVAudioUnit] = [:]
-    private var mutedClipVolumes: [String: Float] = [:]
     private var trackOutputNodes: [UUID: AVAudioMixerNode] = [:]
-    /// What each track's clips were last scheduled with, so an edit during
-    /// playback restarts only the clips it changed.
-    private var scheduledClipSignatures: [UUID: [UUID: ClipScheduleSignature]] = [:]
     /// First node after each track's output mixer; downmixes mono tracks.
     private var trackDownmixNodes: [UUID: AVAudioUnitEffect] = [:]
-    private var audioFiles: [UUID: [(clip: AudioClip, file: AVAudioFile)]] = [:]
     private var trackPluginNodes: [UUID: [AVAudioNode]] = [:]
     private var trackPluginLatencies: [UUID: Double] = [:]
     private var fxInputNodes: [UUID: AVAudioMixerNode] = [:]
@@ -165,9 +173,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var sendGainNodes: [UUID: AVAudioMixerNode] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
     private var vst3Instances: [UUID: VST3NativeInstance] = [:]
-    private var pendingClipNodeStarts: [ObjectIdentifier: AVAudioPlayerNode] = [:]
-    /// Player-relative sample time of each pending player's first audio.
-    private var pendingClipFirstSample: [ObjectIdentifier: AVAudioFramePosition] = [:]
     private var syncedFXChannels: [FXChannel] = []
     private var pluginWindows: [UUID: NSWindow] = [:]
     private var pluginWindowFrames: [UUID: NSRect] = [:]
@@ -1203,18 +1208,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     self.masterOutputPeak = .zero
                     return peak
                 }
-                // Assign only on change: every assignment republishes the
-                // engine, and a 30 Hz republish keeps views observing it
-                // (e.g. the transport bar) from ever showing tooltips.
-                let stereoPeak = self.masterStereoPeak.falling(to: outputMasterPeak, by: 0.82)
-                if stereoPeak != self.masterStereoPeak {
-                    self.masterStereoPeak = stereoPeak
-                }
+                self.masterMeter.update(
+                    inputPeak: 0,
+                    outputPeak: self.masterStereoPeak.falling(to: outputMasterPeak, by: 0.82)
+                )
                 let decayedPeak = max(self.masterPeak * 0.85, outputMasterPeak.maximum)
-                let masterPeak = decayedPeak < 1e-5 ? 0 : decayedPeak
-                if masterPeak != self.masterPeak {
-                    self.masterPeak = masterPeak
-                }
+                self.masterPeak = decayedPeak < 1e-5 ? 0 : decayedPeak
 
                 let outputPeaks = self.peakLock.withLock {
                     let values = self.trackOutputPeaks
@@ -1286,20 +1285,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             wiredSendTargets.removeValue(forKey: sendID)
         }
         let currentTrackIDs = Set(tracks.map { $0.id })
-        let currentClipIDs = Set(tracks.flatMap { $0.clips.map(\.id) })
 
-        for (id, node) in clipPlayerNodes where !currentClipIDs.contains(id) {
-            node.stop()
-            engine.disconnectNodeOutput(node)
-            engine.detach(node)
-            clipPlayerNodes.removeValue(forKey: id)
-            clipPlayerOutputs.removeValue(forKey: id)
-        }
-
-        for (id, node) in playerNodes where !currentTrackIDs.contains(id) {
-            engine.disconnectNodeOutput(node)
-            engine.detach(node)
-            playerNodes.removeValue(forKey: id)
+        for (id, renderer) in trackRenderers where !currentTrackIDs.contains(id) {
+            renderer.unregister()
+            engine.disconnectNodeOutput(renderer.node)
+            engine.detach(renderer.node)
+            trackRenderers.removeValue(forKey: id)
             if let outputNode = trackOutputNodes.removeValue(forKey: id) {
                 engine.disconnectNodeOutput(outputNode)
                 engine.detach(outputNode)
@@ -1308,7 +1299,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 engine.disconnectNodeOutput(downmixNode)
                 engine.detach(downmixNode)
             }
-            audioFiles.removeValue(forKey: id)
             trackPluginLatencies.removeValue(forKey: id)
             trackChainTails.removeValue(forKey: id)
             trackSendIDs.removeValue(forKey: id)
@@ -1349,16 +1339,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let audible = audibility(tracks: tracks, fxChannels: fxChannels)
 
         for track in tracks {
-            var player = playerNodes[track.id]
-            if player == nil {
-                let newNode = AVAudioPlayerNode()
-                engine.attach(newNode)
-                playerNodes[track.id] = newNode
-                player = newNode
-            }
-
-            guard let node = player else { continue }
-
             guard let format = AVAudioFormat(
                 standardFormatWithSampleRate: hardwareSampleRate,
                 channels: 2
@@ -1366,7 +1346,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 continue
             }
 
-            let isNewOutputNode = trackOutputNodes[track.id] == nil
             let outputNode: AVAudioMixerNode
             if let existing = trackOutputNodes[track.id] {
                 outputNode = existing
@@ -1374,7 +1353,19 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 outputNode = AVAudioMixerNode()
                 engine.attach(outputNode)
                 trackOutputNodes[track.id] = outputNode
-                engine.connect(node, to: outputNode, format: format)
+            }
+            // A renderer works at one sample rate; a new rate gets a new one.
+            if let existing = trackRenderers[track.id], existing.sampleRate != hardwareSampleRate {
+                existing.unregister()
+                engine.disconnectNodeOutput(existing.node)
+                engine.detach(existing.node)
+                trackRenderers.removeValue(forKey: track.id)
+            }
+            if trackRenderers[track.id] == nil {
+                let renderer = TrackRenderer(sampleRate: hardwareSampleRate)
+                engine.attach(renderer.node)
+                engine.connect(renderer.node, to: outputNode, fromBus: 0, toBus: 0, format: format)
+                trackRenderers[track.id] = renderer
             }
             // The inserts start after the downmix, so a mono track is mono
             // through its whole chain, sends and meters included.
@@ -1494,44 +1485,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
 
             let effectiveVolume = effectiveTrackVolume(for: track, audible: audible)
-            node.volume = effectiveVolume
             setMixerVolume(outputNode, effectiveVolume)
             setTrackPan(track.id, track.pan)
 
-            var filesForTrack: [(clip: AudioClip, file: AVAudioFile)] = []
-            for clip in track.clips {
-                if let file = try? AVAudioFile(forReading: clip.fileURL) {
-                    filesForTrack.append((clip: clip, file: file))
-                }
-            }
-            filesForTrack.sort { left, right in
-                if left.clip.startTime == right.clip.startTime {
-                    return left.clip.id.uuidString < right.clip.id.uuidString
-                }
-                return left.clip.startTime < right.clip.startTime
-            }
-            audioFiles[track.id] = filesForTrack
-
-            for clip in track.clips {
-                let clipNode: AVAudioPlayerNode
-                let needsConnect: Bool
-                if let existing = clipPlayerNodes[clip.id] {
-                    clipNode = existing
-                    needsConnect = isNewOutputNode
-                        || clipPlayerOutputs[clip.id] != ObjectIdentifier(outputNode)
-                } else {
-                    clipNode = AVAudioPlayerNode()
-                    engine.attach(clipNode)
-                    clipPlayerNodes[clip.id] = clipNode
-                    needsConnect = true
-                }
-                clipNode.volume = 1.0
-                if needsConnect {
-                    safeDisconnectNodeOutput(clipNode)
-                    engine.connect(clipNode, to: outputNode, format: format)
-                    clipPlayerOutputs[clip.id] = ObjectIdentifier(outputNode)
-                }
-            }
+            trackRenderers[track.id]?.setPlan(TrackPlaybackPlan.make(for: track))
         }
 
         for track in tracks {
@@ -1570,13 +1527,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    /// During playback the renderers re-read the blocks ahead with the new
+    /// clips, so nothing needs restarting.
     public func syncAfterClipEdit(_ tracks: [AudioTrack], fxChannels: [FXChannel] = []) {
-        if isPlaying && !isRecording {
-            syncTracks(tracks, fxChannels: fxChannels)
-            rescheduleEditedClips(tracks: tracks)
-        } else {
-            syncTracks(tracks, fxChannels: fxChannels)
-        }
+        syncTracks(tracks, fxChannels: fxChannels)
     }
 
     public func updateMixerLevels(
@@ -1586,14 +1540,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let audible = audibility(tracks: tracks, fxChannels: fxChannels)
         for track in tracks {
             let level = effectiveTrackVolume(for: track, audible: audible)
-            playerNodes[track.id]?.volume = level
             trackOutputNodes[track.id].map { setMixerVolume($0, level) }
             setTrackDryAudible(track.id, audible.dryTracks.contains(track.id))
             setTrackPan(track.id, track.pan)
-            for clip in track.clips {
-                clipPlayerNodes[clip.id]?.volume =
-                    recordingMutedTrackIDs.contains(track.id) || clip.isMuted ? 0.0 : 1.0
-            }
+            trackRenderers[track.id]?.setMuted(recordingMutedTrackIDs.contains(track.id))
 
             for send in track.fxSends {
                 sendGainNodes[send.id].map { setMixerVolume($0, send.enabled ? send.level : 0.0) }
@@ -1607,18 +1557,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    /// The clip's `isMuted` is already set; its track's renderer takes the
+    /// new plan (a muted clip also stops masking the clips under it).
     public func setClipMuted(_ clipID: UUID, muted: Bool) {
-        let mainKey = clipID.uuidString
-        if let player = clipPlayerNodes[clipID] {
-            if muted {
-                if mutedClipVolumes[mainKey] == nil {
-                    mutedClipVolumes[mainKey] = player.volume
-                }
-                player.volume = 0.0
-            } else {
-                player.volume = mutedClipVolumes.removeValue(forKey: mainKey) ?? 1.0
-            }
-        }
+        guard let track = syncedTracks.first(where: { $0.clips.contains { $0.id == clipID } }) else { return }
+        trackRenderers[track.id]?.setPlan(TrackPlaybackPlan.make(for: track))
     }
 
     /// Connects a send's gain mixer to an FX input unless it already feeds it.
@@ -2141,7 +2084,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// own latency, so dry and wet line up with the timeline. Bypassed
     /// plug-ins count (bypass keeps their delay), and so does every FX
     /// channel, fed or not, so mute, solo and bypass never move it.
-    /// A change during playback reschedules the clips.
+    /// A change during playback moves the renderers' timelines to match.
     private func updateLatencyCompensation() {
         func latency(of nodes: [AVAudioNode]) -> Double {
             nodes.compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }
@@ -2185,8 +2128,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             fxLatencies.values.map { String(format: "%.2f", $0 * 1000.0) }.joined(separator: ", "),
             trackLatencies.values.map { String(format: "%.2f", $0 * 1000.0) }.joined(separator: ", ")
         ))
-        if isPlaying && !isRecording {
-            reschedulePlayback(tracks: syncedTracks)
+        if isPlaying {
+            updateRendererAnchors()
         }
     }
 
@@ -2253,7 +2196,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // touching a running graph on every sync.
     private func setTrackPan(_ trackID: UUID, _ pan: Float) {
         trackPanValues[trackID] = pan
-        playerNodes[trackID]?.pan = 0
+        trackRenderers[trackID]?.node.pan = 0
         trackOutputNodes[trackID]?.pan = 0
         trackPanNodes[trackID]?.pan = pan
     }
@@ -2808,7 +2751,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     }
                     guard let self else { return }
                     DispatchQueue.main.async {
-                        guard self.playerNodes[trackID] != nil,
+                        guard self.trackRenderers[trackID] != nil,
                               self.pluginGraphGenerations[trackID] == generation else {
                             return
                         }
@@ -3462,111 +3405,68 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         return "masterBuilding=\(isMasterPluginGraphBuilding), expectedAU=\(auIDs.count), nodes=\(masterPluginNodes.count), loaded=\(loadedCount), unavailable=\(unavailableCount), signature=\(masterPluginSignature.count)/\(configuredMasterPlugins.count)"
     }
 
-    /// Schedules every track so that `startSec` is heard at `sharedStartTime`
-    /// (the transport clock); the players start the pre-roll earlier.
-    /// `includePreRoll` also schedules the audio that fills the pre-roll, for
-    /// restarts during playback. Without a `sharedStartTime`, the start is
-    /// chosen once scheduling is done: reading shaped segments from disk can
-    /// take longer than the start lead, and a player whose start time has
-    /// passed drops its opening. Returns the transport start used.
+    /// The pre-roll of a track: its own inserts' latency plus the FX
+    /// compensation. Its renderer plays this much ahead of the transport.
+    private func trackPreRoll(_ trackID: UUID) -> Double {
+        (trackPluginLatencies[trackID] ?? 0.0) + fxCompensationLatency
+    }
+
+    /// Starts every track's renderer so that `startSec` is heard at the
+    /// returned transport start (the playhead clock). The opening of each
+    /// track is read from disk first, so nothing is lost at the start; the
+    /// start is then the earliest safe time, plus a render cycle for each of
+    /// the metronome's `extraPlayCalls`. `beforePlayersStart` sets up what
+    /// must be in place at the start (recording, the metronome).
     @discardableResult
     private func startPlayback(
         tracks: [AudioTrack],
-        sharedStartTime: AVAudioTime? = nil,
         startSec: Double? = nil,
-        includePreRoll: Bool = false,
         extraPlayCalls: Int = 0,
         beforePlayersStart: ((AVAudioTime) -> Void)? = nil
     ) -> AVAudioTime {
         let startSec = startSec ?? currentTime
+        let rate = hardwareSampleRate
+        let renderers = tracks.compactMap { track in trackRenderers[track.id].map { (track.id, $0) } }
+        let startFrame = Int64((startSec * rate).rounded())
+        for (_, renderer) in renderers {
+            renderer.prepare(renderFrom: startFrame)
+        }
+        let readyDeadline = Date().addingTimeInterval(2.0)
+        while !renderers.allSatisfy({ $0.1.isReadyToStart() }) && Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
 
-        for track in tracks {
-            guard let player = playerNodes[track.id] else {
-                continue
-            }
-
-            // Player-relative sample times only; the players start below.
-            scheduleClips(
-                for: track,
-                player: player,
-                startSec: startSec,
-                sharedStartTime: AVAudioTime(hostTime: mach_absolute_time()),
-                startPlayers: false,
-                includePreRoll: includePreRoll
+        let cycle = Double(max(256, inputBufferFrameSize)) / max(1.0, rate) * 1.2
+        let transportStartTime = nextTransportStartTime(extraLead: Double(extraPlayCalls) * cycle)
+        beforePlayersStart?(transportStartTime)
+        for (trackID, renderer) in renderers {
+            renderer.start(
+                anchorHost: transportStartTime.hostTime,
+                anchorFrame: Int64(((startSec + trackPreRoll(trackID)) * rate).rounded())
             )
         }
-
-        // Each play(at:) waits for a render cycle, and a player told to
-        // start after its start time has passed keeps time by dropping what
-        // it should already have played. So the players are started in the
-        // order their audio begins, and the start time leaves each of them
-        // enough cycles to be started before its first sound. Players whose
-        // audio begins later may start late: they only drop silence.
-        let ordered = pendingClipNodeStarts
-            .map { (player: $0.value, first: pendingClipFirstSample[$0.key] ?? 0) }
-            .sorted { $0.first < $1.first }
-        let cycle = Double(max(256, inputBufferFrameSize)) / max(1.0, hardwareSampleRate) * 1.2
-        var startingLead = 0.0
-        for (index, item) in ordered.enumerated() {
-            let firstSound = Double(item.first) / max(1.0, hardwareSampleRate)
-            startingLead = max(startingLead, Double(index + 1 + extraPlayCalls) * cycle - firstSound)
-        }
-        let transportStartTime = sharedStartTime ?? nextTransportStartTime(extraLead: startingLead)
-        let playersStartTime = AVAudioTime(
-            hostTime: transportStartTime.hostTime - Self.hostTicks(transportPreRoll)
-        )
-        // Starting the players takes a while; anything that must be in place
-        // at the start time (recording, the metronome) is set up before. Its
-        // own play(at:) calls are counted in `extraPlayCalls`.
-        beforePlayersStart?(transportStartTime)
-        for item in ordered {
-            item.player.play(at: playersStartTime)
-        }
-        pendingClipNodeStarts.removeAll()
-        pendingClipFirstSample.removeAll()
         return transportStartTime
     }
 
-    private func reschedulePlayback(tracks: [AudioTrack]) {
-        if !engine.isRunning {
-            try? engine.start()
-            if !engine.isRunning { return }
+    /// After a latency change during playback: keeps every track's audio
+    /// its new pre-roll ahead of the running transport clock.
+    private func updateRendererAnchors() {
+        let rate = hardwareSampleRate
+        for (trackID, renderer) in trackRenderers {
+            renderer.setAnchorFrame(Int64(((playheadStartOffset + trackPreRoll(trackID)) * rate).rounded()))
         }
-
-        let sharedStartTime = nextTransportStartTime()
-        let startSec = transportPosition(atHostTime: sharedStartTime.hostTime)
-        startPlayback(
-            tracks: tracks,
-            sharedStartTime: sharedStartTime,
-            startSec: startSec,
-            includePreRoll: startSec != nil
-        )
     }
 
-    private static func hostTicks(_ seconds: Double) -> UInt64 {
-        AudioConvertNanosToHostTime(UInt64(max(0.0, seconds) * 1_000_000_000.0))
-    }
-
-    /// When the transport starts: the players at the earliest safe time,
-    /// the transport clock (playhead, metronome, recording) the pre-roll later.
-    private func nextTransportStartTime(extraLead: Double = 0.0) -> AVAudioTime {
-        AVAudioTime(hostTime: earliestPlayerStartHostTime() + Self.hostTicks(extraLead + transportPreRoll))
-    }
-
-    /// The engine renders ahead of what is heard (output latency plus an IO
-    /// buffer or two), and render times are the times the audio is heard. A
-    /// player told to start inside the already rendered stretch drops its
-    /// opening to stay in time, so start past it: two IO buffers after the
-    /// last render, plus a margin, and never sooner than 50 ms from now.
-    private func earliestPlayerStartHostTime() -> UInt64 {
-        var earliest = mach_absolute_time() + Self.hostTicks(0.05)
-        if engine.isRunning,
-           let lastRender = engine.mainMixerNode.lastRenderTime,
-           lastRender.isHostTimeValid {
-            let ioBuffer = Double(max(256, inputBufferFrameSize)) / max(1.0, hardwareSampleRate)
-            earliest = max(earliest, lastRender.hostTime + Self.hostTicks(2.0 * ioBuffer + 0.01))
+    /// Stops every renderer, reporting render cycles that found no audio
+    /// read ahead (the disk could not keep up).
+    private func stopRenderers() {
+        var underruns: Int64 = 0
+        for renderer in trackRenderers.values {
+            underruns += renderer.stop()
         }
-        return earliest
+        if underruns > 0 {
+            print("[Playback] \(underruns) render cycles found no audio read ahead")
+        }
     }
 
     /// The transport position heard at `hostTime`, or nil before the
@@ -3576,204 +3476,30 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         return playheadStartOffset + Double(AudioConvertHostTimeToNanos(hostTime - startHostTime)) / 1_000_000_000.0
     }
 
-    /// After a clip edit during playback, restarts only the clips whose
-    /// schedule changed and the clips overlapping them (their crossfades
-    /// depend on each other); everything else plays on untouched.
-    private func rescheduleEditedClips(tracks: [AudioTrack]) {
-        let sharedStartTime = nextTransportStartTime()
-        guard let startSec = transportPosition(atHostTime: sharedStartTime.hostTime) else {
-            reschedulePlayback(tracks: tracks)
-            return
-        }
-        let playersStartTime = AVAudioTime(
-            hostTime: sharedStartTime.hostTime - Self.hostTicks(transportPreRoll)
-        )
-        var edits: [(track: AudioTrack, player: AVAudioPlayerNode, affected: Set<UUID>)] = []
-        for track in tracks {
-            guard let player = playerNodes[track.id] else { continue }
-            let previous = scheduledClipSignatures[track.id] ?? [:]
-            let current = Dictionary(
-                track.clips.map { ($0.id, ClipScheduleSignature($0)) },
-                uniquingKeysWith: { first, _ in first }
-            )
-            let changed = Set(previous.keys).union(current.keys).filter { previous[$0] != current[$0] }
-            guard !changed.isEmpty else { continue }
-            let ranges = changed.flatMap { [previous[$0]?.range, current[$0]?.range].compactMap { $0 } }
-            var affected = changed
-            for (id, signature) in current where ranges.contains(where: { $0.overlaps(signature.range) }) {
-                affected.insert(id)
-            }
-            // Clips that left this track (deleted, or moved to another track,
-            // where they keep their player) stop before anything is
-            // rescheduled: stopped later, a clip moved to a track above
-            // would be silenced right after its new track started it.
-            for id in changed where current[id] == nil {
-                clipPlayerNodes[id]?.stop()
-            }
-            edits.append((track, player, affected))
-        }
-        for edit in edits {
-            scheduleClips(
-                for: edit.track,
-                player: edit.player,
-                startSec: startSec,
-                sharedStartTime: playersStartTime,
-                onlyClipIDs: edit.affected,
-                includePreRoll: true
-            )
-        }
+    private static func hostTicks(_ seconds: Double) -> UInt64 {
+        AudioConvertNanosToHostTime(UInt64(max(0.0, seconds) * 1_000_000_000.0))
     }
 
-    private func scheduleClips(
-        for track: AudioTrack,
-        player: AVAudioPlayerNode,
-        startSec: Double,
-        sharedStartTime: AVAudioTime,
-        startPlayers: Bool = true,
-        onlyClipIDs: Set<UUID>? = nil,
-        includePreRoll: Bool = false
-    ) {
-        guard let clips = audioFiles[track.id] else { return }
-        let isIncluded: (UUID) -> Bool = { onlyClipIDs?.contains($0) ?? true }
-        if onlyClipIDs == nil {
-            player.stop()
-        }
-        for item in clips where isIncluded(item.clip.id) {
-            clipPlayerNodes[item.clip.id]?.stop()
-        }
-        scheduledClipSignatures[track.id] = Dictionary(
-            track.clips.map { ($0.id, ClipScheduleSignature($0)) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        // The players start `transportPreRoll` before `startSec` is heard;
-        // this track's audio takes its own inserts plus the FX compensation
-        // to come out, so it is scheduled `lead` later than that.
-        let trackPreRoll = (trackPluginLatencies[track.id] ?? 0.0) + fxCompensationLatency
-        let lead = max(0.0, transportPreRoll - trackPreRoll)
-        let outputRate = hardwareSampleRate
-        let loadedIDs = Set(clips.map(\.clip.id))
-        let spans = ClipLayering.spans(for: track.clips.filter { loadedIDs.contains($0.id) })
-        let visibleFrom = includePreRoll ? startSec - lead : startSec
-        for item in clips where !item.clip.isMuted && isIncluded(item.clip.id) {
-            let clip = item.clip
-            let file = item.file
-            let fileRate = file.processingFormat.sampleRate
-            let linearGain = pow(10.0, clip.gainDB / 20.0)
-            let targetPlayer = clipPlayerNodes[clip.id] ?? player
-            targetPlayer.volume = 1.0
-            var scheduledAny = false
-            var firstSample: AVAudioFramePosition?
-
-            for segment in ClipLayering.segments(spans, clip: clip.id) where segment.kind != .hidden {
-                let from = max(segment.start, visibleFrom)
-                let to = segment.end
-                guard to - from > 1.0 / outputRate else { continue }
-                // Frames and times come from absolute positions so adjacent
-                // segments meet exactly, with no gap or overlap at crossfades.
-                let startingFrame = AVAudioFramePosition(((clip.sourceStartTime + from - clip.startTime) * fileRate).rounded())
-                let endFrame = min(
-                    file.length,
-                    AVAudioFramePosition(((clip.sourceStartTime + to - clip.startTime) * fileRate).rounded())
-                )
-                guard startingFrame >= 0, endFrame > startingFrame else { continue }
-                let frameCount = AVAudioFrameCount(endFrame - startingFrame)
-                let when = AVAudioTime(
-                    sampleTime: AVAudioFramePosition(((from - startSec + lead) * outputRate).rounded()),
-                    atRate: outputRate
-                )
-
-                if segment.kind == .plain && clip.gainDB == 0.0 {
-                    targetPlayer.scheduleSegment(
-                        file,
-                        startingFrame: startingFrame,
-                        frameCount: frameCount,
-                        at: when,
-                        completionHandler: nil
-                    )
-                } else {
-                    let clipID = clip.id
-                    let envelope: (Double) -> Double = segment.kind == .plain
-                        ? { _ in linearGain }
-                        : { time in linearGain * ClipLayering.gain(spans, clip: clipID, at: time) }
-                    guard let buffer = makeClipPlaybackBuffer(
-                        fileURL: clip.fileURL,
-                        startingFrame: startingFrame,
-                        frameCount: frameCount,
-                        timelineStart: from,
-                        envelope: envelope
-                    ) else { continue }
-                    targetPlayer.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
-                }
-                scheduledAny = true
-                firstSample = min(firstSample ?? when.sampleTime, when.sampleTime)
-            }
-            if scheduledAny, !startPlayers, targetPlayer !== player {
-                let key = ObjectIdentifier(targetPlayer)
-                pendingClipNodeStarts[key] = targetPlayer
-                pendingClipFirstSample[key] = min(pendingClipFirstSample[key] ?? .max, firstSample ?? 0)
-            }
-        }
-        guard startPlayers else { return }
-
-        for item in clips where isIncluded(item.clip.id) {
-            clipPlayerNodes[item.clip.id]?.play(at: sharedStartTime)
-        }
+    /// When the transport starts: the renderers may play up to the pre-roll
+    /// before it, so it is the earliest safe time plus the pre-roll.
+    private func nextTransportStartTime(extraLead: Double = 0.0) -> AVAudioTime {
+        AVAudioTime(hostTime: earliestPlayerStartHostTime() + Self.hostTicks(extraLead + transportPreRoll))
     }
 
-    private func makeClipPlaybackBuffer(
-        fileURL: URL,
-        startingFrame: AVAudioFramePosition,
-        frameCount: AVAudioFrameCount,
-        timelineStart: Double,
-        envelope: (Double) -> Double
-    ) -> AVAudioPCMBuffer? {
-        guard frameCount > 0,
-              let file = try? AVAudioFile(forReading: fileURL),
-              let buffer = AVAudioPCMBuffer(
-                  pcmFormat: file.processingFormat,
-                  frameCapacity: frameCount
-              ) else { return nil }
-
-        file.framePosition = startingFrame
-        do {
-            try file.read(into: buffer, frameCount: frameCount)
-        } catch {
-            return nil
+    /// The engine renders ahead of what is heard (output latency plus an IO
+    /// buffer or two), and render times are the times the audio is heard.
+    /// Audio due inside the already rendered stretch would be lost, so start
+    /// past it: two IO buffers after the last render, plus a margin, and
+    /// never sooner than 50 ms from now.
+    private func earliestPlayerStartHostTime() -> UInt64 {
+        var earliest = mach_absolute_time() + Self.hostTicks(0.05)
+        if engine.isRunning,
+           let lastRender = engine.mainMixerNode.lastRenderTime,
+           lastRender.isHostTimeValid {
+            let ioBuffer = Double(max(256, inputBufferFrameSize)) / max(1.0, hardwareSampleRate)
+            earliest = max(earliest, lastRender.hostTime + Self.hostTicks(2.0 * ioBuffer + 0.01))
         }
-        guard let outputFormat = AVAudioFormat(
-            standardFormatWithSampleRate: hardwareSampleRate,
-            channels: 2
-        ),
-        let converter = AVAudioConverter(from: buffer.format, to: outputFormat),
-        let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: AVAudioFrameCount(
-                ceil(Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate)
-            )
-        ),
-        let outputChannelData = outputBuffer.floatChannelData else {
-            return nil
-        }
-
-        var suppliedInput = false
-        var conversionError: NSError?
-        let conversionStatus = converter.convert(to: outputBuffer, error: &conversionError) { _, status in
-            if suppliedInput {
-                status.pointee = .endOfStream
-                return nil
-            }
-            suppliedInput = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard conversionStatus != .error, outputBuffer.frameLength > 0 else { return nil }
-        let frames = Int(outputBuffer.frameLength)
-        for frame in 0..<frames {
-            let gain = Float(envelope(timelineStart + Double(frame) / outputFormat.sampleRate))
-            outputChannelData[0][frame] *= gain
-            outputChannelData[1][frame] *= gain
-        }
-        return outputBuffer
+        return earliest
     }
 
     // Live input enters the track at its output mixer, so it passes the
@@ -3910,14 +3636,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     private func setRecordingMutedTracks(_ trackIDs: Set<UUID>) {
         recordingMutedTrackIDs = trackIDs
-        for (trackID, items) in audioFiles {
-            let muted = trackIDs.contains(trackID)
-            for item in items {
-                clipPlayerNodes[item.clip.id]?.volume = muted || item.clip.isMuted ? 0.0 : 1.0
-            }
-            if muted {
-                playerNodes[trackID]?.volume = 0.0
-            }
+        for (trackID, renderer) in trackRenderers {
+            renderer.setMuted(trackIDs.contains(trackID))
         }
     }
 
@@ -3926,13 +3646,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         armedTracks: [AudioTrack],
         playbackTracks: [AudioTrack]
     ) -> AVAudioTime {
-        // Scheduled first, so the start time is fixed only once that is done;
-        // the recording is armed in between, before the players start.
+        // The renderers read ahead first, so the start time is fixed only once
+        // that is done; the recording is armed before they start.
         return startPlayback(
             tracks: playbackTracks + armedTracks,
             extraPlayCalls: metronomeEnabled ? 2 : 0
         ) { [self] sharedStartTime in
-            // After scheduling, which sets every clip player's volume.
             let usesPunchRange = punchInTime != nil && punchOutTime != nil
             if !usesPunchRange {
                 setRecordingMutedTracks(Set(armedTracks.map(\.id)))
@@ -4075,19 +3794,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         activeWriters.removeAll()
 
-        // 2. Stop player nodes
-        for player in playerNodes.values {
-            player.stop()
-        }
-        for player in clipPlayerNodes.values {
-            player.stop()
-        }
-        let audible = audibility(tracks: tracks, fxChannels: syncedFXChannels)
-        let wasRecordingMuted = recordingMutedTrackIDs
+        // 2. Stop the renderers
+        stopRenderers()
         setRecordingMutedTracks([])
-        for track in tracks where wasRecordingMuted.contains(track.id) {
-            playerNodes[track.id]?.volume = effectiveTrackVolume(for: track, audible: audible)
-        }
         punchArmedTrackIDs.removeAll()
         punchPlaybackState = 0
         isPunchRecording = false
@@ -4163,10 +3872,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             recordingActiveState = false
             writersSnapshot.removeAll()
         }
+        stopRenderers()
         engine.stop()
-
-        for player in playerNodes.values { player.stop() }
-        for player in clipPlayerNodes.values { player.stop() }
         // Drained here, not after terminate: (which never returns), so the
         // plug-ins are really disposed while the process still runs.
         autoreleasepool {
@@ -4276,9 +3983,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        // The tap goes on first: starting the players takes a render cycle
-        // per player, and the start time may have passed before the last of
-        // them is started. The window opens once the start time is known.
+        // The tap goes on first; the window opens once the start time is
+        // known (after the renderers have read ahead).
         let window = ExportWindow(
             frameCount: AVAudioFramePosition(((end - start) * hardwareSampleRate).rounded()),
             sampleRate: hardwareSampleRate
@@ -4294,7 +4000,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
         }
 
-        // startPlayback picks the start once the players are scheduled;
+        // startPlayback picks the start once the renderers have read ahead;
         // `start` is heard then, and the master plug-ins delay it further.
         // The file holds exactly the frames from there to `end`.
         currentTime = start
@@ -4303,8 +4009,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         func finish() {
             captureNode.removeTap(onBus: 0)
-            for player in playerNodes.values { player.stop() }
-            for player in clipPlayerNodes.values { player.stop() }
+            stopRenderers()
             writeQueue.sync { }
             isPlaying = false
             isRecording = false
@@ -4409,36 +4114,6 @@ public extension Notification.Name {
     static let audioEngineUpdatedPeaks = Notification.Name("audioEngineUpdatedPeaks")
 }
 
-/// The clip properties a playback schedule is built from.
-private struct ClipScheduleSignature: Equatable {
-    let startTime: Double
-    let sourceStartTime: Double
-    let duration: Double
-    let gainDB: Double
-    let fadeInDuration: Double
-    let fadeOutDuration: Double
-    let fadeInCurve: FadeCurve
-    let fadeOutCurve: FadeCurve
-    let isMuted: Bool
-    let fileURL: URL
-
-    @MainActor
-    init(_ clip: AudioClip) {
-        startTime = clip.startTime
-        sourceStartTime = clip.sourceStartTime
-        duration = clip.duration
-        gainDB = clip.gainDB
-        fadeInDuration = clip.fadeInDuration
-        fadeOutDuration = clip.fadeOutDuration
-        fadeInCurve = clip.fadeInCurve
-        fadeOutCurve = clip.fadeOutCurve
-        isMuted = clip.isMuted
-        fileURL = clip.fileURL
-    }
-
-    var range: ClosedRange<Double> { startTime...(startTime + max(0.0, duration)) }
-}
-
 /// Called on an arbitrary thread when a plug-in reports a new latency.
 private let pluginLatencyListener: AudioUnitPropertyListenerProc = { context, _, _, _, _ in
     let manager = Unmanaged<AudioEngineManager>.fromOpaque(context).takeUnretainedValue()
@@ -4530,4 +4205,16 @@ private final class ExportWindow: @unchecked Sendable {
         slice.frameLength = AVAudioFrameCount(take)
         return slice
     }
+}
+
+/// The master fader level (see `AudioEngineManager.masterVolumeState`).
+@MainActor
+public final class MasterVolumeState: ObservableObject {
+    @Published public var value: Float = 1.0
+}
+
+/// The engine's playhead position (see `AudioEngineManager.transportClock`).
+@MainActor
+public final class TransportClock: ObservableObject {
+    @Published public var time: Double = 0.0
 }

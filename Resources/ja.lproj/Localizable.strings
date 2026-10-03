@@ -118,6 +118,15 @@
 "%lld Clips" = "%lld個のクリップ";
 "Normalize (%lld)" = "ノーマライズ（%lld個）";
 "Reverse (%lld)" = "逆再生（%lld個）";
+"Strip Silence…" = "無音部分をトリム…";
+"Strip Silence… (%lld)" = "無音部分をトリム…（%lld個）";
+"Strip Silence" = "無音部分をトリム";
+"Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted." = "すべてのサンプルが無音レベル以下のまま指定の長さ以上続く部分（他の DAW から取り込んだステムの、録音されていない部分など）を取り除きます。その前後でクリップを分割し、無音のクリップを削除します。";
+"Silence level:" = "無音レベル:";
+"dB or lower" = "dB 以下";
+"Minimum silence length:" = "無音の最短の長さ:";
+"seconds" = "秒";
+"Fade in/out:" = "フェードイン／アウト:";
 "Mute Recordings (%lld)" = "クリップをミュート（%lld個）";
 "Unmute Recordings (%lld)" = "ミュートを解除（%lld個）";
 "Duplicate Recordings (%lld)" = "クリップを複製（%lld個）";

@@ -2,6 +2,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 public struct WaveformLaneView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
+    /// Clips outside it are not built: they are off screen, and building
+    /// hundreds of clip views on every zoom step was a large part of its cost.
+    @EnvironmentObject var waveformDrawWindow: DrawWindowState
     @ObservedObject public var track: AudioTrack
     @ObservedObject public var projectState: ProjectState
     public let timelineWidth: CGFloat
@@ -12,6 +18,14 @@ public struct WaveformLaneView: View {
         self.timelineWidth = timelineWidth
     }
 
+    /// The take being recorded (see `AudioClipView`), which grows with the
+    /// playhead.
+    private func isLiveRecordingClip(_ clip: AudioClip) -> Bool {
+        let engine = projectState.audioEngine
+        return track.isRecordArmed && clip.id == track.clips.last?.id
+            && (engine.isRecording || engine.hasPendingRecording)
+    }
+
     public var body: some View {
         let rowHeight = TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
         ZStack(alignment: .leading) {
@@ -20,33 +34,57 @@ public struct WaveformLaneView: View {
                 .fill(Color(red: 0.10, green: 0.11, blue: 0.13))
                 .frame(width: timelineWidth, height: rowHeight)
 
-            // Grid Lines (every second or every 5 seconds depending on zoom)
+            // Grid Lines (every second or every 5 seconds depending on zoom),
+            // only across the draw window: the lane spans the whole song, and
+            // drawing all of it again on every zoom step was wasted.
+            let gridWindow = waveformDrawWindow.range
             Canvas { context, size in
                 let pps = projectState.pixelsPerSecond
                 let stepSeconds: Double = pps > 60 ? 1.0 : 5.0
                 let stepPixels = stepSeconds * Double(pps)
+                let firstStep = max(0.0, (gridWindow.lowerBound / stepSeconds).rounded(.down))
+                let endX = min(Double(size.width), gridWindow.upperBound * Double(pps))
 
-                var x = 0.0
-                while x < size.width {
-                    var line = Path()
-                    line.move(to: CGPoint(x: x, y: 0))
-                    line.addLine(to: CGPoint(x: x, y: size.height))
-                    context.stroke(line, with: .color(Color.white.opacity(0.04)), lineWidth: 1)
+                var lines = Path()
+                var x = firstStep * stepPixels
+                while x < endX {
+                    lines.move(to: CGPoint(x: x, y: 0))
+                    lines.addLine(to: CGPoint(x: x, y: size.height))
                     x += stepPixels
                 }
+                context.stroke(lines, with: .color(Color.white.opacity(0.04)), lineWidth: 1)
             }
             .frame(width: timelineWidth, height: rowHeight)
 
             // Each recording session is displayed as a separate timeline clip.
             if !track.clips.isEmpty {
+                // Worked out once for the lane, not once per clip.
+                let layerSpans = ClipLayering.spans(for: projectState.layeringClips(for: track))
+                let window = waveformDrawWindow.range
+                let builtClips = track.clips.filter { clip in
+                    (clip.startTime <= window.upperBound && clip.startTime + clip.duration >= window.lowerBound)
+                        || track.selectedClipIDs.contains(clip.id) || isLiveRecordingClip(clip)
+                }
                 ZStack(alignment: .leading) {
-                    ForEach(track.clips) { clip in
-                        AudioClipView(
-                            clip: clip,
-                            track: track,
-                            projectState: projectState,
-                            height: rowHeight - 4
-                        )
+                    ForEach(builtClips) { clip in
+                        if isLiveRecordingClip(clip) {
+                            LiveRecordingClipView(
+                                clock: projectState.audioEngine.transportClock,
+                                clip: clip,
+                                track: track,
+                                projectState: projectState,
+                                height: rowHeight - 4,
+                                layerSpans: layerSpans
+                            )
+                        } else {
+                            AudioClipView(
+                                clip: clip,
+                                track: track,
+                                projectState: projectState,
+                                height: rowHeight - 4,
+                                layerSpans: layerSpans
+                            )
+                        }
                     }
                 }
                 .frame(width: timelineWidth, height: rowHeight, alignment: .leading)
@@ -260,6 +298,12 @@ private enum LaneMenu {
             ) {
                 projectState.reverseClips(trackId: trackId, clipId: clipId)
             })
+            menu.addItem(ClosureMenuItem(
+                isMulti ? String(localized: "Strip Silence… (\(count))") : String(localized: "Strip Silence…"),
+                symbol: "waveform.path.badge.minus", enabled: !isRecording
+            ) {
+                projectState.stripSilenceClips(trackId: trackId, clipId: clipId)
+            })
         }
 
         menu.addItem(.separator())
@@ -390,7 +434,32 @@ private struct LaneMenuMonitor: NSViewRepresentable {
     }
 }
 
+/// The take being recorded, redrawn as the playhead moves: other clips do
+/// not observe the playhead.
+private struct LiveRecordingClipView: View {
+    @ObservedObject var clock: TransportClock
+    let clip: AudioClip
+    let track: AudioTrack
+    let projectState: ProjectState
+    let height: CGFloat
+    let layerSpans: [ClipLayerSpan]
+
+    var body: some View {
+        AudioClipView(
+            clip: clip,
+            track: track,
+            projectState: projectState,
+            height: height,
+            layerSpans: layerSpans,
+            liveTime: clock.time
+        )
+    }
+}
+
 private struct AudioClipView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject var clip: AudioClip
     @ObservedObject var track: AudioTrack
     @ObservedObject var projectState: ProjectState
@@ -409,17 +478,25 @@ private struct AudioClipView: View {
     @State private var curveDragStartMidpoint: Double?
     @State private var curveDragIsFadeIn = true
     let height: CGFloat
+    /// The lane's layering (`ClipLayering.spans`), shared by its clips.
+    let layerSpans: [ClipLayerSpan]
+    /// The playhead, passed in for the take being recorded only.
+    let liveTime: Double?
 
     init(
         clip: AudioClip,
         track: AudioTrack,
         projectState: ProjectState,
-        height: CGFloat
+        height: CGFloat,
+        layerSpans: [ClipLayerSpan],
+        liveTime: Double? = nil
     ) {
         self.clip = clip
         self.track = track
         self.projectState = projectState
         self.height = height
+        self.layerSpans = layerSpans
+        self.liveTime = liveTime
     }
 
     var body: some View {
@@ -431,11 +508,12 @@ private struct AudioClipView: View {
         let isActiveClip = track.isRecordArmed &&
             clip.id == track.clips.last?.id &&
             (audioEngine.isRecording || audioEngine.hasPendingRecording)
+        let now = liveTime ?? audioEngine.currentTime
         let liveEndTime = audioEngine.isPunchRecording
-            ? audioEngine.currentTime
-            : min(audioEngine.currentTime, projectState.punchRange.enabled
+            ? now
+            : min(now, projectState.punchRange.enabled
                 ? projectState.punchRange.endBeat * beatDuration
-                : audioEngine.currentTime)
+                : now)
         // A punch take records the whole pass and is cut to the punch range
         // on stop; while it records, only the part inside the range is shown
         // (nothing before punch-in).
@@ -450,7 +528,6 @@ private struct AudioClipView: View {
         let clipWidth = max(4.0, CGFloat(displayDuration) * projectState.pixelsPerSecond)
         let isSelected = track.selectedClipIDs.contains(clip.id)
         let clipGainScale = CGFloat(pow(10.0, clip.gainDB / 20.0))
-        let layerSpans = ClipLayering.spans(for: projectState.layeringClips(for: track))
         let fadeInLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: true)
         let fadeOutLocked = ClipLayering.isEdgeCovered(layerSpans, clip: clip.id, atStart: false)
         let fadeInCurve = ClipLayering.resolvedCurve(layerSpans, clip: clip.id, atStart: true)
@@ -471,6 +548,19 @@ private struct AudioClipView: View {
                 }
                 .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
         } else if (!clip.waveformCache.peaks.isEmpty || isActiveClip) && !isHiddenBeforePunchIn {
+            // Drawn at the waveforms' zoom and track height, then stretched to
+            // the box: while the zoom or height changes, only the stretch
+            // follows and the waveform is drawn again once the change stops.
+            let renderPixelsPerSecond = projectState.waveformRenderPixelsPerSecond
+            let renderWidth = max(4.0, CGFloat(displayDuration) * renderPixelsPerSecond)
+            let boxHeight = max(20.0, height)
+            let renderHeight = max(20.0, height + TrackHeaderView.rowHeight(for: track)
+                * (projectState.waveformRenderTrackHeightScale - projectState.trackHeightScale))
+            // While the zoom or track height is changing, the handles are left
+            // out: they are not used then, and each one is several views to
+            // move on every step for every clip on screen.
+            let isGeometryPreview = renderPixelsPerSecond != projectState.pixelsPerSecond
+                || projectState.waveformRenderTrackHeightScale != projectState.trackHeightScale
             Group {
                 if track.channelMode == .stereo {
                     VStack(spacing: 1) {
@@ -478,38 +568,54 @@ private struct AudioClipView: View {
                             waveformCache: clip.waveformCache,
                             trackColor: track.color,
                             sampleRate: clip.sampleRate,
-                            pixelsPerSecond: projectState.pixelsPerSecond,
+                            pixelsPerSecond: renderPixelsPerSecond,
                             sampleOffset: clip.sourceStartTime + hiddenLead,
                             visibleDuration: displayDuration,
                             channelIndex: 0,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                            envelope: envelope
+                            envelope: envelope,
+                            drawWindow: projectState.waveformDrawWindow,
+                            timelineOrigin: displayStartTime,
+                            scalePreview: projectState.waveformScalePreview
                         )
+                        .equatable()
                         WaveformCanvas(
                             waveformCache: clip.waveformCache,
                             trackColor: track.color,
                             sampleRate: clip.sampleRate,
-                            pixelsPerSecond: projectState.pixelsPerSecond,
+                            pixelsPerSecond: renderPixelsPerSecond,
                             sampleOffset: clip.sourceStartTime + hiddenLead,
                             visibleDuration: displayDuration,
                             channelIndex: 1,
                             verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                            envelope: envelope
+                            envelope: envelope,
+                            drawWindow: projectState.waveformDrawWindow,
+                            timelineOrigin: displayStartTime,
+                            scalePreview: projectState.waveformScalePreview
                         )
+                        .equatable()
                     }
                 } else {
                     WaveformCanvas(
                         waveformCache: clip.waveformCache,
                         trackColor: track.color,
                         sampleRate: clip.sampleRate,
-                        pixelsPerSecond: projectState.pixelsPerSecond,
+                        pixelsPerSecond: renderPixelsPerSecond,
                         sampleOffset: clip.sourceStartTime + hiddenLead,
                         visibleDuration: displayDuration
                         , verticalScale: projectState.waveformVerticalScale * clipGainScale,
-                        envelope: envelope
+                        envelope: envelope,
+                        drawWindow: projectState.waveformDrawWindow,
+                        timelineOrigin: displayStartTime,
+                        scalePreview: projectState.waveformScalePreview
                     )
+                    .equatable()
                 }
             }
+            .frame(width: renderWidth, height: renderHeight)
+            .scaleEffect(x: clipWidth / renderWidth, y: boxHeight / renderHeight, anchor: .topLeading)
+            .frame(width: clipWidth, height: boxHeight, alignment: .topLeading)
+            .clipped()
             .frame(width: clipWidth, height: max(20.0, height))
             .background(track.color.opacity(0.08))
             .overlay {
@@ -530,28 +636,34 @@ private struct AudioClipView: View {
                     .stroke(isSelected ? Color.white : track.color.opacity(0.9), lineWidth: isSelected ? 2 : 1)
             )
             .overlay(alignment: .leading) {
-                trimHandle
-                    .gesture(leftTrimGesture)
+                if !isGeometryPreview {
+                    trimHandle(cursor: .resizeRight)
+                        .gesture(leftTrimGesture)
+                }
             }
             .overlay(alignment: .trailing) {
-                trimHandle
-                    .gesture(rightTrimGesture)
+                if !isGeometryPreview {
+                    trimHandle(cursor: .resizeLeft)
+                        .gesture(rightTrimGesture)
+                }
             }
             .overlay(alignment: .top) {
-                gainHandle
-                    .gesture(gainGesture)
+                if !isGeometryPreview {
+                    gainHandle
+                        .gesture(gainGesture)
+                }
             }
             .overlay(alignment: .topLeading) {
-                if !fadeInLocked {
+                if !fadeInLocked && !isGeometryPreview {
                     fadeInHandle
-                        .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond - 5.0, y: -5.0)
+                        .offset(x: CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond - 8.0, y: -8.0)
                         .gesture(fadeInGesture)
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if !fadeOutLocked {
+                if !fadeOutLocked && !isGeometryPreview {
                     fadeOutHandle
-                        .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond + 5.0, y: -5.0)
+                        .offset(x: -CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond + 8.0, y: -8.0)
                         .gesture(fadeOutGesture)
                 }
             }
@@ -559,7 +671,7 @@ private struct AudioClipView: View {
             // up or down bends the curve, double-click returns it to Auto.
             .overlay(alignment: .topLeading) {
                 let fadeWidth = CGFloat(clip.fadeInDuration) * projectState.pixelsPerSecond
-                if !fadeInLocked && !isActiveClip && fadeWidth >= 16.0 {
+                if !fadeInLocked && !isActiveClip && !isGeometryPreview && fadeWidth >= 16.0 {
                     curveHandle
                         .offset(
                             x: fadeWidth / 2.0 - 10.0,
@@ -571,7 +683,7 @@ private struct AudioClipView: View {
             }
             .overlay(alignment: .topTrailing) {
                 let fadeWidth = CGFloat(clip.fadeOutDuration) * projectState.pixelsPerSecond
-                if !fadeOutLocked && !isActiveClip && fadeWidth >= 16.0 {
+                if !fadeOutLocked && !isActiveClip && !isGeometryPreview && fadeWidth >= 16.0 {
                     curveHandle
                         .offset(
                             x: -fadeWidth / 2.0 + 10.0,
@@ -754,36 +866,48 @@ private struct AudioClipView: View {
         }
     }
 
-    private var trimHandle: some View {
-        Capsule()
-            .fill(Color.white.opacity(0.9))
-            .frame(width: 4, height: 34)
-            .padding(.horizontal, 3)
-            .contentShape(Rectangle().size(width: 16, height: 80))
+    /// Not drawn: the clip's own edge is the handle, and the pointer turns
+    /// into a resize arrow over it.
+    private func trimHandle(cursor: HandleCursor) -> some View {
+        Color.clear
+            .frame(width: 10)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .hoverCursor(cursor)
     }
 
     private var gainHandle: some View {
         Capsule()
             .fill(Color.white.opacity(0.95))
-            .frame(width: 34, height: 5)
+            .frame(width: 8.5, height: 5)
             .padding(.vertical, 4)
-            .contentShape(Rectangle().size(width: 56, height: 24))
+            .padding(.horizontal, 7.75)
+            .contentShape(Rectangle())
+            .hoverCursor(.resizeUpDown)
     }
 
+    // Hit area centred on the dot and kept small, so it does not reach
+    // down over the trim edge below it.
     private var fadeInHandle: some View {
         Circle()
             .fill(Color.white.opacity(0.95))
             .frame(width: 10, height: 10)
             .shadow(color: .black.opacity(0.5), radius: 2)
-            .contentShape(Rectangle().size(width: 18, height: 24))
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle())
+            .hoverCursor(.pointingHand)
     }
 
+    // Hit area centred on the dot and kept small, so it does not reach
+    // down over the trim edge below it.
     private var fadeOutHandle: some View {
         Circle()
             .fill(Color.white.opacity(0.95))
             .frame(width: 10, height: 10)
             .shadow(color: .black.opacity(0.5), radius: 2)
-            .contentShape(Rectangle().size(width: 18, height: 24))
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle())
+            .hoverCursor(.pointingHand)
     }
 
     // minimumDistance 0 so the value tooltip appears on mouse-down, before any movement.
@@ -795,6 +919,7 @@ private struct AudioClipView: View {
             .shadow(color: .black.opacity(0.5), radius: 2)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
+            .hoverCursor(.pointingHand)
     }
 
     /// Vertical drag moves the fade's halfway point: up bows the curve up.
@@ -1027,3 +1152,60 @@ private struct EditValueTooltip: View {
     }
 }
 
+
+/// Pointer shape shown while the pointer is over a handle.
+private enum HandleCursor {
+    /// Clip start: the arrow points right only.
+    case resizeRight
+    /// Clip end: the arrow points left only.
+    case resizeLeft
+    /// Clip gain: up and down.
+    case resizeUpDown
+    case pointingHand
+
+    var nsCursor: NSCursor {
+        switch self {
+        case .resizeRight: return .resizeRight
+        case .resizeLeft: return .resizeLeft
+        case .resizeUpDown: return .resizeUpDown
+        case .pointingHand: return .pointingHand
+        }
+    }
+}
+
+/// Shows a cursor while the pointer is over the view. A cursor pushed from
+/// `onHover` is put back to the arrow at once by the hosting view, so macOS
+/// 15 and later use `pointerStyle`, and older systems set it again on every
+/// pointer move.
+private struct HoverCursor: ViewModifier {
+    let cursor: HandleCursor
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.pointerStyle(pointerStyle)
+        } else {
+            content.onContinuousHover { phase in
+                switch phase {
+                case .active: cursor.nsCursor.set()
+                case .ended: NSCursor.arrow.set()
+                }
+            }
+        }
+    }
+
+    @available(macOS 15.0, *)
+    private var pointerStyle: PointerStyle {
+        switch cursor {
+        case .resizeRight: return .columnResize(directions: .trailing)
+        case .resizeLeft: return .columnResize(directions: .leading)
+        case .resizeUpDown: return .rowResize
+        case .pointingHand: return .link
+        }
+    }
+}
+
+private extension View {
+    func hoverCursor(_ cursor: HandleCursor) -> some View {
+        modifier(HoverCursor(cursor: cursor))
+    }
+}

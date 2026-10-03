@@ -1,15 +1,15 @@
 import SwiftUI
+import Combine
 
 
 public struct ArrangerView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject public var projectState: ProjectState
     @ObservedObject public var audioEngine: AudioEngineManager
-    /// Scroll time last read from the track scroll view, so that a change
-    /// coming from the user's own scrolling is not sent back to it.
-    @State private var scrolledTime: Double?
-    /// Offset a `scrollTo` is heading for; offsets reported before it lands
-    /// are stale.
-    @State private var requestedScrollOffset: CGFloat?
+    /// Bookkeeping for following `timelineScrollTime` (see `ScrollFollow`).
+    @State private var scrollFollow = ScrollFollow()
     /// The tracks' horizontal scroll view, which horizontal scrolls over the
     /// ruler are passed to.
     @State private var timelineScrollView = WeakScrollView()
@@ -17,6 +17,10 @@ public struct ArrangerView: View {
     /// far it has been dragged vertically.
     @State private var reorderTrackID: UUID?
     @State private var reorderTranslation: CGFloat = 0
+    /// How far the timeline must reach for the playhead: raised in steps as
+    /// the playhead moves, so this view (which does not observe the playhead)
+    /// is rebuilt only now and then.
+    @State private var playheadExtentTime: Double = 0
 
     // Dynamic timeline width (minimum 2500 pt, extends with zoom & duration).
     // It always reaches a screen past the playhead, where auto-scroll puts
@@ -35,7 +39,8 @@ public struct ArrangerView: View {
             audioEngine.currentTime + 30.0,
             clipEndTime + 5.0,
             (projectState.songEndTime ?? 0.0) + 5.0,
-            audioEngine.currentTime + visibleDuration + 5.0
+            audioEngine.currentTime + visibleDuration + 5.0,
+            playheadExtentTime
         )
         return max(2500.0, CGFloat(maxDuration) * pixelsPerSecond)
     }
@@ -145,7 +150,8 @@ public struct ArrangerView: View {
         if modifiers == [.option] {
             projectState.setTrackHeightScale(projectState.trackHeightScale + delta * 0.1)
         } else {
-            projectState.waveformVerticalScale *= pow(1.1, delta)
+            let current = projectState.waveformScalePreview.target ?? projectState.waveformVerticalScale
+            projectState.previewWaveformVerticalScale(current * pow(1.1, delta))
         }
         return true
     }
@@ -285,6 +291,49 @@ public struct ArrangerView: View {
         .allowsHitTesting(false)
     }
 
+    /// Scrolls the tracks to a new `timelineScrollTime`, unless the change
+    /// came from the tracks' own scrolling.
+    private func followScrollTime(_ time: Double, proxy horizontalProxy: ScrollViewProxy) {
+        guard time != scrollFollow.scrolledTime else { return }
+        let requested = CGFloat(time) * projectState.pixelsPerSecond
+        scrollFollow.requestedOffset = requested
+        guard timelineScrollView.scrollView != nil else {
+            withAnimation(nil) {
+                horizontalProxy.scrollTo(
+                    "savedScrollPosition-\(projectState.scrollRestoreRevision)",
+                    anchor: .leading
+                )
+            }
+            Task { @MainActor in
+                await Task.yield()
+                await Task.yield()
+                if scrollFollow.requestedOffset == requested {
+                    scrollFollow.requestedOffset = nil
+                }
+            }
+            return
+        }
+        // Scroll the clip view itself: `scrollTo`
+        // finds its target in the layout of the
+        // moment, which right after a stop and
+        // rewind can still be the old one (the
+        // timeline width follows the playhead),
+        // leaving the view where it was.
+        setTrackScrollOffset(requested)
+        DispatchQueue.main.async {
+            guard scrollFollow.requestedOffset == requested else { return }
+            // Again once the new width is laid
+            // out, which may have clamped it.
+            timelineScrollView.scrollView?.window?.contentView?.layoutSubtreeIfNeeded()
+            setTrackScrollOffset(requested)
+            // A target past the content's end is
+            // never reached; stop waiting for it.
+            if scrollFollow.requestedOffset == requested {
+                scrollFollow.requestedOffset = nil
+            }
+        }
+    }
+
     public var body: some View {
         GeometryReader { viewport in
             let timelineWidth = timelineWidth(viewportWidth: viewport.size.width)
@@ -316,7 +365,10 @@ public struct ArrangerView: View {
                         projectState: projectState,
                         width: timelineWidth
                     )
-                    .offset(x: -CGFloat(projectState.timelineScrollTime) * projectState.pixelsPerSecond)
+                    .modifier(TimelineScrollOffset(
+                        scroll: projectState.timelineScroll,
+                        pixelsPerSecond: projectState.pixelsPerSecond
+                    ))
                     .frame(width: max(0, viewport.size.width - 230), height: 32, alignment: .leading)
                     .clipped()
                 }
@@ -332,12 +384,9 @@ public struct ArrangerView: View {
                                     isSelected: projectState.selectedTrackId == track.id,
                                     isRecording: audioEngine.isRecording
                                 )
-                                .frame(
-                                    width: 230,
-                                    height: TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale,
-                                    alignment: .top
-                                )
-                                .clipped()
+                                // TrackHeaderView sets its own size: it observes
+                                // the track, so its height follows a resize drag
+                                // that this view would not see.
                                 .gesture(reorderGesture(for: track))
                                 .modifier(reorderLift(for: track))
                             }
@@ -405,86 +454,66 @@ public struct ArrangerView: View {
                                     .frame(maxWidth: timelineWidth, alignment: .leading)
 
                                     // The ball on top of this line is drawn in the ruler.
-                                    Rectangle()
-                                        .fill(PlayheadBall.color(for: audioEngine))
-                                        .frame(width: 2, height: max(300, totalHeight))
-                                        .offset(x: playheadX - 1)
-                                        .allowsHitTesting(false)
+                                    PlayheadLine(
+                                        clock: audioEngine.transportClock,
+                                        color: PlayheadBall.color(for: audioEngine),
+                                        pixelsPerSecond: projectState.pixelsPerSecond,
+                                        height: max(300, totalHeight)
+                                    )
                                 }
                                 // Read from AppKit: a SwiftUI geometry
                                 // preference is not updated while the user
                                 // scrolls with the wheel or trackpad.
                                 .background(ScrollOffsetObserver(scrollView: timelineScrollView) { offset in
                                     guard !projectState.isRestoringScrollPosition else { return }
-                                    if let requested = requestedScrollOffset {
+                                    if let requested = scrollFollow.requestedOffset {
                                         guard abs(offset - requested) < 1.0 else { return }
-                                        requestedScrollOffset = nil
+                                        scrollFollow.requestedOffset = nil
                                     }
                                     let time = max(
                                         0.0,
                                         Double(offset / projectState.pixelsPerSecond)
                                     )
-                                    scrolledTime = time
+                                    scrollFollow.scrolledTime = time
                                     projectState.timelineScrollTime = time
                                 })
-                                .onChange(of: projectState.timelineScrollTime) { time in
-                                    guard time != scrolledTime else { return }
-                                    let requested = CGFloat(time) * projectState.pixelsPerSecond
-                                    requestedScrollOffset = requested
-                                    guard timelineScrollView.scrollView != nil else {
-                                        withAnimation(nil) {
-                                            horizontalProxy.scrollTo(
-                                                "savedScrollPosition-\(projectState.scrollRestoreRevision)",
-                                                anchor: .leading
-                                            )
-                                        }
-                                        Task { @MainActor in
-                                            await Task.yield()
-                                            await Task.yield()
-                                            if requestedScrollOffset == requested {
-                                                requestedScrollOffset = nil
-                                            }
-                                        }
-                                        return
+                                // Called right after the value changes, before
+                                // anything is drawn, so the tracks move in the
+                                // same frame as the ruler; and not observed, so
+                                // scrolling does not rebuild this whole view.
+                                .onAppear {
+                                    projectState.timelineScroll.onChange = { time in
+                                        followScrollTime(time, proxy: horizontalProxy)
                                     }
-                                    // Scroll the clip view itself: `scrollTo`
-                                    // finds its target in the layout of the
-                                    // moment, which right after a stop and
-                                    // rewind can still be the old one (the
-                                    // timeline width follows the playhead),
-                                    // leaving the view where it was.
-                                    setTrackScrollOffset(requested)
-                                    DispatchQueue.main.async {
-                                        guard requestedScrollOffset == requested else { return }
-                                        // Again once the new width is laid
-                                        // out, which may have clamped it.
-                                        timelineScrollView.scrollView?.window?.contentView?.layoutSubtreeIfNeeded()
-                                        setTrackScrollOffset(requested)
-                                        // A target past the content's end is
-                                        // never reached; stop waiting for it.
-                                        if requestedScrollOffset == requested {
-                                            requestedScrollOffset = nil
-                                        }
-                                    }
+                                    projectState.timelineViewportWidth = max(1.0, viewport.size.width - 230.0)
+                                    projectState.refreshDrawWindow(force: true)
                                 }
-                                .onChange(of: audioEngine.currentTime) { _ in
-                                    guard projectState.autoScrollEnabled,
-                                          audioEngine.isPlaying || audioEngine.isRecording else { return }
+                                .onChange(of: viewport.size.width) { width in
+                                    projectState.timelineViewportWidth = max(1.0, width - 230.0)
+                                }
+                                // Received, not observed: the playhead moves 60
+                                // times a second and this view stays as it is.
+                                .onReceive(audioEngine.transportClock.$time) { time in
                                     let visibleWidth = max(1.0, viewport.size.width - 230.0)
                                     let visibleDuration = max(
                                         1.0,
                                         Double(visibleWidth) / Double(projectState.pixelsPerSecond)
                                     )
+                                    if time + visibleDuration + 5.0 > playheadExtentTime {
+                                        playheadExtentTime = time + visibleDuration + 60.0
+                                    }
+                                    guard projectState.autoScrollEnabled,
+                                          audioEngine.isPlaying || audioEngine.isRecording else { return }
                                     let rightMarginTime = visibleDuration * 0.1
                                     let scrollTriggerTime = projectState.timelineScrollTime + visibleDuration - rightMarginTime
-                                    if audioEngine.currentTime >= scrollTriggerTime {
+                                    if time >= scrollTriggerTime {
                                         // Keep the ruler, waveform, and bottom
                                         // scrollbar driven by the same offset.
                                         // The track view follows through the
                                         // timelineScrollTime change above.
                                         projectState.timelineScrollTime = max(
                                             0.0,
-                                            audioEngine.currentTime - rightMarginTime
+                                            time - rightMarginTime
                                         )
                                     }
                                 }
@@ -537,8 +566,9 @@ public struct ArrangerView: View {
                 Image(systemName: "arrow.left.and.right")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white.opacity(0.5))
-                KnobOnlySlider(
-                    value: $projectState.timelineScrollTime,
+                TimelineScrollSlider(
+                    scroll: projectState.timelineScroll,
+                    projectState: projectState,
                     range: 0.0...max(
                         0.0,
                         Double(timelineWidth / projectState.pixelsPerSecond)
@@ -592,6 +622,9 @@ private struct ReorderLift: ViewModifier {
 /// Background, ticks and labels of the ruler. Its own view so that pointer
 /// tracking in the ruler (for the flag menu) does not redraw it.
 private struct RulerTicks: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
 
@@ -661,6 +694,9 @@ private struct RulerTicks: View {
 
 // MARK: - Timeline Ruler View
 struct TimelineRulerView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
     let width: CGFloat
@@ -689,7 +725,11 @@ struct TimelineRulerView: View {
             )
             .allowsHitTesting(!optionKey.isDown)
 
-            PlayheadBall(audioEngine: audioEngine, pixelsPerSecond: projectState.pixelsPerSecond)
+            PlayheadBall(
+                audioEngine: audioEngine,
+                clock: audioEngine.transportClock,
+                pixelsPerSecond: projectState.pixelsPerSecond
+            )
                 .allowsHitTesting(false)
         }
         .frame(width: width, height: 32)
@@ -738,6 +778,9 @@ struct TimelineRulerView: View {
 }
 
 private struct PunchRangeOverlay: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
     let width: CGFloat
@@ -825,6 +868,9 @@ private struct PunchRangeOverlay: View {
 /// Song start / end flags on the ruler. Dragging moves a flag with the grid
 /// snap and shows its position in the ruler's current units.
 private struct SongRangeOverlay: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject var audioEngine: AudioEngineManager
     @ObservedObject var projectState: ProjectState
     let width: CGFloat
@@ -925,8 +971,25 @@ private struct SongRangeOverlay: View {
 /// The playhead's head: a ball resting on the playhead line at the bottom of
 /// the ruler. While the transport runs it bounces once per beat, touching
 /// down on each beat; stopped, it rests wherever the playhead is.
+/// The playhead line over the tracks, observing only the playhead.
+private struct PlayheadLine: View {
+    @ObservedObject var clock: TransportClock
+    let color: Color
+    let pixelsPerSecond: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Rectangle()
+            .fill(color)
+            .frame(width: 2, height: height)
+            .offset(x: CGFloat(clock.time) * pixelsPerSecond - 1)
+            .allowsHitTesting(false)
+    }
+}
+
 private struct PlayheadBall: View {
     @ObservedObject var audioEngine: AudioEngineManager
+    @ObservedObject var clock: TransportClock
     let pixelsPerSecond: CGFloat
 
     private static let diameter: CGFloat = 12
@@ -941,11 +1004,11 @@ private struct PlayheadBall: View {
     }
 
     var body: some View {
-        let x = CGFloat(audioEngine.currentTime) * pixelsPerSecond
+        let x = CGFloat(clock.time) * pixelsPerSecond
         let lift: CGFloat
         if audioEngine.isPlaying || audioEngine.isRecording {
             let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
-            let phase = (max(0.0, audioEngine.currentTime) / beatDuration).truncatingRemainder(dividingBy: 1.0)
+            let phase = (max(0.0, clock.time) / beatDuration).truncatingRemainder(dividingBy: 1.0)
             lift = Self.bounceHeight * CGFloat(sin(Double.pi * phase))
         } else {
             lift = 0
@@ -1011,6 +1074,35 @@ private final class OptionKeyMonitor: ObservableObject {
 
 /// Horizontal slider that only moves when its knob is dragged; clicks on the
 /// track do nothing, so a click near the mixer border cannot jump the view.
+/// Shifts the ruler by the scroll position, observing only that.
+private struct TimelineScrollOffset: ViewModifier {
+    @ObservedObject var scroll: TimelineScrollPosition
+    let pixelsPerSecond: CGFloat
+
+    func body(content: Content) -> some View {
+        content.offset(x: -CGFloat(scroll.time) * pixelsPerSecond)
+    }
+}
+
+/// The horizontal scroll knob, observing only the scroll position.
+private struct TimelineScrollSlider: View {
+    @ObservedObject var scroll: TimelineScrollPosition
+    let projectState: ProjectState
+    let range: ClosedRange<Double>
+    let tint: Color
+
+    var body: some View {
+        KnobOnlySlider(
+            value: Binding(
+                get: { scroll.time },
+                set: { projectState.timelineScrollTime = $0 }
+            ),
+            range: range,
+            tint: tint
+        )
+    }
+}
+
 private struct KnobOnlySlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -1062,6 +1154,19 @@ private struct KnobOnlySlider: View {
 /// not reach the scroll views.
 private final class WeakScrollView {
     weak var scrollView: NSScrollView?
+}
+
+/// What the arranger keeps while following `timelineScrollTime`. A plain
+/// object, not `@State` values: these are written on every zoom step and
+/// every scroll, and as state each write rebuilt the whole arranger once more
+/// on top of the update the zoom itself needs.
+private final class ScrollFollow {
+    /// Scroll time last read from the track scroll view, so that a change
+    /// coming from the user's own scrolling is not sent back to it.
+    var scrolledTime: Double?
+    /// Offset a scroll is heading for; offsets reported before it lands are
+    /// stale.
+    var requestedOffset: CGFloat?
 }
 
 /// Reports the horizontal offset of the scroll view it sits in whenever that

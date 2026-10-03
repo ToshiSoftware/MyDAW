@@ -105,94 +105,146 @@ public final class WaveformCache: ObservableObject {
         }
     }
 
+    /// Peaks of one file, shared by every clip that plays it: the pieces of
+    /// a split clip all point at the same file, and reading it once per
+    /// clip cost time, memory and open files.
+    private struct LoadedPeaks {
+        let peaks: [PeakPoint]
+        let channelPeaks: [[PeakPoint]]
+        let duration: Double
+    }
+
+    private struct WeakCache {
+        weak var cache: WaveformCache?
+    }
+
+    private static var loadedPeaks: [String: LoadedPeaks] = [:]
+    private static var waitingCaches: [String: [WeakCache]] = [:]
+
+    /// Identifies a file's contents: a changed file gets a new key.
+    private static func peakKey(for url: URL, samplesPerPeak: Int) -> String {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return [
+            url.standardizedFileURL.path,
+            String(values?.fileSize ?? -1),
+            String(values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0),
+            String(samplesPerPeak)
+        ].joined(separator: "|")
+    }
+
+    private func apply(_ loaded: LoadedPeaks) {
+        peaks = loaded.peaks
+        channelPeaks = loaded.channelPeaks.isEmpty ? [loaded.peaks] : loaded.channelPeaks
+        duration = loaded.duration
+        isLoading = false
+    }
+
     public func loadPeaks(from url: URL, sampleRate: Double = 48000.0) {
+        let key = Self.peakKey(for: url, samplesPerPeak: samplesPerPeak)
+        if let loaded = Self.loadedPeaks[key] {
+            apply(loaded)
+            return
+        }
         isLoading = true
+        if Self.waitingCaches[key] != nil {
+            Self.waitingCaches[key]?.append(WeakCache(cache: self))
+            return
+        }
+        Self.waitingCaches[key] = [WeakCache(cache: self)]
         let targetSamplesPerPeak = self.samplesPerPeak
 
         Task.detached(priority: .userInitiated) {
-            var calculatedPeaks: [PeakPoint] = []
-            var calculatedChannelPeaks: [[PeakPoint]] = []
-            var fileDuration: Double = 0.0
-
-            do {
-                let file = try AVAudioFile(forReading: url)
-                let length = file.length
-                let format = file.processingFormat
-                let sampleRate = file.fileFormat.sampleRate
-                fileDuration = sampleRate > 0.0 ? Double(length) / sampleRate : 0.0
-
-                let bufferSize = AVAudioFrameCount(targetSamplesPerPeak * 128)
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: bufferSize) else {
-                    return
-                }
-
-                var peakId = 0
-                while file.framePosition < length {
-                    let framesToRead = AVAudioFrameCount(min(Int64(bufferSize), length - file.framePosition))
-                    try file.read(into: buffer, frameCount: framesToRead)
-
-                    guard let channelData = buffer.floatChannelData else { break }
-                    let channelCount = Int(format.channelCount)
-                    if calculatedChannelPeaks.isEmpty {
-                        calculatedChannelPeaks = Array(repeating: [], count: channelCount)
-                    }
-                    let frameLength = Int(buffer.frameLength)
-
-                    var i = 0
-                    while i < frameLength {
-                        let chunkEnd = min(i + targetSamplesPerPeak, frameLength)
-                        var chunkChannelPeaks: [PeakPoint] = []
-
-                        for ch in 0..<channelCount {
-                            var minVal: Float = 0.0
-                            var maxVal: Float = 0.0
-                            let samples = channelData[ch]
-                            for sampleIdx in i..<chunkEnd {
-                                let val = samples[sampleIdx]
-                                if val < minVal { minVal = val }
-                                if val > maxVal { maxVal = val }
-                            }
-                            chunkChannelPeaks.append(PeakPoint(id: peakId, min: minVal, max: maxVal))
-                        }
-
-                        // The single-lane (mono track) waveform shows the
-                        // channel average, which is what a mono track plays.
-                        var combinedMin: Float = 0.0
-                        var combinedMax: Float = 0.0
-                        let channelScale = 1.0 / Float(max(1, channelCount))
-                        for sampleIdx in i..<chunkEnd {
-                            var sum: Float = 0.0
-                            for ch in 0..<channelCount {
-                                sum += channelData[ch][sampleIdx]
-                            }
-                            let val = sum * channelScale
-                            if val < combinedMin { combinedMin = val }
-                            if val > combinedMax { combinedMax = val }
-                        }
-
-                        calculatedPeaks.append(PeakPoint(id: peakId, min: combinedMin, max: combinedMax))
-                        for ch in 0..<chunkChannelPeaks.count {
-                            calculatedChannelPeaks[ch].append(chunkChannelPeaks[ch])
-                        }
-                        peakId += 1
-                        i = chunkEnd
-                    }
-                }
-            } catch {
-                print("Failed to load peaks from \(url): \(error)")
-            }
-
-            let finalPeaks = calculatedPeaks
-            let finalChannelPeaks = calculatedChannelPeaks
-            let finalDuration = fileDuration
-
+            let loaded = Self.computePeaks(from: url, samplesPerPeak: targetSamplesPerPeak)
             await MainActor.run {
-                self.peaks = finalPeaks
-                self.channelPeaks = finalChannelPeaks.isEmpty ? [finalPeaks] : finalChannelPeaks
-                self.duration = finalDuration
-                self.isLoading = false
+                let waiting = Self.waitingCaches.removeValue(forKey: key) ?? []
+                if let loaded {
+                    Self.loadedPeaks[key] = loaded
+                }
+                let result = loaded ?? LoadedPeaks(peaks: [], channelPeaks: [], duration: 0.0)
+                for entry in waiting {
+                    entry.cache?.apply(result)
+                }
             }
         }
     }
+
+    /// Reads the whole file once; nil when it cannot be read.
+    private nonisolated static func computePeaks(from url: URL, samplesPerPeak targetSamplesPerPeak: Int) -> LoadedPeaks? {
+        var calculatedPeaks: [PeakPoint] = []
+        var calculatedChannelPeaks: [[PeakPoint]] = []
+        var fileDuration: Double = 0.0
+
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let length = file.length
+            let format = file.processingFormat
+            let sampleRate = file.fileFormat.sampleRate
+            fileDuration = sampleRate > 0.0 ? Double(length) / sampleRate : 0.0
+
+            let bufferSize = AVAudioFrameCount(targetSamplesPerPeak * 128)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: bufferSize) else {
+                return nil
+            }
+
+            var peakId = 0
+            while file.framePosition < length {
+                let framesToRead = AVAudioFrameCount(min(Int64(bufferSize), length - file.framePosition))
+                try file.read(into: buffer, frameCount: framesToRead)
+
+                guard let channelData = buffer.floatChannelData else { break }
+                let channelCount = Int(format.channelCount)
+                if calculatedChannelPeaks.isEmpty {
+                    calculatedChannelPeaks = Array(repeating: [], count: channelCount)
+                }
+                let frameLength = Int(buffer.frameLength)
+
+                var i = 0
+                while i < frameLength {
+                    let chunkEnd = min(i + targetSamplesPerPeak, frameLength)
+                    var chunkChannelPeaks: [PeakPoint] = []
+
+                    for ch in 0..<channelCount {
+                        var minVal: Float = 0.0
+                        var maxVal: Float = 0.0
+                        let samples = channelData[ch]
+                        for sampleIdx in i..<chunkEnd {
+                            let val = samples[sampleIdx]
+                            if val < minVal { minVal = val }
+                            if val > maxVal { maxVal = val }
+                        }
+                        chunkChannelPeaks.append(PeakPoint(id: peakId, min: minVal, max: maxVal))
+                    }
+
+                    // The single-lane (mono track) waveform shows the
+                    // channel average, which is what a mono track plays.
+                    var combinedMin: Float = 0.0
+                    var combinedMax: Float = 0.0
+                    let channelScale = 1.0 / Float(max(1, channelCount))
+                    for sampleIdx in i..<chunkEnd {
+                        var sum: Float = 0.0
+                        for ch in 0..<channelCount {
+                            sum += channelData[ch][sampleIdx]
+                        }
+                        let val = sum * channelScale
+                        if val < combinedMin { combinedMin = val }
+                        if val > combinedMax { combinedMax = val }
+                    }
+
+                    calculatedPeaks.append(PeakPoint(id: peakId, min: combinedMin, max: combinedMax))
+                    for ch in 0..<chunkChannelPeaks.count {
+                        calculatedChannelPeaks[ch].append(chunkChannelPeaks[ch])
+                    }
+                    peakId += 1
+                    i = chunkEnd
+                }
+            }
+        } catch {
+            print("Failed to load peaks from \(url): \(error)")
+            return nil
+        }
+
+        return LoadedPeaks(peaks: calculatedPeaks, channelPeaks: calculatedChannelPeaks, duration: fileDuration)
+    }
+
 }
 

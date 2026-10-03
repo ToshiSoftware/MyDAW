@@ -41,6 +41,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Right-click menu**: right-clicking an unselected clip selects it; right-clicking a selected clip applies the command to every selected clip (Normalize, Reverse, Mute, Duplicate, Split, Delete; with several clips the items show the count). Duplicate places the selection, as one block, at the playhead. Inside a selected range the range menu opens.
 - **Range selection** (cmd-drag) across tracks: delete (leave silence), crop, split at both edges.
 - **Cut / copy / paste** (cmd+X / C / V, pasted at the playhead) and option-drag to duplicate.
+- **Handle pointers**: the pointer changes shape over a clip's edges (→ at the start, ← at the end), the fade dots and curve diamonds (pointing hand) and the gain bar (up-down arrow), so you can see what you are about to grab.
 - **Fade curves**: drag the handle in the middle of a fade line to bend it continuously (snaps to linear and equal power; double-click for Auto).
 - **Normalize** (clip gain to 0 dBFS) and **Reverse** (writes a reversed WAV and switches the clip to it).
 - Tooltips show fade length, gain (dB) and curve while dragging. Waveforms are drawn at the level heard, including fades and crossfades.

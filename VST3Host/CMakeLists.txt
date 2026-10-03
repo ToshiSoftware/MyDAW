@@ -10,9 +10,22 @@ set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${VST3_SDK_ROOT}" "${CMAKE_BINARY_DIR}/vst3sdk" EXCLUDE_FROM_ALL)
 
+# Warnings inside the Steinberg SDK itself (deprecated std::wstring_convert,
+# an int-to-double constant in fstring.cpp) are not ours to fix; silence just
+# those two on the SDK targets so our own code's warnings stay visible.
+foreach(sdk_target base sdk_common sdk_hosting)
+    if(TARGET ${sdk_target})
+        target_compile_options(${sdk_target} PRIVATE
+            -Wno-deprecated-declarations
+            -Wno-implicit-const-int-float-conversion
+        )
+    endif()
+endforeach()
+
 add_library(MyDAWVST3Bridge STATIC
     VST3HostBridge.cpp
     VST3PluginInstance.cpp
+    RealtimeAtomics.cpp
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp"
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/hostclasses.cpp"
     "${VST3_SDK_ROOT}/public.sdk/source/common/memorystream.cpp"

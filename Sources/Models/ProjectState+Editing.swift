@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 /// A time range selected across adjacent tracks (in top-to-bottom order).
 public struct TimeSelection: Equatable {
@@ -457,6 +458,133 @@ extension ProjectState {
             clip.setFadeOutDuration(fadeIn.0)
             clip.fadeOutCurve = fadeIn.1
         }
+    }
+
+    /// Removes runs of silence (every sample at or below the chosen level, as
+    /// in the parts of a stem the other DAW never recorded) of at least the
+    /// chosen length: each clip is split around them, the silent pieces are
+    /// dropped and the new edges get a short fade. The audio files are not
+    /// changed.
+    public func stripSilenceClips(trackId: UUID, clipId: UUID) {
+        guard !audioEngine.isRecording else { return }
+        selectForMenu(trackId: trackId, clipId: clipId)
+        let targets = menuTargets(trackId: trackId, clipId: clipId).filter { !$0.clip.isFileMissing }
+        guard !targets.isEmpty, let settings = askStripSilenceSettings() else { return }
+        beginClipEdit()
+        for (track, clip) in targets {
+            let silences: [Range<Double>]
+            do {
+                silences = try ClipAudioProcessing.silenceRanges(
+                    of: clip.fileURL,
+                    sourceStartTime: clip.sourceStartTime,
+                    duration: clip.duration,
+                    thresholdDB: settings.thresholdDB,
+                    minimumDuration: settings.minimumDuration
+                )
+            } catch {
+                print("Failed to strip silence from \(clip.fileURL.lastPathComponent): \(error)")
+                continue
+            }
+            guard !silences.isEmpty else { continue }
+            // The fades lie outside the detected sound, reaching into the
+            // silence. Each silence is at least the minimum length, so at most
+            // half of it on each side keeps neighbouring pieces apart.
+            let fade = min(settings.fadeDuration, settings.minimumDuration / 2)
+            let clipEnd = clip.startTime + clip.duration
+            // The sound between the silences (in seconds from the clip start),
+            // then widened by the fade on edges that border a silence.
+            var soundRanges: [(start: Double, end: Double)] = []
+            var soundStart = 0.0
+            for silence in silences {
+                if silence.lowerBound > soundStart { soundRanges.append((soundStart, silence.lowerBound)) }
+                soundStart = silence.upperBound
+            }
+            if soundStart < clip.duration { soundRanges.append((soundStart, clip.duration)) }
+            let keptRanges = soundRanges.map { range in
+                (start: range.start > 0 ? clip.startTime + max(0, range.start - fade) : clip.startTime,
+                 end: range.end < clip.duration ? min(clipEnd, clip.startTime + range.end + fade) : clipEnd)
+            }
+            let pieces = keptRanges.compactMap { range -> AudioClip? in
+                guard let piece = clip.piece(from: range.start, to: range.end) else { return nil }
+                // Edges shared with the original clip keep its fades.
+                let pieceFade = min(fade, piece.duration / 2)
+                if range.start > clip.startTime { piece.setFadeInDuration(pieceFade) }
+                if range.end < clipEnd { piece.setFadeOutDuration(pieceFade) }
+                return piece
+            }
+            track.replaceClip(id: clip.id, with: pieces)
+            track.selectedClipIDs.formUnion(pieces.map(\.id))
+        }
+        endClipEdit()
+        audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+    }
+
+    private static let stripSilenceThresholdKey = "MyDAW.stripSilenceThresholdDB"
+    private static let stripSilenceMinimumKey = "MyDAW.stripSilenceMinimumDuration"
+    private static let stripSilenceFadeKey = "MyDAW.stripSilenceFadeMilliseconds"
+
+    /// Asks for the silence level (dBFS), the shortest silence to remove
+    /// (seconds) and the fade length (ms); the last values are remembered.
+    /// Nil when cancelled.
+    private func askStripSilenceSettings() -> (thresholdDB: Double, minimumDuration: Double, fadeDuration: Double)? {
+        let defaults = UserDefaults.standard
+        let thresholdField = NSTextField(string: Self.formatSetting(
+            defaults.object(forKey: Self.stripSilenceThresholdKey) as? Double ?? -72.0))
+        let minimumField = NSTextField(string: Self.formatSetting(
+            defaults.object(forKey: Self.stripSilenceMinimumKey) as? Double ?? 1.0))
+        let fadeField = NSTextField(string: Self.formatSetting(
+            defaults.object(forKey: Self.stripSilenceFadeKey) as? Double ?? 10.0))
+        for field in [thresholdField, minimumField, fadeField] {
+            field.alignment = .right
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 80).isActive = true
+            field.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        }
+        let grid = NSGridView(views: [
+            [NSTextField(labelWithString: String(localized: "Silence level:")), thresholdField,
+             NSTextField(labelWithString: String(localized: "dB or lower"))],
+            [NSTextField(labelWithString: String(localized: "Minimum silence length:")), minimumField,
+             NSTextField(labelWithString: String(localized: "seconds"))],
+            [NSTextField(labelWithString: String(localized: "Fade in/out:")), fadeField,
+             NSTextField(labelWithString: String(localized: "ms"))]
+        ])
+        grid.column(at: 0).xPlacement = .trailing
+        // Without these the rows stretch unevenly and the fields differ in height.
+        grid.yPlacement = .center
+        grid.rowAlignment = .none
+        grid.rowSpacing = 8
+        grid.frame = NSRect(origin: .zero, size: grid.fittingSize)
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Strip Silence")
+        alert.informativeText = String(localized: "Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted.")
+        alert.accessoryView = grid
+        alert.addButton(withTitle: String(localized: "Strip Silence"))
+        let cancelButton = alert.addButton(withTitle: String(localized: "Cancel"))
+        cancelButton.keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = thresholdField
+
+        while alert.runModal() == .alertFirstButtonReturn {
+            let parse = { (field: NSTextField) in
+                Double(field.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "."))
+            }
+            guard let thresholdDB = parse(thresholdField), thresholdDB >= -144, thresholdDB <= 0,
+                  let minimum = parse(minimumField), minimum.isFinite, minimum >= 0.01,
+                  let fadeMilliseconds = parse(fadeField), fadeMilliseconds.isFinite,
+                  fadeMilliseconds >= 0, fadeMilliseconds <= 10_000 else {
+                NSSound.beep()
+                continue
+            }
+            defaults.set(thresholdDB, forKey: Self.stripSilenceThresholdKey)
+            defaults.set(minimum, forKey: Self.stripSilenceMinimumKey)
+            defaults.set(fadeMilliseconds, forKey: Self.stripSilenceFadeKey)
+            return (thresholdDB, minimum, fadeMilliseconds / 1000.0)
+        }
+        return nil
+    }
+
+    private static func formatSetting(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
     }
 
     // MARK: Group move (dragging one of several selected clips)

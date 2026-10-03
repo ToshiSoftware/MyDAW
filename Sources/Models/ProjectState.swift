@@ -56,13 +56,55 @@ public final class ProjectState: ObservableObject {
     @Published public internal(set) var marqueeRect: CGRect?
     var marqueeBaseSelection: [UUID: Set<UUID>] = [:]
     var groupDragStarts: [UUID: Double] = [:]
-    @Published public var pixelsPerSecond: CGFloat = 80.0 // Horizontal zoom factor
-    @Published public var timelineScrollTime: Double = 0.0
+    /// Zoom and track-height scale, kept in their own object: they change on
+    /// every step of a zoom or height control, and publishing them from here
+    /// redrew every view observing the project — the whole mixer among them —
+    /// on each step. Only the timeline's views observe it (as an environment
+    /// object).
+    public let timelineGeometry = TimelineGeometry()
+    /// Horizontal zoom factor.
+    public var pixelsPerSecond: CGFloat {
+        get { timelineGeometry.pixelsPerSecond }
+        set {
+            guard newValue != timelineGeometry.pixelsPerSecond else { return }
+            timelineGeometry.pixelsPerSecond = newValue
+            scheduleWaveformRenderSync()
+        }
+    }
+    /// The zoom and track-height scale the waveforms are drawn at. While the
+    /// zoom or the track height is being changed, everything else follows at
+    /// once but the waveforms already drawn are only stretched to their clip
+    /// boxes; these catch up a tenth of a second after the change stops, and
+    /// the waveforms are drawn again properly. (Redrawing every waveform on
+    /// each step of the control was what made those changes stutter.)
+    @Published public private(set) var waveformRenderPixelsPerSecond: CGFloat = 80.0
+    @Published public private(set) var waveformRenderTrackHeightScale: CGFloat = 1.0
+    private var waveformRenderSyncTask: Task<Void, Never>?
+    /// The timeline seconds waveforms are drawn for (see `DrawWindowState`).
+    public let waveformDrawWindow = DrawWindowState()
+    /// Width of the visible timeline in points, kept up to date by the arranger.
+    public var timelineViewportWidth: CGFloat = 1200 {
+        didSet {
+            if timelineViewportWidth != oldValue { refreshDrawWindow(force: true) }
+        }
+    }
+    /// Where the timeline is scrolled to, kept in its own object: it changes
+    /// with every scroll step, and publishing it from here would redraw every
+    /// track header and lane each time.
+    public let timelineScroll = TimelineScrollPosition()
+    public var timelineScrollTime: Double {
+        get { timelineScroll.time }
+        set {
+            guard timelineScroll.time != newValue else { return }
+            timelineScroll.time = newValue
+            refreshDrawWindow()
+            timelineScroll.onChange?(newValue)
+        }
+    }
     @Published public var punchRange = PunchRangeDocument()
     @Published public var songRange = SongRangeDocument() {
         didSet { audioEngine.songEndTime = songEndTime }
     }
-    @Published public private(set) var zoomRevision: Int = 0
     @Published public private(set) var scrollRestoreRevision: Int = 0
     @Published public var isRestoringScrollPosition: Bool = false
     @Published public var showsBeats: Bool = true
@@ -93,26 +135,64 @@ public final class ProjectState: ObservableObject {
     private var saveConfirmationTask: Task<Void, Never>?
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
+    public static let minimumPixelsPerSecond: CGFloat = 5.0
+    public static let maximumPixelsPerSecond: CGFloat = 800.0
+    public static let maximumWaveformVerticalScale: CGFloat = 256.0
+
     @Published public var waveformVerticalScale: CGFloat = 1.0 {
         didSet {
-            let clamped = min(32.0, max(1.0, waveformVerticalScale))
+            let clamped = min(Self.maximumWaveformVerticalScale, max(1.0, waveformVerticalScale))
             if clamped != waveformVerticalScale {
                 waveformVerticalScale = clamped
             }
         }
     }
-    @Published public var trackHeightScale: CGFloat = 1.0 {
-        didSet {
-            let clamped = min(Self.maximumTrackHeightScale, max(Self.minimumTrackHeightScale, trackHeightScale))
-            if clamped != trackHeightScale {
-                trackHeightScale = clamped
-            }
+    public var trackHeightScale: CGFloat {
+        get { timelineGeometry.trackHeightScale }
+        set {
+            let clamped = min(Self.maximumTrackHeightScale, max(Self.minimumTrackHeightScale, newValue))
+            guard clamped != timelineGeometry.trackHeightScale else { return }
+            timelineGeometry.trackHeightScale = clamped
+            scheduleWaveformRenderSync()
         }
     }
     /// The smallest scale still shows a standard track's name and buttons.
     public static let minimumTrackHeightScale: CGFloat =
         TrackHeaderView.minimumRowHeight / AudioTrack.defaultTrackHeight
     public static let maximumTrackHeightScale: CGFloat = 3.0
+
+    /// Live preview of a waveform-scale change: while the control moves,
+    /// the waveforms already drawn are only stretched (cheap for the GPU); a
+    /// tenth of a second after it stops, the real value is set and they are
+    /// drawn again properly.
+    public let waveformScalePreview = PreviewScale()
+    private var previewCommitTask: Task<Void, Never>?
+    private static let previewCommitDelay: UInt64 = 100_000_000
+
+    /// Waveform vertical scale from a continuous control.
+    public func previewWaveformVerticalScale(_ value: CGFloat) {
+        let target = min(Self.maximumWaveformVerticalScale, max(1.0, value))
+        waveformScalePreview.show(target: target, scale: target / waveformVerticalScale)
+        schedulePreviewCommit()
+    }
+
+    private func schedulePreviewCommit() {
+        previewCommitTask?.cancel()
+        previewCommitTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.previewCommitDelay)
+            guard !Task.isCancelled else { return }
+            self?.commitPreviews()
+        }
+    }
+
+    /// Sets the previewed value and drops the stretching in the same pass,
+    /// so the next frame shows the properly drawn result.
+    private func commitPreviews() {
+        if let target = waveformScalePreview.target {
+            waveformVerticalScale = target
+            waveformScalePreview.clear()
+        }
+    }
 
     /// Sets the all-tracks height scale from the user's controls. Any change
     /// first returns manually resized tracks to the standard height, so every
@@ -434,13 +514,17 @@ public final class ProjectState: ObservableObject {
                 let outputPeaks = userInfo["outputPeaks"] as? [UUID: StereoPeak] ?? [:]
                 let fxOutputPeaks = userInfo["fxOutputPeaks"] as? [UUID: StereoPeak] ?? [:]
                 for channel in self.fxChannels {
-                    let peak = fxOutputPeaks[channel.id] ?? .zero
-                    channel.outputStereoPeak = channel.outputStereoPeak.falling(to: peak, by: 0.82)
-                    channel.currentOutputPeak = channel.outputStereoPeak.maximum
+                    let peak = channel.outputStereoPeak.falling(to: fxOutputPeaks[channel.id] ?? .zero, by: 0.82)
+                    // Assigning an unchanged value would still redraw the strip.
+                    if peak != channel.outputStereoPeak {
+                        channel.outputStereoPeak = peak
+                        channel.currentOutputPeak = peak.maximum
+                    }
                 }
 
                 // Update track input peak meters
                 for track in self.tracks {
+                    let inputPeak: Float
                     if track.isRecordArmed {
                         let ch0 = track.inputChannelIndex
                         let ch1 = ch0 + 1
@@ -452,13 +536,14 @@ public final class ProjectState: ObservableObject {
                             rawPeak = max(rawPeak, peaks[ch1])
                         }
                         // Fast attack, smooth decay
-                        track.currentInputPeak = max(rawPeak, track.currentInputPeak * 0.85)
+                        inputPeak = max(rawPeak, track.currentInputPeak * 0.85)
                     } else {
-                        track.currentInputPeak = max(0.0, track.currentInputPeak * 0.70)
+                        inputPeak = max(0.0, track.currentInputPeak * 0.70)
                     }
-                    let outputPeak = outputPeaks[track.id] ?? .zero
-                    track.outputStereoPeak = track.outputStereoPeak.falling(to: outputPeak, by: 0.82)
-                    track.currentOutputPeak = track.outputStereoPeak.maximum
+                    track.meter.update(
+                        inputPeak: inputPeak,
+                        outputPeak: track.outputStereoPeak.falling(to: outputPeaks[track.id] ?? .zero, by: 0.82)
+                    )
 
                     // Append live waveform points if recording
                     if let channelPoints = liveChannelWaveforms[track.id], !channelPoints.isEmpty {
@@ -1392,8 +1477,10 @@ public final class ProjectState: ObservableObject {
             audioEngine.metronomeVolume = document.metronomeVolume
             audioEngine.masterVolume = document.masterVolume
             audioEngine.manualRecordingCompensationMs = document.manualRecordingCompensationMs
-            waveformVerticalScale = CGFloat(min(32.0, max(1.0, document.waveformVerticalScale)))
+            waveformVerticalScale = CGFloat(min(Self.maximumWaveformVerticalScale, max(1.0, document.waveformVerticalScale)))
             trackHeightScale = CGFloat(document.trackHeightScale)
+            // An opened project is drawn at its zoom at once, not stretched.
+            syncWaveformRender()
             currentProjectURL = url
             self.projectFolderURL = projectFolderURL
             audioEngine.recordingsDirectory = recordingsURL
@@ -1625,6 +1712,40 @@ public final class ProjectState: ObservableObject {
         alert.runModal()
     }
 
+    private func scheduleWaveformRenderSync() {
+        waveformRenderSyncTask?.cancel()
+        waveformRenderSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.previewCommitDelay)
+            guard !Task.isCancelled else { return }
+            self?.syncWaveformRender()
+        }
+    }
+
+    /// Draws the waveforms at the current zoom and track height again.
+    func syncWaveformRender() {
+        waveformRenderSyncTask?.cancel()
+        waveformRenderSyncTask = nil
+        if waveformRenderPixelsPerSecond != pixelsPerSecond {
+            waveformRenderPixelsPerSecond = pixelsPerSecond
+        }
+        if waveformRenderTrackHeightScale != trackHeightScale {
+            waveformRenderTrackHeightScale = trackHeightScale
+        }
+        refreshDrawWindow(force: true)
+    }
+
+    /// Keeps `waveformDrawWindow` around the visible range (measured
+    /// at the waveforms' zoom); with `force` it is centred again at once.
+    func refreshDrawWindow(force: Bool = false) {
+        let visible = Double(max(1.0, timelineViewportWidth) / max(0.001, waveformRenderPixelsPerSecond))
+        let start = timelineScrollTime
+        let end = start + visible
+        let current = waveformDrawWindow.range
+        let margin = visible * 0.5
+        if !force && start - margin >= current.lowerBound && end + margin <= current.upperBound { return }
+        waveformDrawWindow.set((start - 2.0 * visible)...(end + 2.0 * visible))
+    }
+
     // Zoom helpers
     public func zoomIn() {
         setPixelsPerSecond(pixelsPerSecond * 1.25)
@@ -1637,22 +1758,20 @@ public final class ProjectState: ObservableObject {
     /// Zooms horizontally while keeping the timeline position under
     /// `anchorOffset` (points from the left edge of the visible timeline) fixed.
     public func setPixelsPerSecond(_ newValue: CGFloat, anchorOffset: CGFloat) {
-        let clampedValue = min(max(newValue, 20.0), 400.0)
+        let clampedValue = min(max(newValue, Self.minimumPixelsPerSecond), Self.maximumPixelsPerSecond)
         guard clampedValue != pixelsPerSecond else { return }
 
         let anchorTime = timelineScrollTime + Double(anchorOffset / pixelsPerSecond)
         pixelsPerSecond = clampedValue
-        zoomRevision += 1
         timelineScrollTime = max(0.0, anchorTime - Double(anchorOffset / clampedValue))
     }
 
     public func setPixelsPerSecond(_ newValue: CGFloat) {
-        let clampedValue = min(max(newValue, 20.0), 400.0)
+        let clampedValue = min(max(newValue, Self.minimumPixelsPerSecond), Self.maximumPixelsPerSecond)
         guard clampedValue != pixelsPerSecond else { return }
 
         let cursorOffsetPixels = max(0.0, audioEngine.currentTime - timelineScrollTime) * Double(pixelsPerSecond)
         pixelsPerSecond = clampedValue
-        zoomRevision += 1
         timelineScrollTime = max(
             0.0,
             audioEngine.currentTime - cursorOffsetPixels / Double(clampedValue)
@@ -1665,5 +1784,60 @@ public final class ProjectState: ObservableObject {
         let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
         guard beatDuration.isFinite, beatDuration > 0.0 else { return clampedTime }
         return max(0.0, (clampedTime / beatDuration).rounded() * beatDuration)
+    }
+}
+
+/// The timeline's scroll position in seconds (see `timelineScroll`).
+@MainActor
+public final class TimelineScrollPosition: ObservableObject {
+    @Published public var time: Double = 0.0
+
+    /// Set by the arranger: scrolls the tracks to follow a change at once.
+    public var onChange: ((Double) -> Void)?
+}
+
+/// A view-only stretch shown while a scale control moves (see
+/// `ProjectState.waveformScalePreview`). Only the stretching views observe it.
+@MainActor
+public final class PreviewScale: ObservableObject {
+    /// Previewed value over the current one.
+    @Published public private(set) var scale: CGFloat = 1.0
+    /// The value to set when the control stops; nil when not previewing.
+    public private(set) var target: CGFloat?
+    /// Never previews: for views outside the arranger.
+    public static let none = PreviewScale()
+
+    func show(target: CGFloat, scale: CGFloat) {
+        self.target = target
+        if scale != self.scale { self.scale = scale }
+    }
+
+    func clear() {
+        target = nil
+        if scale != 1.0 { scale = 1.0 }
+    }
+}
+
+/// Zoom and track-height scale (see `ProjectState.timelineGeometry`).
+@MainActor
+public final class TimelineGeometry: ObservableObject {
+    @Published public internal(set) var pixelsPerSecond: CGFloat = 80.0
+    @Published public internal(set) var trackHeightScale: CGFloat = 1.0
+}
+
+/// The timeline seconds waveforms are drawn for: the visible range and two
+/// screens either side (see `ProjectState.refreshDrawWindow`). It moves only
+/// when the view nears its edge or the waveforms' zoom changes, so scrolling
+/// rarely redraws the waveforms, and a redraw draws a few screens, not the
+/// whole song. Clips outside it are not built at all.
+@MainActor
+public final class DrawWindowState: ObservableObject {
+    @Published public private(set) var range: ClosedRange<Double> =
+        -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude
+    /// Draws everything: for waveforms outside the arranger.
+    public static let unbounded = DrawWindowState()
+
+    func set(_ window: ClosedRange<Double>) {
+        if window != range { range = window }
     }
 }

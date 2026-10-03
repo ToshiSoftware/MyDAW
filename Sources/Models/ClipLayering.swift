@@ -100,7 +100,7 @@ public struct ClipLayerSpan: Sendable, Equatable {
 /// from clip positions, so moving or deleting the upper clip restores the
 /// lower one.
 public enum ClipLayering {
-    public enum SegmentKind: Equatable {
+    public enum SegmentKind: Equatable, Sendable {
         /// Clip plays untouched (unity envelope).
         case plain
         /// Fully covered by an upper clip: not scheduled at all.
@@ -109,7 +109,7 @@ public enum ClipLayering {
         case shaped
     }
 
-    public struct Segment: Equatable {
+    public struct Segment: Equatable, Sendable {
         public let start: Double
         public let end: Double
         public let kind: SegmentKind
@@ -207,12 +207,82 @@ public enum ClipLayering {
         return value
     }
 
-    /// The clip's playback envelope as a function of seconds from its start,
-    /// or nil when it plays at unity throughout (no fades, nothing on top).
-    public static func envelope(_ spans: [ClipLayerSpan], clip id: UUID) -> ((Double) -> Double)? {
-        guard let span = spans.first(where: { $0.id == id }),
-              segments(spans, clip: id).contains(where: { $0.kind != .plain }) else { return nil }
-        return { offset in gain(spans, clip: id, at: span.start + offset) }
+    /// The clip's playback envelope, or nil when it plays at unity
+    /// throughout (no fades, nothing on top).
+    public static func envelope(_ spans: [ClipLayerSpan], clip id: UUID) -> Envelope? {
+        guard let envelope = Envelope(spans, clip: id), envelope.hasShape else { return nil }
+        return envelope
+    }
+
+    /// `gain(_:clip:at:)` prepared once for one clip, for evaluating it per
+    /// peak or per sample: the curves are resolved, only the unmuted clips
+    /// above that overlap it are kept, and plain and hidden stretches answer
+    /// 1 and 0 without any work. (Looking all of that up on every call cost
+    /// a redraw of a track with many faded clips over 100 ms.)
+    public struct Envelope: Sendable, Equatable {
+        struct UpperMask: Sendable, Equatable {
+            let span: ClipLayerSpan
+            let fadeInCurve: FadeCurve
+            let fadeOutCurve: FadeCurve
+        }
+
+        public let span: ClipLayerSpan
+        let fadeInCurve: FadeCurve
+        let fadeOutCurve: FadeCurve
+        let uppers: [UpperMask]
+        let segments: [Segment]
+
+        public init?(_ spans: [ClipLayerSpan], clip id: UUID) {
+            guard let index = spans.firstIndex(where: { $0.id == id }) else { return nil }
+            span = spans[index]
+            fadeInCurve = ClipLayering.curve(spans, index, atStart: true)
+            fadeOutCurve = ClipLayering.curve(spans, index, atStart: false)
+            let span = self.span
+            uppers = spans.indices.filter { upperIndex in
+                let upper = spans[upperIndex]
+                return upperIndex > index && !upper.isMuted && upper.start < span.end && upper.end > span.start
+            }.map { upperIndex in
+                UpperMask(
+                    span: spans[upperIndex],
+                    fadeInCurve: ClipLayering.curve(spans, upperIndex, atStart: true),
+                    fadeOutCurve: ClipLayering.curve(spans, upperIndex, atStart: false)
+                )
+            }
+            segments = ClipLayering.segments(spans, clip: id)
+        }
+
+        /// False when the clip plays at unity throughout.
+        public var hasShape: Bool {
+            segments.contains { $0.kind != .plain }
+        }
+
+        /// The same value as `ClipLayering.gain(_:clip:at:)`.
+        public func gain(at t: Double) -> Double {
+            guard t >= span.start, t < span.end, !segments.isEmpty else { return 0.0 }
+            var low = 0
+            var high = segments.count - 1
+            while low < high {
+                let middle = (low + high + 1) / 2
+                if segments[middle].start <= t { low = middle } else { high = middle - 1 }
+            }
+            switch segments[low].kind {
+            case .plain: return 1.0
+            case .hidden: return 0.0
+            case .shaped: break
+            }
+            var value = min(
+                fadeInCurve.value(ClipLayering.fadeInRamp(span, t)),
+                fadeOutCurve.value(ClipLayering.fadeOutRamp(span, t))
+            )
+            for upper in uppers where t >= upper.span.start && t < upper.span.end {
+                value *= max(
+                    ClipLayering.complement(ClipLayering.fadeInRamp(upper.span, t), curve: upper.fadeInCurve),
+                    ClipLayering.complement(ClipLayering.fadeOutRamp(upper.span, t), curve: upper.fadeOutCurve)
+                )
+                if value == 0 { break }
+            }
+            return value
+        }
     }
 
     // MARK: - Segmentation

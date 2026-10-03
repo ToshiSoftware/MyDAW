@@ -1,6 +1,9 @@
 import SwiftUI
 
 public struct TrackHeaderView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
     @ObservedObject public var track: AudioTrack
     @ObservedObject public var projectState: ProjectState
     public let isSelected: Bool
@@ -33,7 +36,6 @@ public struct TrackHeaderView: View {
     public static let minimumRowHeight: CGFloat = 56.0
 
     public var body: some View {
-        let meterPeak = track.isRecordArmed ? track.currentInputPeak : track.currentOutputPeak
         HStack(spacing: 0) {
             // Track Color Bar: click to pick a colour
             Rectangle()
@@ -218,10 +220,7 @@ public struct TrackHeaderView: View {
                     .menuStyle(BorderlessButtonMenuStyle())
                 }
 
-                MixerLevelMeter(
-                    peak: meterPeak,
-                    label: track.isRecordArmed ? "REC IN" : "OUT"
-                )
+                TrackHeaderMeter(meter: track.meter, isRecordArmed: track.isRecordArmed)
 
             }
             .padding(.horizontal, 8)
@@ -277,6 +276,19 @@ public struct TrackHeaderView: View {
 }
 
 
+
+/// The header's level meter, observing only the meter levels.
+private struct TrackHeaderMeter: View {
+    @ObservedObject var meter: TrackMeter
+    let isRecordArmed: Bool
+
+    var body: some View {
+        MixerLevelMeter(
+            peak: isRecordArmed ? meter.inputPeak : meter.outputPeak.maximum,
+            label: isRecordArmed ? "REC IN" : "OUT"
+        )
+    }
+}
 
 /// Preset swatches plus the system picker for any other colour.
 private struct TrackColorPalette: View {

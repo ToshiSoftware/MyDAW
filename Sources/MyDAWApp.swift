@@ -56,9 +56,31 @@ struct MyDAWApp: App {
     @StateObject private var projectState = ProjectState()
 
     init() {
+        Self.raiseOpenFileLimit()
         PluginManager.runVST3ScanChildIfRequested()
         // Request microphone permission on app launch if needed
         requestAudioPermissions()
+    }
+
+    /// Every clip keeps its audio file open for playback, and a project
+    /// split into hundreds of clips passed the default limit of 256 open
+    /// files; AppKit then failed to load menu resources and crashed. Raise
+    /// the soft limit as far as the system allows.
+    private static func raiseOpenFileLimit() {
+        var limit = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &limit) == 0 else { return }
+        var perProcess: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let systemMax = sysctlbyname("kern.maxfilesperproc", &perProcess, &size, nil, 0) == 0 && perProcess > 0
+            ? rlim_t(perProcess)
+            : rlim_t(OPEN_MAX)
+        let target = min(limit.rlim_max, systemMax, 65_536)
+        guard target > limit.rlim_cur else { return }
+        limit.rlim_cur = target
+        if setrlimit(RLIMIT_NOFILE, &limit) != 0 {
+            limit.rlim_cur = min(target, rlim_t(OPEN_MAX))
+            _ = setrlimit(RLIMIT_NOFILE, &limit)
+        }
     }
 
     var body: some Scene {

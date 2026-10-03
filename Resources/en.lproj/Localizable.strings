@@ -118,6 +118,15 @@
 "%lld Clips" = "%lld Clips";
 "Normalize (%lld)" = "Normalize (%lld)";
 "Reverse (%lld)" = "Reverse (%lld)";
+"Strip Silence…" = "Strip Silence…";
+"Strip Silence… (%lld)" = "Strip Silence… (%lld)";
+"Strip Silence" = "Strip Silence";
+"Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted." = "Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted.";
+"Silence level:" = "Silence level:";
+"dB or lower" = "dB or lower";
+"Minimum silence length:" = "Minimum silence length:";
+"seconds" = "seconds";
+"Fade in/out:" = "Fade in/out:";
 "Mute Recordings (%lld)" = "Mute Recordings (%lld)";
 "Unmute Recordings (%lld)" = "Unmute Recordings (%lld)";
 "Duplicate Recordings (%lld)" = "Duplicate Recordings (%lld)";

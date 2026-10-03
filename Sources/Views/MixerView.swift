@@ -335,6 +335,45 @@ private struct PluginRow: View {
     }
 }
 
+/// The master fader, observing the master meter and level so only it
+/// redraws with them.
+private struct MasterFaderColumn: View {
+    @ObservedObject var meter: TrackMeter
+    @ObservedObject var level: MasterVolumeState
+    let audioEngine: AudioEngineManager
+
+    var body: some View {
+        FaderColumn(
+            gain: Binding(
+                get: { level.value },
+                set: { audioEngine.masterVolume = $0 }
+            ),
+            peak: meter.outputPeak,
+            tint: Color(white: 0.9),
+            onChange: {}
+        )
+    }
+}
+
+/// A track's fader, observing the meter levels so only it redraws with them.
+private struct TrackFaderColumn: View {
+    @ObservedObject var meter: TrackMeter
+    @Binding var gain: Float
+    let isRecordArmed: Bool
+    let onChange: () -> Void
+
+    var body: some View {
+        FaderColumn(
+            gain: $gain,
+            peak: isRecordArmed
+                ? StereoPeak(left: meter.inputPeak, right: meter.inputPeak)
+                : meter.outputPeak,
+            tint: isRecordArmed ? .red : Color(white: 0.85),
+            onChange: onChange
+        )
+    }
+}
+
 /// Fader column: dB labels, fader, L/R meter. Heights align across strips.
 private struct FaderColumn: View {
     @Binding var gain: Float
@@ -504,12 +543,10 @@ private struct TrackStripView: View {
                         .buttonStyle(MixerButtonStyle(active: track.isSoloed, color: .yellow))
                 }
                 .frame(height: 20)
-                FaderColumn(
+                TrackFaderColumn(
+                    meter: track.meter,
                     gain: $track.volume,
-                    peak: track.isRecordArmed
-                        ? StereoPeak(left: track.currentInputPeak, right: track.currentInputPeak)
-                        : track.outputStereoPeak,
-                    tint: track.isRecordArmed ? .red : Color(white: 0.85),
+                    isRecordArmed: track.isRecordArmed,
                     onChange: applyLevels
                 )
                 StripFooter(name: track.name, color: track.color)
@@ -648,14 +685,10 @@ private struct MasterStripView: View {
                     .foregroundColor(.white.opacity(0.45))
                     .frame(height: 30)
                 Color.clear.frame(height: 20)
-                FaderColumn(
-                    gain: Binding(
-                        get: { audioEngine.masterVolume },
-                        set: { audioEngine.masterVolume = $0 }
-                    ),
-                    peak: audioEngine.masterStereoPeak,
-                    tint: Color(white: 0.9),
-                    onChange: {}
+                MasterFaderColumn(
+                    meter: audioEngine.masterMeter,
+                    level: audioEngine.masterVolumeState,
+                    audioEngine: audioEngine
                 )
                 StripFooter(name: "MASTER", color: .white)
             }
