@@ -547,7 +547,7 @@ private struct AudioClipView: View {
                     selectOnClick()
                 }
                 .offset(x: CGFloat(clip.startTime) * projectState.pixelsPerSecond)
-        } else if (!clip.waveformCache.peaks.isEmpty || isActiveClip) && !isHiddenBeforePunchIn {
+        } else if (clip.hasWaveform || isActiveClip) && !isHiddenBeforePunchIn {
             // Drawn at the waveforms' zoom and track height, then stretched to
             // the box: while the zoom or height changes, only the stretch
             // follows and the waveform is drawn again once the change stops.

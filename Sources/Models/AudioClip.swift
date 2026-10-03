@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Combine
 import SwiftUI
 
 @MainActor
@@ -18,6 +19,11 @@ public final class AudioClip: Identifiable, ObservableObject {
     @Published public private(set) var duration: Double
     public private(set) var originalDuration: Double = 0.0
     public let waveformCache: WaveformCache
+    /// Whether the waveform has peaks to draw. Views observe the clip, not
+    /// its cache, so without this a clip whose peaks finish loading after it
+    /// is added (a dropped file) stayed blank until something else redrew it.
+    @Published public private(set) var hasWaveform = false
+    private var hasWaveformSubscription: AnyCancellable?
 
     public init(id: UUID = UUID(), startTime: Double, fileURL: URL) {
         self.id = id
@@ -30,6 +36,10 @@ public final class AudioClip: Identifiable, ObservableObject {
         self.fileURL = fileURL
         self.duration = 0.0
         self.waveformCache = WaveformCache()
+        hasWaveformSubscription = waveformCache.$peaks
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] hasPeaks in self?.hasWaveform = hasPeaks }
     }
 
     public func loadMetadata() {
