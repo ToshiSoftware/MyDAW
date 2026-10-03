@@ -132,9 +132,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// into the track's output mixer.
     private var trackRenderers: [UUID: TrackRenderer] = [:]
     // Last node of each track's insert chain; fans out to the main mixer and
-    // to every active send, so sends carry the post-insert signal.
+    // to a send to every FX channel, so sends carry the post-insert signal.
     private var trackChainTails: [UUID: AVAudioNode] = [:]
-    private var trackSendIDs: [UUID: [UUID]] = [:]
+    /// The FX channels each track's splitter feeds, in fan-out order.
+    private var trackSendFXIDs: [UUID: [UUID]] = [:]
     private var trackSplitterNodes: [UUID: AVAudioMixerNode] = [:]
     // AVAudioMixing pan only acts on a connection into a mixer, so pan gets
     // its own mixer stage after the inserts (pan into an AU input is ignored).
@@ -170,7 +171,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var fxOutputNodes: [UUID: AVAudioMixerNode] = [:]
     private var fxPluginNodes: [UUID: [AVAudioNode]] = [:]
     private var fxGraphSignatures: [UUID: [UUID]] = [:]
-    private var sendGainNodes: [UUID: AVAudioMixerNode] = [:]
+    /// Every track sends to every FX channel, at volume 0 when its send is
+    /// off, so moving a send only changes a volume. Wiring a send on demand
+    /// meant changing the graph of a running engine, where connects are only
+    /// queued: a raised send stayed silent until some later engine stop, and
+    /// detaching it again at -inf froze the app.
+    private struct SendKey: Hashable {
+        let trackID: UUID
+        let fxChannelID: UUID
+    }
+    private var sendGainNodes: [SendKey: AVAudioMixerNode] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
     private var vst3Instances: [UUID: VST3NativeInstance] = [:]
     private var syncedFXChannels: [FXChannel] = []
@@ -273,7 +283,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var quietRewireGeneration = 0
     private var isWaitingForQuietRewire = false
     /// The FX input each send's gain mixer is currently connected to.
-    private var wiredSendTargets: [UUID: AVAudioMixerNode] = [:]
+    private var wiredSendTargets: [SendKey: AVAudioMixerNode] = [:]
     private var punchPlaybackState: Int = 0
     private var pendingRecordingClipStartTime: Double?
     private var hasLoggedFirstRecordingInput = false
@@ -1277,14 +1287,15 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         wiredSendTargets = wiredSendTargets.filter { _, target in
             fxInputNodes.values.contains { $0 === target }
         }
-        let activeSendIDs = Set(tracks.flatMap { $0.fxSends.filter { $0.enabled && $0.level > 0 }.map(\.id) })
-        for (sendID, gainNode) in sendGainNodes where !activeSendIDs.contains(sendID) {
+        let currentTrackIDs = Set(tracks.map { $0.id })
+        let currentFXIDs = Set(fxChannels.map(\.id))
+        for (key, gainNode) in sendGainNodes
+        where !currentTrackIDs.contains(key.trackID) || !currentFXIDs.contains(key.fxChannelID) {
             engine.disconnectNodeOutput(gainNode)
             engine.detach(gainNode)
-            sendGainNodes.removeValue(forKey: sendID)
-            wiredSendTargets.removeValue(forKey: sendID)
+            sendGainNodes.removeValue(forKey: key)
+            wiredSendTargets.removeValue(forKey: key)
         }
-        let currentTrackIDs = Set(tracks.map { $0.id })
 
         for (id, renderer) in trackRenderers where !currentTrackIDs.contains(id) {
             renderer.unregister()
@@ -1301,7 +1312,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
             trackPluginLatencies.removeValue(forKey: id)
             trackChainTails.removeValue(forKey: id)
-            trackSendIDs.removeValue(forKey: id)
+            trackSendFXIDs.removeValue(forKey: id)
             if let splitter = trackSplitterNodes.removeValue(forKey: id) {
                 splitter.removeTap(onBus: 0)
                 engine.disconnectNodeOutput(splitter)
@@ -1464,22 +1475,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 updateLatencyCompensation()
             }
 
-            var sendIDs: [UUID] = []
-            for send in track.fxSends where send.enabled && send.level > 0 {
-                guard let fxInput = fxInputNodes[send.fxChannelID] else { continue }
-                let gainNode: AVAudioMixerNode
-                if let existing = sendGainNodes[send.id] {
-                    gainNode = existing
-                } else {
-                    gainNode = AVAudioMixerNode()
-                    engine.attach(gainNode)
-                    sendGainNodes[send.id] = gainNode
-                }
-                setMixerVolume(gainNode, send.level)
-                wireSend(send.id, gainNode: gainNode, to: fxInput, format: format)
-                sendIDs.append(send.id)
+            var sendFXIDs: [UUID] = []
+            for channel in fxChannels where fxInputNodes[channel.id] != nil {
+                let gainNode = sendGainNode(SendKey(trackID: track.id, fxChannelID: channel.id))
+                setMixerVolume(gainNode, sendLevel(of: track, to: channel.id))
+                sendFXIDs.append(channel.id)
             }
-            trackSendIDs[track.id] = sendIDs
+            trackSendFXIDs[track.id] = sendFXIDs
             if let tail = trackChainTails[track.id] {
                 connectTrackChainTail(track.id, from: tail, format: format)
             }
@@ -1545,8 +1547,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             setTrackPan(track.id, track.pan)
             trackRenderers[track.id]?.setMuted(recordingMutedTrackIDs.contains(track.id))
 
-            for send in track.fxSends {
-                sendGainNodes[send.id].map { setMixerVolume($0, send.enabled ? send.level : 0.0) }
+            for (key, gainNode) in sendGainNodes where key.trackID == track.id {
+                setMixerVolume(gainNode, sendLevel(of: track, to: key.fxChannelID))
             }
         }
 
@@ -1564,43 +1566,27 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         trackRenderers[track.id]?.setPlan(TrackPlaybackPlan.make(for: track))
     }
 
-    /// Connects a send's gain mixer to an FX input unless it already feeds it.
-    private func wireSend(_ sendID: UUID, gainNode: AVAudioMixerNode, to fxInput: AVAudioMixerNode, format: AVAudioFormat) {
-        guard wiredSendTargets[sendID] !== fxInput else { return }
-        if wiredSendTargets[sendID] != nil {
-            engine.disconnectNodeOutput(gainNode)
-        }
-        engine.connect(gainNode, to: fxInput, fromBus: 0, toBus: fxInput.nextAvailableInputBus, format: format)
-        wiredSendTargets[sendID] = fxInput
+    private func sendLevel(of track: AudioTrack, to fxChannelID: UUID) -> Float {
+        guard let send = track.fxSends.first(where: { $0.fxChannelID == fxChannelID }), send.enabled else { return 0.0 }
+        return send.level
     }
 
-    public func updateSendLevel(
-        track: AudioTrack,
-        send: FXSend,
-        fxChannel: FXChannel
-    ) {
-        guard let fxInput = fxInputNodes[fxChannel.id],
-              let format = AVAudioFormat(
-                  standardFormatWithSampleRate: hardwareSampleRate,
-                  channels: 2
-              ) else { return }
+    private func sendGainNode(_ key: SendKey) -> AVAudioMixerNode {
+        if let existing = sendGainNodes[key] { return existing }
+        let gainNode = AVAudioMixerNode()
+        gainNode.outputVolume = 0.0
+        engine.attach(gainNode)
+        sendGainNodes[key] = gainNode
+        return gainNode
+    }
 
-        let gainNode: AVAudioMixerNode
-        if let existing = sendGainNodes[send.id] {
-            gainNode = existing
-        } else {
-            gainNode = AVAudioMixerNode()
-            engine.attach(gainNode)
-            sendGainNodes[send.id] = gainNode
-        }
-        setMixerVolume(gainNode, send.enabled ? send.level : 0.0)
-
-        guard !(trackSendIDs[track.id] ?? []).contains(send.id) else { return }
-        wireSend(send.id, gainNode: gainNode, to: fxInput, format: format)
-        trackSendIDs[track.id, default: []].append(send.id)
-        if let tail = trackChainTails[track.id] {
-            connectTrackChainTail(track.id, from: tail, format: format)
-        }
+    /// Sets a send's level on its always-wired gain mixer. Returns false when
+    /// the track's sends are not built yet, so the caller can sync instead.
+    @discardableResult
+    public func updateSendLevel(track: AudioTrack, fxChannelID: UUID) -> Bool {
+        guard let gainNode = sendGainNodes[SendKey(trackID: track.id, fxChannelID: fxChannelID)] else { return false }
+        setMixerVolume(gainNode, sendLevel(of: track, to: fxChannelID))
+        return true
     }
 
     public func syncTracks(
@@ -2258,7 +2244,17 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         defer { updateLatencyCompensation() }
 
-        let sendGains = (trackSendIDs[trackID] ?? []).compactMap { sendGainNodes[$0] }
+        let sends: [(key: SendKey, gain: AVAudioMixerNode, fxInput: AVAudioMixerNode)] =
+            (trackSendFXIDs[trackID] ?? []).compactMap { fxID in
+                let key = SendKey(trackID: trackID, fxChannelID: fxID)
+                guard let gain = sendGainNodes[key], let fxInput = fxInputNodes[fxID] else { return nil }
+                return (key, gain, fxInput)
+            }
+        let sendGains = sends.map(\.gain)
+        let sendsReachFX = sends.allSatisfy { send in
+            wiredSendTargets[send.key] === send.fxInput &&
+                engine.outputConnectionPoints(for: send.gain, outputBus: 0).contains { $0.node === send.fxInput }
+        }
         let currentTargets = engine.outputConnectionPoints(for: splitter, outputBus: 0).compactMap(\.node)
         let desiredTargets: [AVAudioNode] = [dryDelay] + sendGains
         let dryReachesMain = engine.outputConnectionPoints(for: dryDelay, outputBus: 0)
@@ -2267,6 +2263,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             desiredTargets.allSatisfy { desired in currentTargets.contains { $0 === desired } } &&
             splitter.outputFormat(forBus: 0) == format &&
             dryReachesMain &&
+            sendsReachFX &&
             dryDelay.outputFormat(forBus: 0) == format
         guard !isUpToDate else { return }
 
@@ -2296,6 +2293,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 toBus: engine.mainMixerNode.nextAvailableInputBus,
                 format: format
             )
+        }
+        // Send → FX input connects need the stopped engine too: queued
+        // connects into one mixer all take the same input bus.
+        for send in sends {
+            let reachesFX = engine.outputConnectionPoints(for: send.gain, outputBus: 0)
+                .contains { $0.node === send.fxInput }
+            guard !reachesFX || wiredSendTargets[send.key] !== send.fxInput else { continue }
+            safeDisconnectNodeOutput(send.gain)
+            engine.connect(send.gain, to: send.fxInput, fromBus: 0, toBus: send.fxInput.nextAvailableInputBus, format: format)
+            wiredSendTargets[send.key] = send.fxInput
         }
         var points = [AVAudioConnectionPoint(node: dryDelay, bus: 0)]
         for gainNode in sendGains {

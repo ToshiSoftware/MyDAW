@@ -782,10 +782,8 @@ public final class ProjectState: ObservableObject {
         } else if level > 0 {
             track.fxSends.append(FXSend(fxChannelID: fxChannelID, level: level))
         }
-        if audioEngine.isPlaying || audioEngine.isRecording,
-           let send = track.fxSends.first(where: { $0.fxChannelID == fxChannelID }),
-           let fxChannel = fxChannels.first(where: { $0.id == fxChannelID }) {
-            audioEngine.updateSendLevel(track: track, send: send, fxChannel: fxChannel)
+        // Sends are always wired, so a level change is only a volume.
+        if audioEngine.updateSendLevel(track: track, fxChannelID: fxChannelID) {
             // Whether a send is on decides which tracks an FX solo keeps.
             if tracks.contains(where: \.isSoloed) || fxChannels.contains(where: \.isSoloed) {
                 audioEngine.updateMixerLevels(tracks: tracks, fxChannels: fxChannels)
