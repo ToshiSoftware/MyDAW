@@ -251,6 +251,23 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // Active disk writers during recording
     private var activeWriters: [UUID: AudioDiskWriter] = [:]
     private var activeClips: [UUID: AudioClip] = [:]
+    /// Called right before a recording adds its takes to the tracks, so the
+    /// project can keep the clips as they were for undo.
+    public var onRecordingWillAddTakes: (@MainActor () -> Void)?
+
+    /// True while `clipID` is a take being recorded: from the record start
+    /// (also before a punch-in) until its file is finalized after the stop.
+    /// The lanes draw such a take growing with the playhead.
+    public func isRecordingTake(_ clipID: UUID) -> Bool {
+        (isRecording || hasPendingRecording) && activeClips.values.contains { $0.id == clipID }
+    }
+
+    /// While recording, and until the takes are finalized after the stop,
+    /// what is recorded must not change: the R buttons, the armed tracks'
+    /// input channels and the takes themselves are locked.
+    public var isRecordingLocked: Bool {
+        isRecording || hasPendingRecording
+    }
 
     // Thread-safe capture configuration passed to real-time audio thread
     private let captureLock = NSLock()
@@ -3750,6 +3767,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 masterPluginLatency * 1000.0
             )
         )
+        if !armedTracks.isEmpty {
+            onRecordingWillAddTakes?()
+        }
         for track in armedTracks {
             do {
                 let writer = try AudioDiskWriter(

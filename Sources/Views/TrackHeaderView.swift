@@ -23,7 +23,13 @@ public struct TrackHeaderView: View {
     }
 
     private var isChannelModeLocked: Bool {
-        isRecording && track.isRecordArmed
+        (isRecording || projectState.audioEngine.isRecordingLocked) && track.isRecordArmed
+    }
+
+    /// While a take is recorded (and finalized), R, the armed track's input
+    /// and its delete button cannot be used.
+    private var isRecordLocked: Bool {
+        projectState.audioEngine.isRecordingLocked
     }
 
     public static func rowHeight(for track: AudioTrack) -> CGFloat {
@@ -106,6 +112,7 @@ public struct TrackHeaderView: View {
                             .foregroundColor(.white.opacity(0.4))
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .disabled(isRecordLocked && track.isRecordArmed)
                 }
 
                 // Middle Row: R / M / S buttons & Input Selector
@@ -130,6 +137,8 @@ public struct TrackHeaderView: View {
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .disabled(isRecordLocked)
+                    .opacity(isRecordLocked ? 0.5 : 1.0)
                     .help(track.isRecordArmed ? "Recording Mode (Armed)" : "Playback Mode (Click to Arm Record)")
 
                     // Mute [M]
@@ -212,6 +221,7 @@ public struct TrackHeaderView: View {
                         .cornerRadius(3)
                     }
                     .menuStyle(BorderlessButtonMenuStyle())
+                    .disabled(isRecordLocked && track.isRecordArmed)
                 }
 
                 TrackHeaderMeter(meter: track.meter, isRecordArmed: track.isRecordArmed)

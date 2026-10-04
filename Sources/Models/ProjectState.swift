@@ -389,6 +389,11 @@ public final class ProjectState: ObservableObject {
         .dropFirst()
         .receive(on: RunLoop.main)
         .sink { [weak self] _ in self?.objectWillChange.send() }
+        // A recording is one undo step: undo takes its takes away again
+        // (their files stay in Recordings).
+        self.audioEngine.onRecordingWillAddTakes = { [weak self] in
+            self?.recordClipEdit()
+        }
         self.audioEngine.onReachSongEnd = { [weak self] in
             guard let self else { return }
             self.audioEngine.stop(tracks: self.tracks)
@@ -470,7 +475,9 @@ public final class ProjectState: ObservableObject {
     }
 
     private func restoreClipEditSnapshot(_ snapshot: ClipEditSnapshot) {
-        for track in tracks {
+        // A track added after the snapshot is left as it is (adding tracks
+        // is not undone), rather than emptied.
+        for track in tracks where snapshot.clipsByTrack[track.id] != nil {
             let restoredClips = (snapshot.clipsByTrack[track.id] ?? []).map { item in
                 let clip = AudioClip(id: item.id, startTime: item.startTime, fileURL: item.fileURL)
                 clip.loadMetadata()
@@ -495,7 +502,8 @@ public final class ProjectState: ObservableObject {
     }
 
     public func undo() {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+        // Not until the takes are finalized: the snapshot has no take yet.
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked,
               let snapshot = undoStack.popLast() else { return }
         redoStack.append(makeClipEditSnapshot())
         restoreClipEditSnapshot(snapshot)
@@ -503,7 +511,7 @@ public final class ProjectState: ObservableObject {
     }
 
     public func redo() {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked,
               let snapshot = redoStack.popLast() else { return }
         undoStack.append(makeClipEditSnapshot())
         restoreClipEditSnapshot(snapshot)
@@ -609,6 +617,8 @@ public final class ProjectState: ObservableObject {
             let managedURL = try ClipAudioProcessing.is24BitPCM(url, sampleRate: targetSampleRate)
                 ? managedRecordingURL(for: url)
                 : convertedRecordingURL(for: url, sampleRate: targetSampleRate)
+            // One undo step, so undo takes the imported clip away again.
+            recordClipEdit()
             let clip = track.addClip(startTime: audioEngine.currentTime, fileURL: managedURL)
             clip.loadMetadata()
             selectClip(trackId: trackId, clipId: clip.id)
@@ -897,6 +907,8 @@ public final class ProjectState: ObservableObject {
     }
 
     public func deleteTrack(id: UUID) {
+        // Not a track being recorded: its take is still being written.
+        guard !(audioEngine.isRecordingLocked && tracks.first(where: { $0.id == id })?.isRecordArmed == true) else { return }
         rows.removeAll { $0.id == id }
         if selectedTrackId == id {
             selectedTrackId = tracks.first?.id
@@ -907,6 +919,7 @@ public final class ProjectState: ObservableObject {
     /// Asks before deleting, since removing a track cannot be undone.
     public func confirmDeleteTrack(id: UUID) {
         guard let track = tracks.first(where: { $0.id == id }),
+              !(audioEngine.isRecordingLocked && track.isRecordArmed),
               confirmDeletion(
                   name: track.name,
                   detail: String(localized: "The track's clips, plug-ins and sends will be removed. This cannot be undone.")
@@ -939,6 +952,8 @@ public final class ProjectState: ObservableObject {
     }
 
     public func toggleRecordArm(for track: AudioTrack) {
+        // What is recorded is fixed for the whole take (also the R key).
+        guard !audioEngine.isRecordingLocked else { return }
         track.isRecordArmed.toggle()
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
@@ -948,7 +963,7 @@ public final class ProjectState: ObservableObject {
     /// clips on both sides. Not on an armed track while recording, since the
     /// mode also sets how many input channels the recording captures.
     public func setInputRouting(for track: AudioTrack, channelMode: ChannelMode? = nil, inputChannelIndex: Int? = nil) {
-        if let channelMode, !(audioEngine.isRecording && track.isRecordArmed) {
+        if let channelMode, !(audioEngine.isRecordingLocked && track.isRecordArmed) {
             track.channelMode = channelMode
             // Stereo pairs start on even channels (1-2, 3-4, …); an odd mono
             // input would otherwise pair with the next channel, which may not
@@ -961,7 +976,7 @@ public final class ProjectState: ObservableObject {
                     : (options.first?.channelOffset ?? 0)
             }
         }
-        if let inputChannelIndex {
+        if let inputChannelIndex, !(audioEngine.isRecordingLocked && track.isRecordArmed) {
             track.inputChannelIndex = inputChannelIndex
         }
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
@@ -1083,7 +1098,7 @@ public final class ProjectState: ObservableObject {
 
     @discardableResult
     public func saveProject() -> Bool {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked else { return false }
         guard let projectURL = currentProjectURL,
               let projectFolderURL else {
             return createNewProject()
@@ -1190,7 +1205,7 @@ public final class ProjectState: ObservableObject {
     /// using that folder's Recordings. Asks only for the name; the folder
     /// cannot be changed.
     public func saveProjectAs() {
-        guard isProjectOpen, !audioEngine.isPlaying, !audioEngine.isRecording,
+        guard isProjectOpen, !audioEngine.isPlaying, !audioEngine.isRecordingLocked,
               let oldURL = currentProjectURL else { return }
         let folderURL = oldURL.deletingLastPathComponent()
 
@@ -1314,7 +1329,7 @@ public final class ProjectState: ObservableObject {
     }
 
     public func loadProject() {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked else { return }
         let panel = NSOpenPanel()
         panel.title = String(localized: "Open MyDAW Project")
         panel.canChooseDirectories = false
@@ -1329,7 +1344,7 @@ public final class ProjectState: ObservableObject {
 
     /// Opens a project from the start screen's recent list.
     func openRecentProject(_ entry: RecentProject) {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked else { return }
         guard entry.exists else {
             presentProjectError(String(localized: "The project file could not be found:\n\(entry.path)"))
             return
@@ -1343,7 +1358,7 @@ public final class ProjectState: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         let url = url.standardizedFileURL
         if isProjectOpen, currentProjectURL?.standardizedFileURL.path == url.path { return }
-        guard !audioEngine.isPlaying && !audioEngine.isRecording else {
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked else {
             presentProjectError(String(localized: "Stop playback and recording before opening another project."))
             return
         }
@@ -1381,7 +1396,7 @@ public final class ProjectState: ObservableObject {
     /// Asks for the new project's file name and folder; the .mydaw file and
     /// its Recordings folder are created side by side in that folder.
     public func createNewProject() -> Bool {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording else { return false }
+        guard !audioEngine.isPlaying && !audioEngine.isRecordingLocked else { return false }
         // Open the panel expanded, so its New Folder button shows at once.
         UserDefaults.standard.set(true, forKey: "NSNavPanelExpandedStateForSaveMode")
         UserDefaults.standard.set(true, forKey: "NSNavPanelExpandedStateForSaveMode2")

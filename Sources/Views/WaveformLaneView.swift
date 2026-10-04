@@ -21,9 +21,9 @@ public struct WaveformLaneView: View {
     /// The take being recorded (see `AudioClipView`), which grows with the
     /// playhead.
     private func isLiveRecordingClip(_ clip: AudioClip) -> Bool {
-        let engine = projectState.audioEngine
-        return track.isRecordArmed && clip.id == track.clips.last?.id
-            && (engine.isRecording || engine.hasPendingRecording)
+        // Asked of the engine, not the R button, so the take stays live
+        // whatever the button shows.
+        projectState.audioEngine.isRecordingTake(clip.id)
     }
 
     public var body: some View {
@@ -505,9 +505,7 @@ private struct AudioClipView: View {
         // The take being recorded: from the record start (also before a
         // punch-in, when the engine is not yet "recording") until its file
         // is finalized after stop.
-        let isActiveClip = track.isRecordArmed &&
-            clip.id == track.clips.last?.id &&
-            (audioEngine.isRecording || audioEngine.hasPendingRecording)
+        let isActiveClip = audioEngine.isRecordingTake(clip.id)
         let now = liveTime ?? audioEngine.currentTime
         let liveEndTime = audioEngine.isPunchRecording
             ? now
@@ -806,6 +804,9 @@ private struct AudioClipView: View {
             .onTapGesture {
                 selectOnClick()
             }
+            // The take being recorded cannot be moved, trimmed or faded
+            // until its file is finalized.
+            .allowsHitTesting(!isActiveClip)
             .offset(x: CGFloat(displayStartTime) * projectState.pixelsPerSecond)
         }
     }
