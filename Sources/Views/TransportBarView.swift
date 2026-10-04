@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CoreAudio
 
 public struct TransportBarView: View {
@@ -8,6 +9,7 @@ public struct TransportBarView: View {
     @ObservedObject public var audioEngine: AudioEngineManager
     @ObservedObject public var projectState: ProjectState
     @State private var showingBufferSettings = false
+    @State private var isShowingClickVolume = false
     @State private var bpmText = "120"
     @FocusState private var focusedField: FocusedField?
 
@@ -150,7 +152,13 @@ public struct TransportBarView: View {
                 .toggleStyle(.button)
                 .tint(audioEngine.metronomeEnabled ? .orange : .white.opacity(0.35))
                 .frame(width: 34, height: 28)
-                .help("Toggle Metronome Click")
+                .help("Toggle Metronome Click (right-click for click volume)")
+                // Right-click: a fader for the click volume, usable while
+                // playing.
+                .background(RightClickCatcher { isShowingClickVolume = true })
+                .popover(isPresented: $isShowingClickVolume, arrowEdge: .bottom) {
+                    ClickVolumeFader(audioEngine: audioEngine)
+                }
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")
@@ -400,15 +408,6 @@ public struct TransportBarView: View {
             .buttonStyle(PlainButtonStyle())
             .help(projectState.showsBeats ? "Show Time Ruler" : "Show Bars and Beats Ruler")
 
-            // Master Volume
-            HStack(spacing: 6) {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.6))
-                MasterVolumeSlider(level: audioEngine.masterVolumeState, audioEngine: audioEngine)
-                    .frame(width: 80)
-                    .accentColor(.cyan)
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -450,16 +449,116 @@ private struct PreviewValueText: View {
     }
 }
 
-/// The master volume slider, observing only the master level.
-private struct MasterVolumeSlider: View {
-    @ObservedObject var level: MasterVolumeState
-    let audioEngine: AudioEngineManager
+/// The click volume as a vertical fader, popped up from the metronome
+/// button. It changes the volume at once, also while playing.
+private struct ClickVolumeFader: View {
+    @ObservedObject var audioEngine: AudioEngineManager
 
     var body: some View {
-        Slider(
-            value: Binding(get: { level.value }, set: { audioEngine.masterVolume = $0 }),
-            in: 0.0...MixerGain.maximum
-        )
+        VStack(spacing: 6) {
+            Text("Click")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.secondary)
+            // Drawn here rather than a rotated Slider: a rotated AppKit
+            // slider takes clicks but is not drawn in a popover.
+            VerticalLevelFader(value: $audioEngine.metronomeVolume)
+                .frame(width: 28, height: 140)
+            Text(verbatim: "\(Int((audioEngine.metronomeVolume * 100.0).rounded()))%")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+        }
+        .padding(10)
+    }
+}
+
+/// A vertical fader for a 0...1 value: click or drag anywhere on it.
+private struct VerticalLevelFader: View {
+    @Binding var value: Double
+
+    var body: some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            let knobHeight: CGFloat = 10
+            let travel = max(1, height - knobHeight)
+            let level = CGFloat(min(1, max(0, value)))
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(width: 4)
+                    .frame(maxHeight: .infinity)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.orange)
+                    .frame(width: 4, height: knobHeight / 2 + travel * level)
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.white)
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.35), lineWidth: 0.5))
+                    .frame(width: 24, height: knobHeight)
+                    .offset(y: -travel * level)
+            }
+            .frame(width: geometry.size.width, height: height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        let fromBottom = height - knobHeight / 2 - drag.location.y
+                        value = Double(min(1, max(0, fromBottom / travel)))
+                    }
+            )
+        }
+    }
+}
+
+/// Calls `action` on a right-click (or Control-click) on the view it is the
+/// background of, leaving left-clicks to the view.
+private struct RightClickCatcher: NSViewRepresentable {
+    let action: @MainActor () -> Void
+
+    func makeNSView(context: Context) -> CatcherView {
+        let view = CatcherView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: CatcherView, context: Context) {
+        nsView.action = action
+    }
+
+    final class CatcherView: NSView {
+        var action: (@MainActor () -> Void)?
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else if monitor == nil {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+                    self?.handle(event) ?? event
+                }
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let window, event.window === window, window.attachedSheet == nil else { return event }
+            if event.type == .leftMouseDown && !event.modifierFlags.contains(.control) { return event }
+            let point = convert(event.locationInWindow, from: nil)
+            guard visibleRect.contains(point) else { return event }
+            action?()
+            return nil
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        deinit {
+            removeMonitor()
+        }
     }
 }
 

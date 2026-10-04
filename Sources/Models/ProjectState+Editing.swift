@@ -33,7 +33,7 @@ extension ProjectState {
     }
 
     public var canPaste: Bool {
-        !clipboard.isEmpty && !tracks.isEmpty
+        !clipboard.isEmpty && !visibleTracks.isEmpty
     }
 
     /// Adds the clip to the selection, or removes it if already selected.
@@ -50,7 +50,7 @@ extension ProjectState {
 
     public func selectAllClips() {
         timeSelection = nil
-        for track in tracks {
+        for track in visibleTracks {
             track.selectedClipIDs = Set(track.clips.map(\.id))
         }
     }
@@ -64,38 +64,53 @@ extension ProjectState {
 
     // MARK: Track geometry (in the "timelineScroll" coordinate space)
 
-    public func trackTopY(for trackID: UUID) -> CGFloat {
+    /// Top of a row drawn in the arranger; below the last row when the row
+    /// is not drawn.
+    public func rowTopY(for rowID: UUID) -> CGFloat {
         var currentY: CGFloat = 0.0
-        for candidate in tracks {
-            if candidate.id == trackID {
+        for row in visibleRows {
+            if row.id == rowID {
                 return currentY
             }
-            currentY += TrackHeaderView.rowHeight(for: candidate) * trackHeightScale + 1.0
+            currentY += rowHeight(row) + 1.0
         }
         return currentY
     }
 
+    public func trackTopY(for trackID: UUID) -> CGFloat {
+        rowTopY(for: trackID)
+    }
+
+    /// The track drawn at `y`; nil over a folder's row or outside every row.
     public func trackID(atTimelineY y: CGFloat) -> UUID? {
         var currentY: CGFloat = 0.0
-        for candidate in tracks {
-            let height = TrackHeaderView.rowHeight(for: candidate) * trackHeightScale
+        for row in visibleRows {
+            let height = rowHeight(row)
             if y >= currentY && y < currentY + height {
-                return candidate.id
+                return row.track?.id
             }
             currentY += height + 1.0
         }
         return nil
     }
 
-    /// Like `trackID(atTimelineY:)`, but above the first track gives the first
-    /// and below the last gives the last.
+    /// Index in `visibleTracks` of the track drawn nearest to `y`.
     private func trackIndex(nearestTimelineY y: CGFloat) -> Int? {
-        guard !tracks.isEmpty else { return nil }
-        if let id = trackID(atTimelineY: y),
-           let index = tracks.firstIndex(where: { $0.id == id }) {
-            return index
+        var best: (index: Int, distance: CGFloat)?
+        var trackIndex = 0
+        var currentY: CGFloat = 0.0
+        for row in visibleRows {
+            let height = rowHeight(row)
+            if row.track != nil {
+                let distance = y < currentY ? currentY - y : max(0.0, y - (currentY + height))
+                if best == nil || distance < best!.distance {
+                    best = (trackIndex, distance)
+                }
+                trackIndex += 1
+            }
+            currentY += height + 1.0
         }
-        return y < 0 ? 0 : tracks.count - 1
+        return best?.index
     }
 
     // MARK: Marquee (rubber-band) clip selection
@@ -124,7 +139,7 @@ extension ProjectState {
         marqueeRect = rect
         let startTime = Double(rect.minX / pixelsPerSecond)
         let endTime = Double(rect.maxX / pixelsPerSecond)
-        for track in tracks {
+        for track in visibleTracks {
             let top = trackTopY(for: track.id)
             let bottom = top + TrackHeaderView.rowHeight(for: track) * trackHeightScale
             var selected = marqueeBaseSelection[track.id] ?? []
@@ -154,7 +169,7 @@ extension ProjectState {
         }
         timeSelectionAnchor = (snappedTimelineTime(time), index)
         timeSelection = nil
-        selectedTrackId = tracks[index].id
+        selectedTrackId = visibleTracks[index].id
     }
 
     public func updateTimeSelection(toTime time: Double, timelineY: CGFloat) {
@@ -163,9 +178,11 @@ extension ProjectState {
         let current = snappedTimelineTime(time)
         let start = min(anchor.time, current)
         let end = max(anchor.time, current)
+        let lanes = visibleTracks
+        guard lanes.indices.contains(anchor.trackIndex), lanes.indices.contains(index) else { return }
         let trackRange = min(anchor.trackIndex, index)...max(anchor.trackIndex, index)
         timeSelection = end - start >= 0.01
-            ? TimeSelection(start: start, end: end, trackIDs: trackRange.map { tracks[$0].id })
+            ? TimeSelection(start: start, end: end, trackIDs: trackRange.map { lanes[$0].id })
             : nil
     }
 
@@ -230,14 +247,15 @@ extension ProjectState {
     public func copySelection() {
         var copied: [(trackIndex: Int, clip: AudioClip)] = []
         let origin: Double
+        let lanes = visibleTracks
         if let selection = timeSelection {
             for track in selectedRangeTracks {
-                guard let index = tracks.firstIndex(where: { $0.id == track.id }) else { continue }
+                guard let index = lanes.firstIndex(where: { $0.id == track.id }) else { continue }
                 copied += track.clipPieces(from: selection.start, to: selection.end).map { (index, $0) }
             }
             origin = selection.start
         } else {
-            for (index, track) in tracks.enumerated() {
+            for (index, track) in lanes.enumerated() {
                 copied += track.clips.filter { track.selectedClipIDs.contains($0.id) }.map { (index, $0) }
             }
             origin = copied.map(\.clip.startTime).min() ?? 0.0
@@ -266,16 +284,28 @@ extension ProjectState {
         deleteSelectedClip()
     }
 
+    /// Index in `lanes` of the track a paste starts on: the current track, or
+    /// when that is hidden in a closed folder, the first track shown below it.
+    private func pasteBaseIndex(in lanes: [AudioTrack]) -> Int {
+        if let index = lanes.firstIndex(where: { $0.id == selectedTrackId }) {
+            return index
+        }
+        guard let currentRow = rows.firstIndex(where: { $0.id == selectedTrackId }) else { return 0 }
+        let below = Set(rows[currentRow...].compactMap { $0.track?.id })
+        return lanes.firstIndex(where: { below.contains($0.id) }) ?? max(0, lanes.count - 1)
+    }
+
     /// Pastes at the playhead, with the copied block's top track landing on
     /// the selected track. Tracks below the last one are folded onto it.
     public func paste() {
         guard !audioEngine.isRecording, canPaste else { return }
-        let baseIndex = tracks.firstIndex(where: { $0.id == selectedTrackId }) ?? 0
+        let lanes = visibleTracks
+        let baseIndex = pasteBaseIndex(in: lanes)
         let pasteTime = audioEngine.currentTime
         beginClipEdit()
         clearSelection()
         for item in clipboard {
-            let track = tracks[min(tracks.count - 1, baseIndex + item.trackOffset)]
+            let track = lanes[min(lanes.count - 1, baseIndex + item.trackOffset)]
             let startTime = pasteTime + item.timeOffset
             let clip = AudioClip(startTime: startTime, fileURL: item.fileURL)
             clip.loadMetadata()
@@ -625,8 +655,9 @@ extension ProjectState {
 
     /// True when every selected clip has a track `trackDelta` tracks away.
     func canMoveSelectedClips(trackDelta: Int) -> Bool {
-        tracks.indices.allSatisfy { index in
-            tracks[index].selectedClipIDs.isEmpty || tracks.indices.contains(index + trackDelta)
+        let lanes = visibleTracks
+        return lanes.indices.allSatisfy { index in
+            lanes[index].selectedClipIDs.isEmpty || lanes.indices.contains(index + trackDelta)
         }
     }
 
@@ -634,12 +665,13 @@ extension ProjectState {
     /// dragged to another track they already count there (on top, where they
     /// will land) and no longer in the track they came from.
     public func layeringClips(for track: AudioTrack) -> [AudioClip] {
-        guard let preview = clipDragPreview, preview.trackDelta != 0,
-              let index = tracks.firstIndex(where: { $0 === track }) else { return track.clips }
+        guard let preview = clipDragPreview, preview.trackDelta != 0 else { return track.clips }
+        let lanes = visibleTracks
+        guard let index = lanes.firstIndex(where: { $0 === track }) else { return track.clips }
         var clips = track.clips.filter { !preview.clipIDs.contains($0.id) }
         let sourceIndex = index - preview.trackDelta
-        if tracks.indices.contains(sourceIndex) {
-            clips += tracks[sourceIndex].clips.filter { preview.clipIDs.contains($0.id) }
+        if lanes.indices.contains(sourceIndex) {
+            clips += lanes[sourceIndex].clips.filter { preview.clipIDs.contains($0.id) }
         }
         return clips
     }
@@ -650,11 +682,12 @@ extension ProjectState {
         defer { groupDragStarts = [:] }
         guard trackDelta != 0, canMoveSelectedClips(trackDelta: trackDelta) else { return }
         var moves: [(clipID: UUID, from: AudioTrack, to: AudioTrack)] = []
-        for (index, track) in tracks.enumerated() {
+        let lanes = visibleTracks
+        for (index, track) in lanes.enumerated() {
             for id in track.selectedClipIDs {
                 let destination = index + trackDelta
-                guard tracks.indices.contains(destination) else { return }
-                moves.append((id, track, tracks[destination]))
+                guard lanes.indices.contains(destination) else { return }
+                moves.append((id, track, lanes[destination]))
             }
         }
         for move in moves {

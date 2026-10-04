@@ -54,6 +54,9 @@ public struct ProjectDocument: Codable {
     public let waveformVerticalScale: Double
     public let trackHeightScale: Double
     public let tracks: [TrackDocument]
+    /// Track folders, each with its place among the rows (absent before
+    /// version 5).
+    public let folders: [TrackFolderDocument]
     public let fxChannels: [FXChannelDocument]
     public let masterPlugins: [TrackPluginDescriptor]
     public let pluginStates: [PluginStateDocument]
@@ -64,7 +67,7 @@ public struct ProjectDocument: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
-        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName
+        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, folders, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName
     }
 
     public init(
@@ -82,6 +85,7 @@ public struct ProjectDocument: Codable {
         waveformVerticalScale: Double,
         trackHeightScale: Double = 1.0,
         tracks: [TrackDocument],
+        folders: [TrackFolderDocument] = [],
         fxChannels: [FXChannelDocument] = [],
         masterPlugins: [TrackPluginDescriptor] = [],
         pluginStates: [PluginStateDocument] = [],
@@ -89,7 +93,7 @@ public struct ProjectDocument: Codable {
         songRange: SongRangeDocument = SongRangeDocument(),
         masterExportFileName: String? = nil
     ) {
-        self.version = 4
+        self.version = 5
         self.pixelsPerSecond = pixelsPerSecond
         self.selectedTrackId = selectedTrackId
         self.currentTime = currentTime
@@ -104,6 +108,7 @@ public struct ProjectDocument: Codable {
         self.waveformVerticalScale = waveformVerticalScale
         self.trackHeightScale = trackHeightScale
         self.tracks = tracks
+        self.folders = folders
         self.fxChannels = fxChannels
         self.masterPlugins = masterPlugins
         self.pluginStates = pluginStates
@@ -129,6 +134,7 @@ public struct ProjectDocument: Codable {
         waveformVerticalScale = try values.decodeIfPresent(Double.self, forKey: .waveformVerticalScale) ?? 1.0
         trackHeightScale = try values.decodeIfPresent(Double.self, forKey: .trackHeightScale) ?? 1.0
         tracks = try values.decodeIfPresent([TrackDocument].self, forKey: .tracks) ?? []
+        folders = try values.decodeIfPresent([TrackFolderDocument].self, forKey: .folders) ?? []
         fxChannels = try values.decodeIfPresent([FXChannelDocument].self, forKey: .fxChannels) ?? []
         masterPlugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .masterPlugins) ?? []
         pluginStates = try values.decodeIfPresent([PluginStateDocument].self, forKey: .pluginStates) ?? []
@@ -151,6 +157,8 @@ public struct TrackDocument: Codable {
     public let pan: Float
     public let trackHeight: Double
     public let color: ColorDocument
+    /// The folder the track is in (absent before version 5).
+    public let folderID: UUID?
     public let selectedClipId: UUID?
     public let clips: [ClipDocument]
     public let plugins: [TrackPluginDescriptor]
@@ -158,7 +166,7 @@ public struct TrackDocument: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, channelMode, inputChannelIndex, isRecordArmed, isMuted, isSoloed, isInputMonitoring
-        case volume, pan, trackHeight, color, selectedClipId, clips, plugins, fxSends
+        case volume, pan, trackHeight, color, folderID, selectedClipId, clips, plugins, fxSends
     }
 
     public init(
@@ -174,6 +182,7 @@ public struct TrackDocument: Codable {
         pan: Float,
         trackHeight: Double = 170.0,
         color: ColorDocument,
+        folderID: UUID? = nil,
         selectedClipId: UUID?,
         clips: [ClipDocument],
         plugins: [TrackPluginDescriptor] = [],
@@ -191,6 +200,7 @@ public struct TrackDocument: Codable {
         self.pan = pan
         self.trackHeight = trackHeight
         self.color = color
+        self.folderID = folderID
         self.selectedClipId = selectedClipId
         self.clips = clips
         self.plugins = plugins
@@ -211,10 +221,61 @@ public struct TrackDocument: Codable {
         pan = try values.decodeIfPresent(Float.self, forKey: .pan) ?? 0.0
         trackHeight = try values.decodeIfPresent(Double.self, forKey: .trackHeight) ?? 170.0
         color = try values.decode(ColorDocument.self, forKey: .color)
+        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
         selectedClipId = try values.decodeIfPresent(UUID.self, forKey: .selectedClipId)
         clips = try values.decodeIfPresent([ClipDocument].self, forKey: .clips) ?? []
         plugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .plugins) ?? []
         fxSends = try values.decodeIfPresent([FXSend].self, forKey: .fxSends) ?? []
+    }
+}
+
+public struct TrackFolderDocument: Codable {
+    public let id: UUID
+    public let name: String
+    public let color: ColorDocument
+    public let isOpen: Bool
+    public let isMuted: Bool
+    public let isSoloed: Bool
+    /// Index of the folder's header among all rows (tracks and folders).
+    public let position: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, color, isOpen, isMuted, isSoloed, position
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "Folder"
+        color = try values.decodeIfPresent(ColorDocument.self, forKey: .color)
+            ?? ColorDocument(color: Color(red: 0.55, green: 0.65, blue: 0.70))
+        isOpen = try values.decodeIfPresent(Bool.self, forKey: .isOpen) ?? true
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        position = try values.decodeIfPresent(Int.self, forKey: .position) ?? Int.max
+    }
+
+    @MainActor
+    public init(folder: TrackFolder, position: Int) {
+        id = folder.id
+        name = folder.name
+        color = ColorDocument(color: folder.color)
+        isOpen = folder.isOpen
+        isMuted = folder.isMuted
+        isSoloed = folder.isSoloed
+        self.position = position
+    }
+
+    @MainActor
+    func makeFolder() -> TrackFolder {
+        TrackFolder(
+            id: id,
+            name: name,
+            color: color.color,
+            isOpen: isOpen,
+            isMuted: isMuted,
+            isSoloed: isSoloed
+        )
     }
 }
 
@@ -296,7 +357,8 @@ public struct ClipDocument: Codable {
         self.sourceStartTime = sourceStartTime
         self.duration = duration
         self.originalDuration = originalDuration
-        self.gainDB = min(24.0, max(-24.0, gainDB))
+        // JSON has no -∞: silence is saved as -144 dB and read back as -∞.
+        self.gainDB = gainDB.isFinite ? min(AudioClip.maximumGainDB, max(-144.0, gainDB)) : -144.0
         self.isMuted = isMuted
         self.fadeInDuration = max(0.0, fadeInDuration)
         self.fadeOutDuration = max(0.0, fadeOutDuration)
@@ -312,7 +374,7 @@ public struct ClipDocument: Codable {
         sourceStartTime = try values.decodeIfPresent(Double.self, forKey: .sourceStartTime) ?? 0.0
         duration = try values.decode(Double.self, forKey: .duration)
         originalDuration = try values.decodeIfPresent(Double.self, forKey: .originalDuration) ?? duration
-        gainDB = min(24.0, max(-24.0, try values.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0.0))
+        gainDB = min(AudioClip.maximumGainDB, max(-144.0, try values.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0.0))
         isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
         fadeInDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeInDuration) ?? 0.0)
         fadeOutDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeOutDuration) ?? 0.0)

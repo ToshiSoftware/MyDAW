@@ -40,7 +40,17 @@ public final class ProjectState: ObservableObject {
         let selectedClipIDs: [UUID: Set<UUID>]
     }
 
-    @Published public var tracks: [AudioTrack] = []
+    /// Tracks and folder headers in display order; a folder's tracks follow
+    /// its header directly. Changed only through the track and folder
+    /// operations, which keep `tracks` and the tracks' folders in step.
+    @Published public internal(set) var rows: [ArrangerRow] = [] {
+        didSet { rowsDidChange() }
+    }
+    /// The tracks of `rows`, in the same order (folders left out).
+    @Published public internal(set) var tracks: [AudioTrack] = []
+    /// Asks the mixer to scroll a track's strip (or a folder's line) to its
+    /// left edge.
+    public let mixerScrollRequests = PassthroughSubject<UUID, Never>()
     @Published public var fxChannels: [FXChannel] = []
     @Published public var masterPlugins: [TrackPluginDescriptor] = []
     @Published public var selectedTrackId: UUID?
@@ -334,7 +344,7 @@ public final class ProjectState: ObservableObject {
     public let audioEngine: AudioEngineManager
     public let deviceManager: AudioDeviceManager
 
-    private let defaultColors: [Color] = [
+    let defaultColors: [Color] = [
         Color(red: 0.20, green: 0.60, blue: 1.00), // Azure
         Color(red: 0.25, green: 0.85, blue: 0.60), // Emerald
         Color(red: 1.00, green: 0.65, blue: 0.15), // Amber
@@ -478,7 +488,8 @@ public final class ProjectState: ObservableObject {
                 return clip
             }
             track.replaceClips(restoredClips)
-            track.selectedClipIDs = snapshot.selectedClipIDs[track.id] ?? []
+            // Edits never reach a track hidden in a closed folder.
+            track.selectedClipIDs = isTrackVisible(track) ? snapshot.selectedClipIDs[track.id] ?? [] : []
         }
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
@@ -555,18 +566,34 @@ public final class ProjectState: ObservableObject {
     }
 
     public func addTrack(name: String? = nil, mode: ChannelMode = .stereo, isArmed: Bool = false) {
+        insertNewTrack(name: name, mode: mode, isArmed: isArmed, at: newTrackPlace())
+    }
+
+    /// Adds a track at `place.index` in the rows, inside `place.folder`, and
+    /// makes it the current track.
+    func insertNewTrack(
+        name: String? = nil,
+        mode: ChannelMode = .stereo,
+        isArmed: Bool = false,
+        at place: (index: Int, folder: TrackFolder?)
+    ) {
         let index = tracks.count + 1
         let trackName = name ?? "Audio \(index)"
-        let color = defaultColors[(index - 1) % defaultColors.count]
 
         let newTrack = AudioTrack(
             name: trackName,
             channelMode: mode,
             inputChannelIndex: 0,
             isRecordArmed: isArmed,
-            color: color
+            color: place.folder?.color ?? defaultColors[(index - 1) % defaultColors.count]
         )
-        tracks.append(newTrack)
+        newTrack.folderID = place.folder?.id
+        if let folder = place.folder, !folder.isOpen {
+            // The new track becomes the current one, so it is shown.
+            folder.isOpen = true
+        }
+        rows.insert(.track(newTrack), at: place.index)
+        applyFolderStates()
         selectedTrackId = newTrack.id
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
@@ -753,7 +780,19 @@ public final class ProjectState: ObservableObject {
     }
 
     public func addFXChannel() {
-        let channel = FXChannel(name: "FX \(fxChannels.count + 1)")
+        // One past the highest default-named channel, so a name freed by a
+        // removal is not given out again next to a channel that kept it.
+        // Capped so a renamed "FX 9223372036854775807" cannot overflow.
+        let number = min(fxChannels.compactMap { channel -> Int? in
+            guard channel.name.hasPrefix("FX ") else { return nil }
+            return Int(channel.name.dropFirst(3))
+        }.max() ?? 0, 999_999) + 1
+        let channel = FXChannel(name: "FX \(number)")
+        // The FX channels share one colour, set from the line before them in
+        // the mixer.
+        if let color = fxChannels.first?.color {
+            channel.color = color
+        }
         fxChannels.append(channel)
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
@@ -785,7 +824,7 @@ public final class ProjectState: ObservableObject {
         // Sends are always wired, so a level change is only a volume.
         if audioEngine.updateSendLevel(track: track, fxChannelID: fxChannelID) {
             // Whether a send is on decides which tracks an FX solo keeps.
-            if tracks.contains(where: \.isSoloed) || fxChannels.contains(where: \.isSoloed) {
+            if tracks.contains(where: \.effectiveSoloed) || fxChannels.contains(where: \.isSoloed) {
                 audioEngine.updateMixerLevels(tracks: tracks, fxChannels: fxChannels)
             }
         } else {
@@ -858,24 +897,11 @@ public final class ProjectState: ObservableObject {
     }
 
     public func deleteTrack(id: UUID) {
-        tracks.removeAll { $0.id == id }
+        rows.removeAll { $0.id == id }
         if selectedTrackId == id {
             selectedTrackId = tracks.first?.id
         }
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-    }
-
-    /// Moves a track to `index` in the track order, which the arranger and the
-    /// mixer both follow. The audio graph is keyed by track, not by position,
-    /// so nothing needs to be rewired.
-    public func moveTrack(id: UUID, to index: Int) {
-        guard let from = tracks.firstIndex(where: { $0.id == id }) else { return }
-        let to = min(max(0, index), tracks.count - 1)
-        guard from != to else { return }
-        let track = tracks.remove(at: from)
-        tracks.insert(track, at: to)
-        // A time selection spans adjacent tracks, which these may no longer be.
-        timeSelection = nil
     }
 
     /// Asks before deleting, since removing a track cannot be undone.
@@ -899,7 +925,7 @@ public final class ProjectState: ObservableObject {
     }
 
     /// Return and Escape both cancel, so a stray key press never deletes.
-    private func confirmDeletion(name: String, detail: String) -> Bool {
+    func confirmDeletion(name: String, detail: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = String(localized: "Delete “\(name)”?")
         alert.informativeText = detail
@@ -947,11 +973,14 @@ public final class ProjectState: ObservableObject {
     }
 
     public func toggleMute(for track: AudioTrack) {
+        // Held on by its folder's M, which is turned off there.
+        guard !track.isMutedByFolder else { return }
         track.isMuted.toggle()
         updateMixerLevelsAfterTrackControlChange()
     }
 
     public func toggleSolo(for track: AudioTrack) {
+        guard !track.isSoloedByFolder else { return }
         track.isSoloed.toggle()
         updateMixerLevelsAfterTrackControlChange()
     }
@@ -966,7 +995,7 @@ public final class ProjectState: ObservableObject {
         updateMixerLevelsAfterTrackControlChange()
     }
 
-    private func updateMixerLevelsAfterTrackControlChange() {
+    func updateMixerLevelsAfterTrackControlChange() {
         if audioEngine.isPlaying || audioEngine.isRecording {
             audioEngine.updateMixerLevels(tracks: tracks, fxChannels: fxChannels)
         } else {
@@ -1097,6 +1126,7 @@ public final class ProjectState: ObservableObject {
                     pan: track.pan,
                     trackHeight: Double(track.trackHeight),
                     color: ColorDocument(color: track.color),
+                    folderID: track.folderID,
                     selectedClipId: track.selectedClipId,
                     clips: track.clips.map { clip in
                         ClipDocument(
@@ -1117,6 +1147,9 @@ public final class ProjectState: ObservableObject {
                     plugins: track.plugins,
                     fxSends: track.fxSends
                 )
+            },
+            folders: rows.enumerated().compactMap { position, row in
+                row.folder.map { TrackFolderDocument(folder: $0, position: position) }
             },
             fxChannels: fxChannels.map { FXChannelDocument(channel: $0) },
             masterPlugins: masterPlugins,
@@ -1434,10 +1467,25 @@ public final class ProjectState: ObservableObject {
                     track.restoreClip(clip)
                 }
                 track.selectedClipId = trackDocument.selectedClipId
+                track.folderID = trackDocument.folderID
                 restoredTracks.append(track)
             }
 
-            tracks = restoredTracks
+            // Folders go back to their places among the tracks; each place is
+            // counted with the folders before it already in.
+            var restoredRows = restoredTracks.map { ArrangerRow.track($0) }
+            // A folder whose ID is already taken (an edited file) is left out:
+            // rows must have unique IDs.
+            var usedIDs = Set(restoredTracks.map(\.id))
+            for folderDocument in document.folders.sorted(by: { $0.position < $1.position })
+            where usedIDs.insert(folderDocument.id).inserted {
+                restoredRows.insert(
+                    .folder(folderDocument.makeFolder()),
+                    at: min(max(0, folderDocument.position), restoredRows.count)
+                )
+            }
+            rows = restoredRows
+            applyFolderStates()
             fxChannels = document.fxChannels.map {
                 FXChannel(
                     id: $0.id,

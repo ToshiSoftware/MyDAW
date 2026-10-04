@@ -8,6 +8,10 @@ public struct MixerView: View {
     @AppStorage("mixer.height") private var mixerHeight: Double = 460
     @AppStorage("mixer.pluginSectionHeight") private var pluginSectionHeight: Double = 110
     @AppStorage("mixer.sendSectionHeight") private var sendSectionHeight: Double = 80
+    /// Folded down to its title bar.
+    @AppStorage("mixer.collapsed") private var isCollapsed = false
+    /// Strip to scroll to once a folded mixer has unfolded.
+    @State private var pendingScrollID: UUID?
     @State private var heightDragStart: Double?
     /// How much taller the mixer may get before the tracks above it reach
     /// their minimum height.
@@ -31,6 +35,17 @@ public struct MixerView: View {
         self.growthLimit = growthLimit
     }
 
+    /// The tracks' strips in order, with a line in the folder's colour where
+    /// each folder starts. Closed folders hide nothing here.
+    private var mixerItems: [MixerItem] {
+        projectState.rows.map { row in
+            switch row {
+            case .folder(let folder): return .folderEdge(folder)
+            case .track(let track): return .track(track)
+            }
+        }
+    }
+
     public var body: some View {
         let height = max(mixerHeight, minimumMixerHeight)
         let layout = MixerSectionLayout(
@@ -39,6 +54,11 @@ public struct MixerView: View {
             maxTopHeight: max(64, height - Self.chromeHeight - Self.minControlHeight)
         )
         VStack(spacing: 0) {
+            if isCollapsed {
+                Rectangle()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(height: 1)
+            } else {
             Rectangle()
                 .fill(Color.white.opacity(0.12))
                 .frame(height: 5)
@@ -61,8 +81,20 @@ public struct MixerView: View {
                         }
                     )
                 )
+            }
 
             HStack {
+                Button {
+                    isCollapsed.toggle()
+                } label: {
+                    Image(systemName: isCollapsed ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.75))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+                .help(isCollapsed ? "Show Mixer" : "Hide Mixer")
                 Label("Mixer", systemImage: "slider.vertical.3")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white.opacity(0.75))
@@ -78,11 +110,24 @@ public struct MixerView: View {
             .padding(.horizontal, 10)
             .frame(height: 22)
 
+            if !isCollapsed {
             HStack(alignment: .top, spacing: 0) {
+                ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: true) {
                     HStack(alignment: .top, spacing: 2) {
-                        ForEach(projectState.tracks) { track in
-                            TrackStripView(track: track, projectState: projectState, layout: layout)
+                        ForEach(mixerItems) { item in
+                            switch item {
+                            case .track(let track):
+                                TrackStripView(track: track, projectState: projectState, layout: layout)
+                                    .id(item.id)
+                            case .folderEdge(let folder):
+                                // The stack's spacing leaves 2 pt either side.
+                                FolderEdgeLine(folder: folder)
+                                    .id(item.id)
+                            }
+                        }
+                        if let firstFX = projectState.fxChannels.first {
+                            FXEdgeLine(channel: firstFX, channels: projectState.fxChannels)
                         }
                         ForEach(projectState.fxChannels) { channel in
                             FXStripView(
@@ -97,6 +142,21 @@ public struct MixerView: View {
                     .frame(maxHeight: .infinity, alignment: .top)
                 }
                 .scrollIndicators(.visible)
+                // "Show in Mixer" from a track or folder header.
+                .onReceive(projectState.mixerScrollRequests) { id in
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(id, anchor: .leading)
+                    }
+                }
+                .onAppear {
+                    guard let id = pendingScrollID else { return }
+                    pendingScrollID = nil
+                    // Once the strips are laid out.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(id, anchor: .leading)
+                    }
+                }
+                }
                 Rectangle()
                     .fill(Color.white.opacity(0.18))
                     .frame(width: 1)
@@ -105,8 +165,16 @@ public struct MixerView: View {
             }
             .frame(maxHeight: .infinity)
             .padding(.bottom, 4)
+            }
         }
-        .frame(height: height)
+        .frame(height: isCollapsed ? 23 : height)
+        // "Show in Mixer" unfolds a folded mixer first.
+        .onReceive(projectState.mixerScrollRequests) { id in
+            if isCollapsed {
+                pendingScrollID = id
+                isCollapsed = false
+            }
+        }
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
         .contextMenu {
             Button {
@@ -428,6 +496,8 @@ private struct PanBlock: View {
 private struct StripFooter: View {
     let name: String
     let color: Color
+    /// The current track's name is shown reversed: black on white.
+    var isCurrent = false
     /// When set, the name can be edited by double-clicking it.
     var onRename: ((String) -> Void)?
 
@@ -452,6 +522,8 @@ private struct StripFooter: View {
             .padding(.horizontal, 3)
             .frame(maxWidth: .infinity)
             .frame(height: 18)
+            .foregroundColor(isCurrent ? .black : nil)
+            .background(isCurrent ? Color.white : Color.clear)
         }
     }
 }
@@ -538,9 +610,11 @@ private struct TrackStripView: View {
                 PanBlock(pan: $track.pan, tint: .cyan, onChange: applyLevels)
                 HStack(spacing: 4) {
                     Button("M") { projectState.toggleMute(for: track) }
-                        .buttonStyle(MixerButtonStyle(active: track.isMuted, color: .cyan))
+                        .buttonStyle(MixerButtonStyle(active: track.isMuted, held: track.isMutedByFolder, color: .cyan))
+                        .disabled(track.isMutedByFolder)
                     Button("S") { projectState.toggleSolo(for: track) }
-                        .buttonStyle(MixerButtonStyle(active: track.isSoloed, color: .yellow))
+                        .buttonStyle(MixerButtonStyle(active: track.isSoloed, held: track.isSoloedByFolder, color: .yellow))
+                        .disabled(track.isSoloedByFolder)
                 }
                 .frame(height: 20)
                 TrackFaderColumn(
@@ -549,7 +623,11 @@ private struct TrackStripView: View {
                     isRecordArmed: track.isRecordArmed,
                     onChange: applyLevels
                 )
-                StripFooter(name: track.name, color: track.color)
+                StripFooter(
+                    name: track.name,
+                    color: track.color,
+                    isCurrent: track.id == projectState.selectedTrackId
+                )
                     .contentShape(Rectangle())
                     .onTapGesture { projectState.selectedTrackId = track.id }
             }
@@ -632,7 +710,7 @@ private struct FXStripView: View {
                 // Let the context menu close before the modal alert opens.
                 DispatchQueue.main.async { projectState.confirmRemoveFXChannel(id: channel.id) }
             } label: {
-                Label("Remove FX channel", systemImage: "trash")
+                Label("Remove \(channel.name)", systemImage: "trash")
             }
         }
     }
@@ -825,15 +903,84 @@ private struct PluginNameButton: View {
 
 private struct MixerButtonStyle: ButtonStyle {
     let active: Bool
+    /// Held on by the track's folder: lit grey, and not pressable.
+    var held = false
     let color: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 9, weight: .black))
-            .foregroundColor(active ? .black : color.opacity(0.75))
+            .foregroundColor(active || held ? .black : color.opacity(0.75))
             .frame(width: 24, height: 18)
-            .background(active ? color : Color.white.opacity(0.08))
+            .background(held ? Color(white: 0.55) : (active ? color : Color.white.opacity(0.08)))
             .cornerRadius(3)
             .opacity(configuration.isPressed ? 0.7 : 1.0)
+    }
+}
+
+/// A channel strip in the mixer, or the line where a folder's tracks start.
+private enum MixerItem: Identifiable {
+    case track(AudioTrack)
+    case folderEdge(TrackFolder)
+
+    var id: UUID {
+        switch self {
+        case .track(let track): return track.id
+        case .folderEdge(let folder): return folder.id
+        }
+    }
+}
+
+/// Vertical line in a folder's colour, as wide as the colour bar on the
+/// folder's header in the arranger. Clicking it changes the folder's colour
+/// (the header follows, being the same folder).
+private struct FolderEdgeLine: View {
+    @ObservedObject var folder: TrackFolder
+
+    var body: some View {
+        MixerEdgeLine(color: $folder.color, help: "Change folder color")
+    }
+}
+
+/// The same line, in the first FX channel's colour, where the FX strips
+/// start. The colour picked there goes to every FX channel.
+private struct FXEdgeLine: View {
+    @ObservedObject var channel: FXChannel
+    let channels: [FXChannel]
+
+    var body: some View {
+        MixerEdgeLine(
+            color: Binding(
+                get: { channel.color },
+                set: { color in
+                    for fxChannel in channels {
+                        fxChannel.color = color
+                    }
+                }
+            ),
+            help: "Change FX color"
+        )
+    }
+}
+
+/// Clicking the line opens the colour palette for what it marks.
+private struct MixerEdgeLine: View {
+    @Binding var color: Color
+    let help: LocalizedStringKey
+    @State private var isShowingColorPalette = false
+
+    var body: some View {
+        Rectangle()
+            .fill(color)
+            .frame(width: 6)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { isShowingColorPalette = true }
+            .help(help)
+            .popover(isPresented: $isShowingColorPalette, arrowEdge: .trailing) {
+                TrackColorPalette(color: $color) {
+                    isShowingColorPalette = false
+                }
+            }
     }
 }

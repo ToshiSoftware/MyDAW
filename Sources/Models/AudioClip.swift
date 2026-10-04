@@ -84,8 +84,18 @@ public final class AudioClip: Identifiable, ObservableObject {
         self.duration = max(0.02, duration)
     }
 
+    /// Highest clip gain.
+    public nonisolated static let maximumGainDB = 36.0
+    /// Gains at or below this become -∞ (silence).
+    public nonisolated static let silenceGainDB = -72.0
+
+    /// Sets the gain, -∞ (silent) ... +36 dB.
     public func setGainDB(_ value: Double) {
-        gainDB = min(24.0, max(-24.0, value.isFinite ? value : 0.0))
+        if value.isNaN {
+            gainDB = 0.0
+        } else {
+            gainDB = value <= Self.silenceGainDB ? -.infinity : min(Self.maximumGainDB, value)
+        }
     }
 
     public func setFadeInDuration(_ value: Double) {

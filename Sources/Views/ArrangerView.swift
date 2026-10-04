@@ -13,10 +13,12 @@ public struct ArrangerView: View {
     /// The tracks' horizontal scroll view, which horizontal scrolls over the
     /// ruler are passed to.
     @State private var timelineScrollView = WeakScrollView()
-    /// Track being dragged by its header to a new place in the order, and how
-    /// far it has been dragged vertically.
-    @State private var reorderTrackID: UUID?
-    @State private var reorderTranslation: CGFloat = 0
+    /// Track or folder being dragged by its header to a new place in the
+    /// order, how far it has been dragged, and where the pointer is (in the
+    /// header column, which lines up with the rows).
+    @State private var reorderRowID: UUID?
+    @State private var reorderTranslation: CGSize = .zero
+    @State private var reorderPointerY: CGFloat = 0
     /// How far the timeline must reach for the playhead: raised in steps as
     /// the playhead moves, so this view (which does not observe the playhead)
     /// is rebuilt only now and then.
@@ -33,7 +35,7 @@ public struct ArrangerView: View {
             .map { $0.startTime + $0.duration }
             .max() ?? 0.0
         let pixelsPerSecond = max(0.001, projectState.pixelsPerSecond)
-        let visibleDuration = Double(max(1.0, viewportWidth - 230.0) / pixelsPerSecond)
+        let visibleDuration = Double(max(1.0, viewportWidth - ArrangerLayout.headerColumnWidth) / pixelsPerSecond)
         let maxDuration = max(
             60.0,
             audioEngine.currentTime + 30.0,
@@ -98,7 +100,7 @@ public struct ArrangerView: View {
     /// Trackpad pinch zooms the timeline horizontally around the pointer.
     /// `location` is in the arranger's coordinates (x from its left edge).
     private func handleMagnify(_ event: NSEvent, at location: CGPoint) -> Bool {
-        let anchorOffset = max(0.0, location.x - 230.0)
+        let anchorOffset = max(0.0, location.x - ArrangerLayout.headerColumnWidth)
         projectState.setPixelsPerSecond(
             projectState.pixelsPerSecond * (1.0 + event.magnification),
             anchorOffset: anchorOffset
@@ -113,7 +115,7 @@ public struct ArrangerView: View {
     /// event was consumed.
     private func handleWheel(_ event: NSEvent, at location: CGPoint) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        let isOverRuler = location.y < 32.0 && location.x >= 230.0
+        let isOverRuler = location.y < 32.0 && location.x >= ArrangerLayout.headerColumnWidth
         // The ruler is outside the tracks' scroll view, so horizontal
         // scrolling there (Shift + wheel, trackpad swipe) is passed to it.
         if isOverRuler,
@@ -133,7 +135,7 @@ public struct ArrangerView: View {
             guard delta != 0 else { return false }
             projectState.setPixelsPerSecond(
                 projectState.pixelsPerSecond * pow(1.1, delta),
-                anchorOffset: location.x - 230.0
+                anchorOffset: location.x - ArrangerLayout.headerColumnWidth
             )
             return true
         }
@@ -159,7 +161,7 @@ public struct ArrangerView: View {
     /// The dragged clips, each drawn from its own track moved by the
     /// pointer's vertical travel, so the selection moves as one block.
     private func clipDragPreviews(_ preview: ClipDragPreview) -> some View {
-        let tracks = projectState.tracks
+        let tracks = projectState.visibleTracks
         let items: [(clip: AudioClip, track: AudioTrack, landing: AudioTrack)] = tracks.indices.flatMap { index in
             let track = tracks[index]
             let landingIndex = index + preview.trackDelta
@@ -206,65 +208,181 @@ public struct ArrangerView: View {
         TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
     }
 
-    /// Index the dragged track would take if dropped now: the number of other
-    /// tracks whose middle lies above the dragged row's middle.
-    private func reorderTargetIndex() -> Int? {
-        guard let draggedID = reorderTrackID,
-              let dragged = projectState.tracks.first(where: { $0.id == draggedID }) else { return nil }
-        let draggedMid = projectState.trackTopY(for: draggedID) + rowHeight(dragged) / 2 + reorderTranslation
-        return projectState.tracks.filter { track in
-            track.id != draggedID
-                && projectState.trackTopY(for: track.id) + rowHeight(track) / 2 < draggedMid
-        }.count
+    /// Rows that move with the current header drag: the dragged track, or the
+    /// dragged folder with its tracks.
+    private func reorderMovingIDs() -> Set<UUID> {
+        guard let draggedID = reorderRowID else { return [] }
+        guard let folder = projectState.folder(withID: draggedID) else { return [draggedID] }
+        return Set([draggedID] + projectState.tracks(in: folder).map(\.id))
     }
 
-    /// Vertical offset of a row while a track is dragged: the dragged row
-    /// follows the pointer, and the rows it passes step aside to show where it
-    /// will land.
-    private func reorderOffset(for track: AudioTrack) -> CGFloat {
-        guard let draggedID = reorderTrackID,
-              let from = projectState.tracks.firstIndex(where: { $0.id == draggedID }),
-              let target = reorderTargetIndex(),
-              let index = projectState.tracks.firstIndex(where: { $0.id == track.id }) else { return 0 }
-        if track.id == draggedID {
-            return reorderTranslation
+    /// Where the dragged track or folder would land if dropped now: at the
+    /// gap between the rows nearest the pointer, or into a closed folder
+    /// when a track is held over that folder's header.
+    ///
+    /// Below the last track of a folder (or below an empty folder's header)
+    /// a track could go either inside the folder or after it: inside while
+    /// the pointer is still over that last row, outside once it is over the
+    /// row below.
+    private func reorderDropTarget() -> RowDropTarget? {
+        guard let draggedID = reorderRowID else { return nil }
+        let moving = reorderMovingIDs()
+        var others: [(row: ArrangerRow, top: CGFloat, height: CGFloat)] = []
+        var y: CGFloat = 0
+        for row in projectState.visibleRows {
+            let height = projectState.rowHeight(row)
+            if !moving.contains(row.id) {
+                others.append((row, y, height))
+            }
+            y += height + 1
         }
-        let step = rowHeight(projectState.tracks[from]) + 1
-        if index > from && index <= target { return -step }
-        if index < from && index >= target { return step }
-        return 0
+        let pointerY = reorderPointerY
+        let draggedTrack = projectState.tracks.first { $0.id == draggedID }
+
+        if draggedTrack != nil {
+            for entry in others {
+                guard let folder = entry.row.folder, !folder.isOpen,
+                      pointerY >= entry.top + entry.height * 0.25,
+                      pointerY <= entry.top + entry.height * 0.75 else { continue }
+                let index = others.firstIndex { $0.row.id == folder.id }! + 1
+                return RowDropTarget(
+                    beforeRowID: others.indices.contains(index) ? others[index].row.id : nil,
+                    folderID: folder.id,
+                    lineY: entry.top,
+                    isIndented: false,
+                    closedFolderID: folder.id
+                )
+            }
+        }
+
+        var best: (target: RowDropTarget, distance: CGFloat)?
+        for gap in 0...others.count {
+            let above = gap > 0 ? others[gap - 1].row : nil
+            let below = gap < others.count ? others[gap] : nil
+            let lineY = below.map { $0.top - 0.5 }
+                ?? others.last.map { $0.top + $0.height + 0.5 }
+                ?? 0
+            var folderID: UUID?
+            if draggedTrack != nil {
+                if let belowFolderID = below?.row.track?.folderID {
+                    folderID = belowFolderID
+                } else {
+                    // Right below an open folder's header or its last track.
+                    let edgeFolderID: UUID? = above?.folder.flatMap { $0.isOpen ? $0.id : nil }
+                        ?? above?.track?.folderID
+                    if let edgeFolderID, pointerY < lineY {
+                        folderID = edgeFolderID
+                    }
+                }
+            } else if let below, below.row.track?.folderID != nil {
+                // A folder lands only above a folder or a track out of any
+                // folder, since folders do not nest.
+                continue
+            }
+            let target = RowDropTarget(
+                beforeRowID: below?.row.id,
+                folderID: folderID,
+                lineY: lineY,
+                isIndented: folderID != nil,
+                closedFolderID: nil
+            )
+            let distance = abs(pointerY - lineY)
+            if best == nil || distance < best!.distance {
+                best = (target, distance)
+            }
+        }
+        return best?.target
     }
 
-    /// Dragging a track header moves the track in the order. Buttons, menus
-    /// and the resize strip on the header keep their own gestures.
-    private func reorderGesture(for track: AudioTrack) -> some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .global)
+    /// The line (or closed folder outline) showing where a dragged header
+    /// will land; indented when a track will go into a folder.
+    private func dropIndicator(_ target: RowDropTarget) -> some View {
+        let x = target.isIndented ? ArrangerLayout.folderIndent : 0
+        return Group {
+            if target.closedFolderID != nil {
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.white.opacity(0.9), lineWidth: 2)
+                    .frame(width: ArrangerLayout.headerWidth, height: TrackFolder.rowHeight)
+                    .offset(y: target.lineY)
+            } else {
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: ArrangerLayout.headerWidth, height: 3)
+                    .offset(x: x, y: target.lineY - 1.5)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Dragging a track or folder header moves it in the order; a folder
+    /// takes its tracks along. Buttons, menus and the resize strip on the
+    /// header keep their own gestures.
+    private func reorderGesture(for row: ArrangerRow) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("trackHeaderColumn"))
             .onChanged { value in
-                if reorderTrackID == nil {
-                    reorderTrackID = track.id
-                    projectState.selectedTrackId = track.id
+                if reorderRowID == nil {
+                    reorderRowID = row.id
+                    // A folder never becomes the current track.
+                    if let track = row.track {
+                        projectState.selectedTrackId = track.id
+                    }
                 }
-                guard reorderTrackID == track.id else { return }
-                reorderTranslation = value.translation.height
+                guard reorderRowID == row.id else { return }
+                reorderTranslation = value.translation
+                reorderPointerY = value.location.y
             }
             .onEnded { _ in
-                guard reorderTrackID == track.id else { return }
-                let target = reorderTargetIndex()
+                guard reorderRowID == row.id else { return }
+                let target = reorderDropTarget()
                 withAnimation(.easeOut(duration: 0.18)) {
                     if let target {
-                        projectState.moveTrack(id: track.id, to: target)
+                        switch row {
+                        case .track(let track):
+                            projectState.moveTrack(
+                                id: track.id,
+                                beforeRowID: target.beforeRowID,
+                                folderID: target.folderID
+                            )
+                        case .folder(let folder):
+                            projectState.moveFolder(id: folder.id, beforeRowID: target.beforeRowID)
+                        }
                     }
-                    reorderTrackID = nil
-                    reorderTranslation = 0
+                    reorderRowID = nil
+                    reorderTranslation = .zero
                 }
             }
     }
 
-    private func reorderLift(for track: AudioTrack) -> ReorderLift {
-        ReorderLift(
-            isDragged: reorderTrackID == track.id,
-            offset: reorderOffset(for: track),
-            color: track.color
+    /// Right-click menu of a track or folder header. A track becomes the
+    /// current one (a folder never does). Additions go above the clicked row,
+    /// or for a folder, a track goes in as its first; a track inside a folder
+    /// offers no folder, since folders do not nest.
+    private func headerMenu(for row: ArrangerRow) -> NSMenu {
+        if let track = row.track {
+            projectState.selectedTrackId = track.id
+        }
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(String(localized: "Add Track"), symbol: "plus.rectangle", enabled: true) {
+            projectState.addTrack(above: row.id)
+        })
+        if row.track?.folderID == nil {
+            menu.addItem(ClosureMenuItem(String(localized: "Add Folder"), symbol: "folder.badge.plus", enabled: true) {
+                projectState.addFolder(above: row.id)
+            })
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(String(localized: "Show in Mixer"), symbol: "slider.vertical.3", enabled: true) {
+            projectState.mixerScrollRequests.send(row.id)
+        })
+        return menu
+    }
+
+    private func reorderLift(for row: ArrangerRow, moving: Set<UUID>, color: Color) -> ReorderLift {
+        let isMoving = moving.contains(row.id)
+        return ReorderLift(
+            isDragged: isMoving,
+            offset: isMoving ? reorderTranslation.height : 0,
+            color: color
         )
     }
 
@@ -272,7 +390,7 @@ public struct ArrangerView: View {
     private func timeSelectionHighlight(_ selection: TimeSelection) -> some View {
         let x = CGFloat(selection.start) * projectState.pixelsPerSecond
         let width = max(1.0, CGFloat(selection.end - selection.start) * projectState.pixelsPerSecond)
-        let selectedTracks = projectState.tracks.filter { selection.trackIDs.contains($0.id) }
+        let selectedTracks = projectState.visibleTracks.filter { selection.trackIDs.contains($0.id) }
         return ZStack(alignment: .topLeading) {
             ForEach(selectedTracks) { track in
                 Rectangle()
@@ -337,6 +455,11 @@ public struct ArrangerView: View {
     public var body: some View {
         GeometryReader { viewport in
             let timelineWidth = timelineWidth(viewportWidth: viewport.size.width)
+            // Worked out once per update; a closed folder's tracks are not
+            // drawn at all.
+            let visibleRows = projectState.visibleRows
+            let movingIDs = reorderMovingIDs()
+            let dropTarget = reorderDropTarget()
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
                     HStack {
@@ -344,7 +467,10 @@ public struct ArrangerView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Spacer()
-                        Button(action: { projectState.addTrack() }) {
+                        Menu {
+                            Button("Add Track") { projectState.addTrack() }
+                            Button("Add Folder") { projectState.addFolder() }
+                        } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundColor(.white)
@@ -352,11 +478,13 @@ public struct ArrangerView: View {
                                 .background(Color.white.opacity(0.12))
                                 .cornerRadius(4)
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .help("Add Track")
+                        .menuStyle(BorderlessButtonMenuStyle())
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Add Track or Folder")
                     }
                     .padding(.horizontal, 10)
-                    .frame(width: 230, height: 32)
+                    .frame(width: ArrangerLayout.headerColumnWidth, height: 32)
                     .background(Color(red: 0.15, green: 0.16, blue: 0.18))
                     .zIndex(1)
 
@@ -369,31 +497,54 @@ public struct ArrangerView: View {
                         scroll: projectState.timelineScroll,
                         pixelsPerSecond: projectState.pixelsPerSecond
                     ))
-                    .frame(width: max(0, viewport.size.width - 230), height: 32, alignment: .leading)
+                    .frame(width: max(0, viewport.size.width - ArrangerLayout.headerColumnWidth), height: 32, alignment: .leading)
                     .clipped()
                 }
 
                 ScrollView(.vertical, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(spacing: 0) {
-                        VStack(spacing: 1) {
-                            ForEach(projectState.tracks) { track in
-                                TrackHeaderView(
-                                    track: track,
-                                    projectState: projectState,
-                                    isSelected: projectState.selectedTrackId == track.id,
-                                    isRecording: audioEngine.isRecording
-                                )
-                                // TrackHeaderView sets its own size: it observes
-                                // the track, so its height follows a resize drag
-                                // that this view would not see.
-                                .gesture(reorderGesture(for: track))
-                                .modifier(reorderLift(for: track))
+                        VStack(alignment: .leading, spacing: 1) {
+                            ForEach(visibleRows) { row in
+                                switch row {
+                                case .track(let track):
+                                    let folder = projectState.folder(withID: track.folderID)
+                                    TrackHeaderView(
+                                        track: track,
+                                        projectState: projectState,
+                                        isSelected: projectState.selectedTrackId == track.id,
+                                        isRecording: audioEngine.isRecording
+                                    )
+                                    // TrackHeaderView sets its own size: it observes
+                                    // the track, so its height follows a resize drag
+                                    // that this view would not see.
+                                    .gesture(reorderGesture(for: row))
+                                    .background(LaneMenuMonitor { _ in headerMenu(for: row) })
+                                    .modifier(reorderLift(for: row, moving: movingIDs, color: track.color))
+                                    .padding(.leading, folder == nil ? 0 : ArrangerLayout.folderIndent)
+                                    .background(alignment: .leading) {
+                                        if let folder {
+                                            FolderIndentGuide(folder: folder)
+                                                .offset(y: movingIDs.contains(track.id) ? reorderTranslation.height : 0)
+                                        }
+                                    }
+                                case .folder(let folder):
+                                    FolderHeaderView(folder: folder, projectState: projectState)
+                                        .gesture(reorderGesture(for: row))
+                                        .background(LaneMenuMonitor { _ in headerMenu(for: row) })
+                                        .modifier(reorderLift(for: row, moving: movingIDs, color: folder.color))
+                                }
                             }
                         }
-                        .frame(width: 230, alignment: .top)
+                        .frame(width: ArrangerLayout.headerColumnWidth, alignment: .topLeading)
+                        .overlay(alignment: .topLeading) {
+                            if let target = dropTarget {
+                                dropIndicator(target)
+                            }
+                        }
+                        .coordinateSpace(name: "trackHeaderColumn")
                     }
-                    .frame(width: 230, alignment: .top)
+                    .frame(width: ArrangerLayout.headerColumnWidth, alignment: .top)
                     .background(Color(red: 0.12, green: 0.13, blue: 0.15))
 
                     ScrollViewReader { horizontalProxy in
@@ -401,13 +552,19 @@ public struct ArrangerView: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 ZStack(alignment: .topLeading) {
                                     VStack(alignment: .leading, spacing: 1) {
-                                        ForEach(projectState.tracks) { track in
-                                            WaveformLaneView(
-                                                track: track,
-                                                projectState: projectState,
-                                                timelineWidth: timelineWidth
-                                            )
-                                            .modifier(reorderLift(for: track))
+                                        ForEach(visibleRows) { row in
+                                            switch row {
+                                            case .track(let track):
+                                                WaveformLaneView(
+                                                    track: track,
+                                                    projectState: projectState,
+                                                    timelineWidth: timelineWidth
+                                                )
+                                                .modifier(reorderLift(for: row, moving: movingIDs, color: track.color))
+                                            case .folder(let folder):
+                                                FolderLaneView(timelineWidth: timelineWidth)
+                                                    .modifier(reorderLift(for: row, moving: movingIDs, color: folder.color))
+                                            }
                                         }
                                     }
 
@@ -432,9 +589,9 @@ public struct ArrangerView: View {
                                     }
 
                                     let playheadX = CGFloat(audioEngine.currentTime) * projectState.pixelsPerSecond
-                                    let totalHeight = projectState.tracks.reduce(CGFloat.zero) { height, track in
-                                        height + TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
-                                    } + CGFloat(max(0, projectState.tracks.count - 1))
+                                    let totalHeight = visibleRows.reduce(CGFloat.zero) { height, row in
+                                        height + projectState.rowHeight(row)
+                                    } + CGFloat(max(0, visibleRows.count - 1))
 
                                     HStack(spacing: 0) {
                                         Color.clear
@@ -485,16 +642,16 @@ public struct ArrangerView: View {
                                     projectState.timelineScroll.onChange = { time in
                                         followScrollTime(time, proxy: horizontalProxy)
                                     }
-                                    projectState.timelineViewportWidth = max(1.0, viewport.size.width - 230.0)
+                                    projectState.timelineViewportWidth = max(1.0, viewport.size.width - ArrangerLayout.headerColumnWidth)
                                     projectState.refreshDrawWindow(force: true)
                                 }
                                 .onChange(of: viewport.size.width) { width in
-                                    projectState.timelineViewportWidth = max(1.0, width - 230.0)
+                                    projectState.timelineViewportWidth = max(1.0, width - ArrangerLayout.headerColumnWidth)
                                 }
                                 // Received, not observed: the playhead moves 60
                                 // times a second and this view stays as it is.
                                 .onReceive(audioEngine.transportClock.$time) { time in
-                                    let visibleWidth = max(1.0, viewport.size.width - 230.0)
+                                    let visibleWidth = max(1.0, viewport.size.width - ArrangerLayout.headerColumnWidth)
                                     let visibleDuration = max(
                                         1.0,
                                         Double(visibleWidth) / Double(projectState.pixelsPerSecond)
@@ -546,7 +703,7 @@ public struct ArrangerView: View {
                                 // selection are all measured in this space.
                                 .coordinateSpace(name: "timelineScroll")
                             }
-                            .frame(width: max(timelineWidth, viewport.size.width - 230), alignment: .leading)
+                            .frame(width: max(timelineWidth, viewport.size.width - ArrangerLayout.headerColumnWidth), alignment: .leading)
                             // Down to the bottom of the visible area (less the
                             // ruler and scroll bar rows), so a lane dragged
                             // below the last track is not clipped away.
@@ -572,12 +729,12 @@ public struct ArrangerView: View {
                     range: 0.0...max(
                         0.0,
                         Double(timelineWidth / projectState.pixelsPerSecond)
-                            - Double(max(1.0, (viewport.size.width - 230.0) / projectState.pixelsPerSecond))
+                            - Double(max(1.0, (viewport.size.width - ArrangerLayout.headerColumnWidth) / projectState.pixelsPerSecond))
                     ),
                     tint: .cyan
                 )
             }
-            .padding(.leading, 230)
+            .padding(.leading, ArrangerLayout.headerColumnWidth)
             .padding(.trailing, 10)
             .frame(height: 20)
             .background(Color(red: 0.12, green: 0.13, blue: 0.15))
@@ -616,6 +773,46 @@ private struct ReorderLift: ViewModifier {
             // The dragged row tracks the pointer; the others glide aside.
             .animation(isDragged ? nil : .easeInOut(duration: 0.15), value: offset)
             .zIndex(isDragged ? 1 : 0)
+    }
+}
+
+/// Where a header dragged in the track list would land.
+private struct RowDropTarget {
+    /// Row it goes in front of; nil for the end of the list.
+    let beforeRowID: UUID?
+    /// Folder a dragged track goes into; nil for out of any folder.
+    let folderID: UUID?
+    /// Height of the drop line, in the header column.
+    let lineY: CGFloat
+    let isIndented: Bool
+    /// Closed folder a track is held over, to go in at its end.
+    let closedFolderID: UUID?
+}
+
+/// A thin line in the folder's colour beside the tracks indented under it.
+private struct FolderIndentGuide: View {
+    @ObservedObject var folder: TrackFolder
+
+    var body: some View {
+        Rectangle()
+            .fill(folder.color.opacity(0.6))
+            .frame(width: 2)
+            .padding(.leading, ArrangerLayout.folderIndent / 2 - 1)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A folder's lane: empty, with the same edges as a track's lane. It takes
+/// no clicks or drops.
+private struct FolderLaneView: View {
+    let timelineWidth: CGFloat
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(red: 0.10, green: 0.11, blue: 0.13))
+            .frame(width: timelineWidth, height: TrackFolder.rowHeight)
+            .contentShape(Rectangle())
+            .onTapGesture {}
     }
 }
 

@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 2.0** · [日本語版 README](README_jp.md)
+**Version 2.1** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -30,7 +30,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Sample-accurate placement of takes, with automatic and manual latency compensation.
 - **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
 - **Input monitoring** (`I` button): hear the live input through the track's effects while it is armed (the recording stays dry).
-- Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume. It can be switched on/off while playing or recording.
+- Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume. It can be switched on/off while playing or recording. Right-clicking the metronome button pops up a volume fader that works while playing.
 - **Song start / end flags** on the ruler: Rewind goes to the start flag (again: to 00:00), playback and recording stop at the end flag, and the flags set the export range.
 - Mono/stereo can be switched on recorded tracks too, without rewriting files (a mono track plays stereo clips as (L+R)/2).
 - The playhead has a ball that bounces on every beat; green while playing, red while recording. Clicking the ruler snaps the playhead to the grid.
@@ -47,15 +47,18 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Tooltips show fade length, gain (dB) and curve while dragging. Waveforms are drawn at the level heard, including fades and crossfades.
 - Undo / redo of clip edits, beat snap.
 - **Overlap layering**: the most recently added clip plays on top of older ones, with automatic crossfades (equal power by default) at the boundaries. The fades of the upper clip drive the crossfades.
-- **Track reordering**: drag a track header up or down by any free spot (the name, the meter, …). The track lifts with its waveforms while the others step aside to show where it will land. The mixer strips follow the same order.
+- **Track reordering**: drag a track header up or down by any free spot (the name, the meter, …). A white line shows where it will land. The mixer strips follow the same order.
+- **Track folders**: **Add Folder** from the track list's + menu or a header's right-click menu, then drag tracks into it (tracks inside are indented; an indented drop line means the track goes into the folder). ▼ / ▶ opens and closes a folder; the tracks of a closed folder are not drawn (they still play and record). A folder's [M] / [S] mute or solo all its tracks (their own buttons light grey), and turning it off brings back each track's own state. Folders move with their tracks when dragged, take a colour, and are renamed by double-clicking. Folders do not nest.
+- **Header right-click menu**: right-clicking a track makes it current and offers **Add Track** / **Add Folder** above it (only Add Track for a track inside a folder) and **Show in Mixer** (scrolls the mixer so that track or folder is at its left edge).
 - WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
 - View: mouse wheel over the ruler or a pinch zooms horizontally, option+wheel sets track height, option+shift+wheel sets waveform height.
 - **Auto-scroll**: the view follows the playhead while playing or recording; turn it on/off with the |→ button at the right end of the transport bar. The horizontal scroll bar moves only when its knob (●) is dragged.
 
 ### Mixing
-- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge. Shrinking the window shrinks only the track area; the transport bar and the mixer are never cut off.
+- Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge. Shrinking the window shrinks only the track area; the transport bar and the mixer are never cut off. The ▼ button on the mixer bar folds the mixer down to its bar; ▲ brings it back.
+- The current track's name is shown black on white in the mixer. A coloured vertical line marks where each folder and the FX channels start; click it to change the colour (the FX line's colour goes to every FX channel, and new FX channels take it).
 - dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
-- Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return.
+- Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return. A new FX channel is numbered one past the highest existing "FX n".
 - Track colours selectable from a palette.
 
 ### Plug-ins
@@ -156,4 +159,4 @@ MyDAW/
 
 ## Version
 
-The About dialog shows version **2.0**. Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.
+The About dialog shows version **2.1**. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.

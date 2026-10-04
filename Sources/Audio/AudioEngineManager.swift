@@ -181,6 +181,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let fxChannelID: UUID
     }
     private var sendGainNodes: [SendKey: AVAudioMixerNode] = [:]
+    /// Gain mixers of removed sends, still in their track's splitter fan-out.
+    /// Detaching a fan-out destination leaves the splitter pointing at it and
+    /// AVAudioEngine then throws on any query of the splitter's outputs, so
+    /// they stay attached until connectTrackChainTail rewires the fan-out.
+    private var retiredSendGains: [UUID: [AVAudioMixerNode]] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
     private var vst3Instances: [UUID: VST3NativeInstance] = [:]
     private var syncedFXChannels: [FXChannel] = []
@@ -439,7 +444,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         // CRITICAL FIX: Always use the actual hardware sample rate.
         // This prevents pitch shift caused by recording at 44100 Hz while the WAV header says 48000 Hz.
-        let hwSampleRate = inputFormat.sampleRate > 0 ? inputFormat.sampleRate : 44100.0
+        // An input device with no channels (a Mac without a microphone and
+        // no interface) gives a format with no channels and no rate; the
+        // engine raises an exception when such a format is tapped or
+        // connected, so input is then left out.
+        let hasInput = inputFormat.channelCount > 0 && inputFormat.sampleRate > 0
+        let outputRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        let hwSampleRate = hasInput ? inputFormat.sampleRate : (outputRate > 0 ? outputRate : 44100.0)
         self.hardwareSampleRate = hwSampleRate
         self.sampleRate = hwSampleRate
 
@@ -494,13 +505,15 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         clickMixer.outputVolume = Float(metronomeVolume)
         }
 
-        inputCaptureFormat = inputFormat
+        inputCaptureFormat = hasInput ? inputFormat : nil
         connectInputMonitors()
 
         // Install tap BEFORE engine.start()
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
-            self?.processInputAudioBuffer(buffer: buffer, time: time)
+        if hasInput {
+            inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
+                self?.processInputAudioBuffer(buffer: buffer, time: time)
+            }
         }
 
         raiseMaximumFramesPerSlice()
@@ -1292,7 +1305,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         for (key, gainNode) in sendGainNodes
         where !currentTrackIDs.contains(key.trackID) || !currentFXIDs.contains(key.fxChannelID) {
             engine.disconnectNodeOutput(gainNode)
-            engine.detach(gainNode)
+            gainNode.outputVolume = 0
+            retiredSendGains[key.trackID, default: []].append(gainNode)
             sendGainNodes.removeValue(forKey: key)
             wiredSendTargets.removeValue(forKey: key)
         }
@@ -1317,6 +1331,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 splitter.removeTap(onBus: 0)
                 engine.disconnectNodeOutput(splitter)
                 engine.detach(splitter)
+            }
+            for gainNode in retiredSendGains.removeValue(forKey: id) ?? [] {
+                safeDetach(gainNode)
             }
             if let panNode = trackPanNodes.removeValue(forKey: id) {
                 engine.disconnectNodeOutput(panNode)
@@ -2036,13 +2053,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     private func audibility(tracks: [AudioTrack], fxChannels: [FXChannel]) -> Audibility {
         let soloedFX = Set(fxChannels.filter(\.isSoloed).map(\.id))
-        let soloActive = !soloedFX.isEmpty || tracks.contains { $0.isSoloed }
+        let soloActive = !soloedFX.isEmpty || tracks.contains { $0.effectiveSoloed }
         let sendsTo: (AudioTrack, UUID) -> Bool = { track, fxID in
             track.fxSends.contains { $0.fxChannelID == fxID && $0.enabled && $0.level > 0 }
         }
         var result = Audibility()
-        for track in tracks where !track.isMuted {
-            if !soloActive || track.isSoloed {
+        for track in tracks where !track.effectiveMuted {
+            if !soloActive || track.effectiveSoloed {
                 result.tracks.insert(track.id)
                 result.dryTracks.insert(track.id)
             } else if soloedFX.contains(where: { sendsTo(track, $0) }) {
@@ -2051,7 +2068,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         for channel in fxChannels where !channel.isMuted {
             if !soloActive || channel.isSoloed ||
-                tracks.contains(where: { $0.isSoloed && !$0.isMuted && sendsTo($0, channel.id) }) {
+                tracks.contains(where: { $0.effectiveSoloed && !$0.effectiveMuted && sendsTo($0, channel.id) }) {
                 result.fxChannels.insert(channel.id)
             }
         }
@@ -2265,7 +2282,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             dryReachesMain &&
             sendsReachFX &&
             dryDelay.outputFormat(forBus: 0) == format
-        guard !isUpToDate else { return }
+        guard !isUpToDate else {
+            // The fan-out matches the live sends, so no removed one is in it.
+            detachRetiredSendGains(of: trackID)
+            return
+        }
 
         // A one-to-many connect made while the engine runs ignores the
         // requested format (a new mixer stays at its 44.1 kHz default, adding
@@ -2310,8 +2331,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             points.append(AVAudioConnectionPoint(node: gainNode, bus: 0))
         }
         engine.connect(splitter, to: points, fromBus: 0, format: format)
+        detachRetiredSendGains(of: trackID)
         if wasRunning {
             try? engine.start()
+        }
+    }
+
+    private func detachRetiredSendGains(of trackID: UUID) {
+        for gainNode in retiredSendGains.removeValue(forKey: trackID) ?? [] {
+            safeDisconnectNodeInput(gainNode)
+            safeDetach(gainNode)
         }
     }
 
@@ -2338,7 +2367,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 engine.disconnectNodeOutput(returnDelay)
                 engine.detach(returnDelay)
             }
-            fxPluginNodes.removeValue(forKey: id)
+            // A removed plug-in left attached stays alive with its threads.
+            for pluginNode in fxPluginNodes.removeValue(forKey: id) ?? [] {
+                safeDisconnectNodeOutput(pluginNode)
+                safeDisconnectNodeInput(pluginNode)
+                safeDetach(pluginNode)
+            }
             fxGraphSignatures.removeValue(forKey: id)
             fxPluginGraphGenerations.removeValue(forKey: id)
         }
@@ -2566,6 +2600,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 guard let self else { return }
                 guard let audioUnit else {
                     DispatchQueue.main.async {
+                        // The channel may be gone or rebuilt by now; going on
+                        // would wire its detached input to a new output.
+                        guard self.fxPluginGraphGenerations[channelID] == generation else { return }
                         self.markPluginUnavailable(plugin.id)
                         self.installFXAudioUnits(
                             plugins,

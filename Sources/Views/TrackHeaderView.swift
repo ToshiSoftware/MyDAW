@@ -136,37 +136,31 @@ public struct TrackHeaderView: View {
                     Button(action: {
                         projectState.toggleMute(for: track)
                     }) {
-                        Text("M")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundColor(track.isMuted ? .black : .cyan.opacity(0.7))
-                            .frame(width: 22, height: 20)
-                            .background(
-                                track.isMuted
-                                    ? Color.cyan
-                                    : Color.white.opacity(0.08)
-                            )
-                            .cornerRadius(3)
+                        HeaderToggleLabel(
+                            title: "M",
+                            isOn: track.isMuted,
+                            isHeldByFolder: track.isMutedByFolder,
+                            color: .cyan
+                        )
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .help("Mute Track")
+                    .disabled(track.isMutedByFolder)
+                    .help(track.isMutedByFolder ? "Muted by the folder" : "Mute Track")
 
                     // Solo [S]
                     Button(action: {
                         projectState.toggleSolo(for: track)
                     }) {
-                        Text("S")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundColor(track.isSoloed ? .black : .yellow.opacity(0.7))
-                            .frame(width: 22, height: 20)
-                            .background(
-                                track.isSoloed
-                                    ? Color.yellow
-                                    : Color.white.opacity(0.08)
-                            )
-                            .cornerRadius(3)
+                        HeaderToggleLabel(
+                            title: "S",
+                            isOn: track.isSoloed,
+                            isHeldByFolder: track.isSoloedByFolder,
+                            color: .yellow
+                        )
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .help("Solo Track")
+                    .disabled(track.isSoloedByFolder)
+                    .help(track.isSoloedByFolder ? "Soloed by the folder" : "Solo Track")
 
                     // Input Monitor [I]: live input through this track's mixer while armed
                     Button(action: {
@@ -229,7 +223,7 @@ public struct TrackHeaderView: View {
             // content stays pinned to the top and only the meter is cut off.
             .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 230, height: Self.rowHeight(for: track) * projectState.trackHeightScale)
+        .frame(width: ArrangerLayout.headerWidth, height: Self.rowHeight(for: track) * projectState.trackHeightScale)
         .clipped()
         .background(
             isSelected
@@ -277,6 +271,29 @@ public struct TrackHeaderView: View {
 
 
 
+/// Face of a header's M or S button: lit in its colour when on, and lit grey
+/// while the track's folder holds it on (when it cannot be pressed).
+struct HeaderToggleLabel: View {
+    let title: LocalizedStringKey
+    let isOn: Bool
+    var isHeldByFolder = false
+    let color: Color
+
+    var body: some View {
+        let isLit = isOn || isHeldByFolder
+        Text(title)
+            .font(.system(size: 11, weight: .black))
+            .foregroundColor(isLit ? .black : color.opacity(0.7))
+            .frame(width: 22, height: 20)
+            .background(
+                isHeldByFolder
+                    ? Color(white: 0.55)
+                    : (isOn ? color : Color.white.opacity(0.08))
+            )
+            .cornerRadius(3)
+    }
+}
+
 /// The header's level meter, observing only the meter levels.
 private struct TrackHeaderMeter: View {
     @ObservedObject var meter: TrackMeter
@@ -291,7 +308,7 @@ private struct TrackHeaderMeter: View {
 }
 
 /// Preset swatches plus the system picker for any other colour.
-private struct TrackColorPalette: View {
+struct TrackColorPalette: View {
     @Binding var color: Color
     let onDone: () -> Void
 

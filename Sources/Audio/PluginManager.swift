@@ -176,7 +176,9 @@ public final class PluginManager: ObservableObject {
             log(String(localized: "VST3: \(vst3Plugins.count) found (\(allVST3Plugins.count - vst3Plugins.count) hidden because an AU version exists)"))
 
             let discovered = audioUnits + vst3Plugins
-            let unique = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
+            // A bundle that lists the same class twice gives the same ID twice;
+            // keep the first rather than trap.
+            let unique = Dictionary(discovered.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sorted = Array(unique.values).sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }

@@ -31,6 +31,16 @@ public final class AudioTrack: Identifiable, ObservableObject {
     @Published public var isRecordArmed: Bool    // Record mode vs Playback mode
     @Published public var isMuted: Bool
     @Published public var isSoloed: Bool
+    /// The folder this track is in, if any.
+    @Published public internal(set) var folderID: UUID?
+    /// Set while the track's folder has its M / S on. These hold the track
+    /// muted or soloed whatever its own buttons say, and its own state comes
+    /// back when the folder's button is turned off.
+    @Published public internal(set) var isMutedByFolder = false
+    @Published public internal(set) var isSoloedByFolder = false
+    /// Mute and solo as the audio follows them.
+    public var effectiveMuted: Bool { isMuted || isMutedByFolder }
+    public var effectiveSoloed: Bool { isSoloed || isSoloedByFolder }
     @Published public var isInputMonitoring: Bool // live input through the mixer while armed
     @Published public var volume: Float         // 0.0 ... MixerGain.maximum (1.0 = 0dB)
     @Published public var pan: Float            // -1.0 ... 1.0 (0.0 = Center)

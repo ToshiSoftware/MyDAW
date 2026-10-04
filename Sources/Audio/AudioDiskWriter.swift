@@ -155,7 +155,8 @@ enum RecordingFileName {
                 highest = max(highest, value)
             }
         }
-        var take = highest + 1
+        // Capped so a file numbered near Int.max cannot overflow.
+        var take = min(highest, 999_999) + 1
         var url: URL
         repeat {
             url = directory.appendingPathComponent("\(name)_\(String(format: "%03d", take)).wav")

@@ -169,7 +169,10 @@ final class TrackRenderer: @unchecked Sendable {
     }
 
     /// Stops output and starts reading from `frame` for the next `start`.
-    func prepare(renderFrom frame: Int64) {
+    func prepare(renderFrom requestedFrame: Int64) {
+        // Never before the start: a negative frame would index the ring
+        // buffer below its first slot on the render thread.
+        let frame = max(0, requestedFrame)
         store(.running, 0)
         store(.renderFrom, frame)
         store(.lastRendered, -1)

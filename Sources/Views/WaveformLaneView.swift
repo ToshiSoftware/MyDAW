@@ -355,7 +355,7 @@ private enum LaneMenu {
 
 /// Menu item that runs a closure. It runs after the menu has closed, so a
 /// command may open a panel or an alert.
-private final class ClosureMenuItem: NSMenuItem {
+final class ClosureMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
 
     init(_ title: String, symbol: String?, enabled: Bool, handler: @escaping @MainActor () -> Void) {
@@ -380,7 +380,7 @@ private final class ClosureMenuItem: NSMenuItem {
 
 /// Opens the menu from `menu` for right-clicks (and Control-clicks) on the
 /// view it is the background of, with the click's x in that view.
-private struct LaneMenuMonitor: NSViewRepresentable {
+struct LaneMenuMonitor: NSViewRepresentable {
     let menu: @MainActor (CGFloat) -> NSMenu?
 
     func makeNSView(context: Context) -> MonitorView {
@@ -813,7 +813,7 @@ private struct AudioClipView: View {
     /// Tracks from this clip's track to the one under the pointer; 0 when the
     /// pointer is outside every track.
     private func trackDelta(to destinationTrackId: UUID?) -> Int {
-        let tracks = projectState.tracks
+        let tracks = projectState.visibleTracks
         guard let destinationTrackId,
               let from = tracks.firstIndex(where: { $0.id == track.id }),
               let to = tracks.firstIndex(where: { $0.id == destinationTrackId }) else { return 0 }
@@ -973,7 +973,10 @@ private struct AudioClipView: View {
                     projectState.selectClip(trackId: track.id, clipId: clip.id)
                 }
                 let sensitivity = 24.0 / 80.0
-                clip.setGainDB((gainStartDB ?? clip.gainDB) - Double(value.translation.height) * sensitivity)
+                // From -∞ the drag starts at the lowest finite gain.
+                let start = gainStartDB ?? clip.gainDB
+                let base = start.isFinite ? start : AudioClip.silenceGainDB
+                clip.setGainDB(base - Double(value.translation.height) * sensitivity)
             }
             .onEnded { _ in
                 gainStartDB = nil
@@ -1116,7 +1119,7 @@ private struct AudioClipView: View {
     }
 
     private static func formatGain(_ gainDB: Double) -> String {
-        String(format: "%+.1f dB", abs(gainDB) < 0.05 ? 0.0 : gainDB)
+        gainDB.isFinite ? String(format: "%+.1f dB", abs(gainDB) < 0.05 ? 0.0 : gainDB) : "-∞ dB"
     }
 
     private func resetResizeState() {
