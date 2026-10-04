@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v2.0)
+# MyDAW Project Analysis (v2.1)
 
-> Version covered: **2.0** (source as of 2026-10-03)
+> Version covered: **2.1** (source as of 2026-10-04)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -19,7 +19,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 | Audio stack | AVAudioEngine, Core Audio HAL, AUAudioUnit (v3 subclasses) |
 | Recording format | 24-bit Linear PCM WAV, 44.1 / 48 / 88.2 / 96 kHz, mono / stereo |
 | Plug-ins | Audio Unit effects, VST3 effects (VST3s that also exist as an AU are hidden) |
-| Code size | ~13,000 lines of Swift / ~900 lines of C++ (`Sources/` and `VST3Host/`) |
+| Code size | ~18,600 lines of Swift / ~900 lines of C++ (`Sources/` and `VST3Host/`) |
 | Build | `./scripts/build.sh` (builds the VST3 bridge with CMake and links it with `swiftc`) |
 
 ### 1.1 Main features
@@ -29,10 +29,11 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
 - **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, strip silence, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
 - **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate. Right-click commands apply to every selected clip (right-clicking an unselected clip selects it).
-- **Track reordering**: drag a track header to move the track. While dragging, the header and its waveform lane follow the pointer together and the other tracks step aside to show where it will land. The mixer strips follow the same order.
+- **Track reordering**: drag a track header to move the track. While dragging, the header and its waveform lane follow the pointer together and a white line shows where it will land. The mixer strips follow the same order.
+- **Track folders** (v2.1): one-level folders group tracks, which are shown indented. Folders open and close (a closed folder's tracks are not drawn), move with their tracks, and have a colour, a name and M / S (forcing their tracks muted / soloed, OR-ed with the tracks' own buttons, which come back when turned off). A right-click menu on track headers adds tracks / folders and shows the track in the mixer.
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips. Wheel / pinch zoom. Auto-scroll during playback can be turned on/off.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
-- **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry.
+- **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry. Coloured vertical lines where folders and the FX channels start (click to change the colour; one colour for all FX channels), the current track's name shown reversed, and a fold button (v2.1).
 - **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
@@ -52,6 +53,8 @@ MyDAW/
 │   │   ├── RecentProjects.swift    Recent-projects history (UserDefaults)
 │   │   ├── AppLanguage.swift       GUI language choice (AppleLanguages)
 │   │   ├── ProjectState+Editing.swift  Selection, range selection, clipboard, group moves, clip commands
+│   │   ├── ProjectState+Folders.swift  Order of tracks and folders (rows); adding, removing, opening and M/S of folders; reordering
+│   │   ├── TrackFolder.swift       Track folder, row (ArrangerRow), header column widths (ArrangerLayout)
 │   │   ├── AudioTrack.swift        Track (+ MixerGain, ChannelMode)
 │   │   ├── AudioClip.swift         Clip (timeline placement and file range)
 │   │   ├── ClipLayering.swift      Overlap / crossfade maths (pure functions)
@@ -81,7 +84,8 @@ MyDAW/
 │       ├── AudioLoadIndicator.swift  Status bar CPU meter and dropout mark
 │       ├── TransportBarView.swift    Transport, view scaling, audio settings
 │       ├── ArrangerView.swift        Timeline, ruler, punch range
-│       ├── TrackHeaderView.swift     Track header, colour palette
+│       ├── TrackHeaderView.swift     Track header, colour palette, M/S button faces
+│       ├── FolderHeaderView.swift    Folder header (open/close, colour, name, M/S, delete)
 │       ├── WaveformLaneView.swift    Waveform lane, clip gestures, overlap shading
 │       ├── WaveformCanvas.swift      Waveform drawing (SwiftUI Canvas)
 │       ├── MixerView.swift           Mixer (three-section strips)
@@ -214,10 +218,11 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 - A project is a **`.mydaw` file**; recordings go to `Recordings/*.wav` next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). The project folder is the `.mydaw` file's parent and its name need not match (since v2.0; v1.9 projects named after their folder open unchanged).
 - Several `.mydaw` files in one folder share its `Recordings/`. Recording names take the next free number, so nothing is overwritten, and moving unused recordings treats clips of every `.mydaw` in the folder as in use. Save Project As saves only into the same folder, so no recordings need copying and the relative paths stay valid.
-- `.mydaw` is JSON (`ProjectDocument` version 4). Audio is referenced by relative WAV paths, never embedded.
+- `.mydaw` is JSON (`ProjectDocument` version 5). Audio is referenced by relative WAV paths, never embedded.
+- Folders (v2.1, version 5) are saved as `folders` (name, colour, open state, M/S and `position`, the index among all rows of tracks and folders) plus each track's `folderID`. Loading inserts the folders into the track list in increasing position to rebuild the rows. Version 4 and older files open without folders. Opened in v2.0, a v2.1 file loses its folders (the tracks stay).
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
 - New fields (e.g. `isInputMonitoring`, a clip's `fadeInCurve` / `fadeOutCurve`) are decoded with `decodeIfPresent`, so older files still load.
-- UI preferences such as mixer section heights, snap (`MyDAW.snapToGrid`) and auto-scroll (`MyDAW.autoScroll`) live in `UserDefaults` (app-wide).
+- UI preferences such as mixer section heights, the folded mixer (`mixer.collapsed`), snap (`MyDAW.snapToGrid`) and auto-scroll (`MyDAW.autoScroll`) live in `UserDefaults` (app-wide).
 - The start screen's Recent Projects (up to 50 `.mydaw` paths with their last-saved dates) are also kept in `UserDefaults` (key `MyDAW.recentProjects`).
 
 ---
@@ -257,7 +262,8 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Range edits**: built on `AudioClip.piece(from:to:)` (a new clip for part of a clip, keeping fades only on shared edges); `AudioTrack.removeAudio` / `cropAudio` / `splitAudio` rebuild the clip list in layer order.
 - **Clipboard**: `ClipboardClip` (file, range, gain, fades, and time/track offsets from the copied block). Paste creates new clips relative to the playhead and the selected track.
 - **Group moves**: selected clips' start times are recorded when a drag begins and all move by the same delta (never before zero). A move across tracks happens only if every clip has a destination track. Option-drag inserts copies at the original positions when the drag starts (directly below each original in layer order). While dragging, the selected clips are hidden in their lanes and drawn as one block from `clipDragPreview` (the whole selection, the vertical travel and the track delta): each clip is drawn from its own track, moved by the vertical travel. While clips are dragged to another track, `layeringClips(for:)` drops them from the source track's layering and counts them on top in the destination (so the source shows no false "hidden" shading and the destination shows its crossfades in advance).
-- **Track reordering**: `ProjectState.moveTrack(id:to:)` only changes the order of `tracks`, which both the arranger and the mixer follow. The audio graph is keyed by track ID, so nothing is rewired. A time selection is cleared, since it assumes adjacent tracks. The drag display lives in `ArrangerView` (`reorderOffset`, `ReorderLift`).
+- **Track reordering**: `ProjectState.moveTrack(id:beforeRowID:folderID:)` / `moveFolder(id:beforeRowID:)` only change the order of the rows (4.10). The audio graph is keyed by track ID, so nothing is rewired. A time selection is cleared, since it assumes adjacent tracks. The drop place comes from `ArrangerView.reorderDropTarget()`: the gap between rows nearest the pointer; below a folder's last track the track goes inside while the pointer is over that row, outside once it is over the row below.
+- **Visible tracks only**: range selection, moving clips between tracks, paste (track offsets), cmd+A and marquee selection count `visibleTracks` (the order without the tracks of closed folders). Closing a folder clears clip and range selections in it, and undo does not restore selections on hidden tracks. With the current track hidden, a paste starts on the first visible track below it.
 - **Clip commands**: Normalize measures the whole file's peak and sets the clip gain (non-destructive). Reverse writes the clip's range backwards to a new WAV and switches the clip to it (the original file stays, so Undo restores it). Strip Silence splits clips around runs of samples at or below a silence level (−72 dB by default) of at least a given length and deletes the silent pieces, adding short fades (non-destructive).
 - **Right-click menu**: targets come from `menuTargets` (the whole selection when the clicked clip is selected, otherwise that clip). Mute mutes all if any is unmuted; Duplicate places the targets as one block starting at the playhead; Split cuts only targets the playhead is inside. Inside a selected range the range menu opens.
 - **Undo**: each operation is one step via `beginClipEdit()` / `endClipEdit()`; nothing is recorded if the clips did not change.
@@ -290,8 +296,17 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 - Fader, pan and send changes go through `updateMixerLevels` / `setSend` straight to the mixer nodes.
 - After a volume change the mixer is `reset()` so its volume ramp completes immediately (a stopped input does not advance the ramp and would otherwise leak the old level on its next note).
-- Solo and mute are implemented through the track output mixer volume.
+- Solo and mute are implemented through the track output mixer volume, using `AudioTrack.effectiveMuted` / `effectiveSoloed` (the track's own M/S OR its folder's).
+- The strips are laid out from `rows` (closed folders hide nothing), with a `FolderEdgeLine` where each folder starts and an `FXEdgeLine` before the first FX channel. Clicking a line opens the colour palette; the FX line's colour is set on every FX channel (and new FX channels take it). A header's "Show in Mixer" sends the row ID through `ProjectState.mixerScrollRequests`, and the mixer scrolls there with a `ScrollViewReader` (unfolding first if folded).
 - The lowest mixer height is "fixed top parts + INSERT + SEND + 220 pt" (220 pt kept between the SEND/fader divider and the bottom edge). The highest is where the arranger keeps 180 pt (at most 1000 pt), and the window's minimum height follows the mixer's height. Section dividers and the mixer edge use `VerticalResizeHandle`.
+
+### 4.10 Track folders (`ProjectState+Folders`, v2.1)
+
+- **Data**: the rows `rows: [ArrangerRow]` (`.track` / `.folder`) are the single source of the order. `tracks` is the rows' tracks, refreshed in `rows`' `didSet` (`rowsDidChange`). Membership is `AudioTrack.folderID`; a folder's tracks follow its header as one block. `rowsDidChange` clears the `folderID` of any track outside its folder's block, so after any operation folders stay one level deep and their tracks contiguous.
+- **Where additions go**: the + menu adds a track below the current track (inside its folder; at the end of a closed folder, which then opens) and a folder above the current track (above its folder when it is in one). The right-click menu adds above the clicked row (a track goes first inside a clicked folder).
+- **M / S**: a folder has its own `isMuted` / `isSoloed`; `applyFolderStates()` sets its tracks' `isMutedByFolder` / `isSoloedByFolder`. The tracks' own `isMuted` / `isSoloed` are left alone, so turning the folder's button off brings them back. While held by the folder, a track's M / S light grey and cannot be pressed. An empty folder's M / S cannot be pressed. Moving tracks in or out updates the mixer levels when that changes what is heard.
+- **Display**: the arranger draws `visibleRows` only (no tracks of closed folders). A folder's row has a fixed height (`TrackFolder.rowHeight` = 28 pt, not scaled by the track height zoom) and an empty lane. The header column is always 230 + 18 pt (`ArrangerLayout`); tracks in folders are shifted 18 pt right.
+- **Folders are never current**: clicking, dragging or right-clicking a folder leaves `selectedTrackId` as it is.
 
 ---
 
@@ -345,7 +360,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **Instruments**: not supported in AU or VST3 (effects only). AU discovery looks only for `kAudioUnitType_Effect`, so music effects (`aumf`) are not listed either.
 - **Input monitoring latency**: depends on buffer size (about 25–30 ms round trip at 48 kHz / 512 frames). Use 128–256 for guitar. Using the interface's direct monitoring at the same time makes the signal sound doubled.
 - **Graph changes while playing**: inserting, removing and reordering plug-ins is only allowed while stopped.
-- **Track reordering**: not undoable (undo covers clip edits only). Dragging a track to the edge of the view does not scroll vertically.
+- **Track reordering and folder operations**: not undoable (undo covers clip edits only). Dragging a track to the edge of the view does not scroll vertically.
+- **Folders and file compatibility**: a project with folders opened and saved in v2.0 loses its folders (the tracks stay).
 - **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
 - **Plug-in latency changes**: AU latency changes are followed (property listener); a VST3's latency is read once when it is created.
 - **Bypass and latency**: a bypassed plug-in keeps counting its latency. MyDAW's VST3 wrapper delays its bypass signal to match; an AU's bypass relies on the plug-in keeping its delay.
