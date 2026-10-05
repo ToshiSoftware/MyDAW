@@ -1,6 +1,6 @@
 # MyDAW Project Analysis (v2.1)
 
-> Version covered: **2.1** (source as of 2026-10-04)
+> Version covered: **2.1** (source as of 2026-10-05)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -26,6 +26,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 
 - **Recording**: per-track input channel assignment (mono/stereo), 24-bit WAV written directly to disk, sample-accurate placement. Mono/stereo can also be switched on recorded tracks, without rewriting files (a mono track plays stereo clips as (L+R)/2).
 - **Punch in/out**: records only inside the punch range on the ruler. The whole pass is kept on disk and the take is trimmed to the range on stop (leaving handles); while recording, only the part inside the range is shown.
+- **Rollback recording**: with the ↺ button on and punch off, recording starts playing N bars (1–16) before the playhead and records from the playhead. Implemented as a one-pass punch-in at the playhead with no punch-out, so the run-up stays in the file as a handle. The R key starts recording like the record button.
 - **Input monitoring**: the track's `I` button routes live input through the track's inserts, fader and sends (the recording stays dry).
 - **Clip editing**: move (also across tracks), left/right trim, gain, fades with continuously adjustable curves, split, duplicate, delete, mute, normalize, reverse, strip silence, undo/redo, beat snap. Tooltips show fade length, gain and curve while dragging.
 - **Selection and editing**: multiple selection (shift/cmd-click, marquee, cmd+A), group moves, range selection (cmd-drag) with delete / crop / split, cut / copy / paste, option-drag to duplicate. Right-click commands apply to every selected clip (right-clicking an unselected clip selects it).
@@ -222,7 +223,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - Folders (v2.1, version 5) are saved as `folders` (name, colour, open state, M/S and `position`, the index among all rows of tracks and folders) plus each track's `folderID`. Loading inserts the folders into the track list in increasing position to rebuild the rows. Version 4 and older files open without folders. Opened in v2.0, a v2.1 file loses its folders (the tracks stay).
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
 - New fields (e.g. `isInputMonitoring`, a clip's `fadeInCurve` / `fadeOutCurve`) are decoded with `decodeIfPresent`, so older files still load.
-- UI preferences such as mixer section heights, the folded mixer (`mixer.collapsed`), snap (`MyDAW.snapToGrid`) and auto-scroll (`MyDAW.autoScroll`) live in `UserDefaults` (app-wide).
+- UI preferences such as mixer section heights, the folded mixer (`mixer.collapsed`), snap (`MyDAW.snapToGrid`), auto-scroll (`MyDAW.autoScroll`) and rollback recording (`MyDAW.recordRollback`, `MyDAW.recordRollbackBars`) live in `UserDefaults` (app-wide).
 - The start screen's Recent Projects (up to 50 `.mydaw` paths with their last-saved dates) are also kept in `UserDefaults` (key `MyDAW.recentProjects`).
 
 ---
@@ -242,6 +243,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 1. Record button → the renderers read ahead and the start time is chosen as in 4.1; then, before the renderers start, an `AudioDiskWriter` and a new clip per armed track are created and capture is armed.
 2. For every input tap buffer (~100 ms), the timeline position of each sample is derived from the buffer's host time; audio captured before the transport started is trimmed sample-accurately before writing.
 3. While recording, the armed track's existing clips are muted (only inside the range when punching).
+   Rollback recording (`recordRollbackDuration` > 0 and no punch range): `beginPlayOrRecord` sets a temporary punch-in at the playhead and punch-out at +∞ (`isRollbackPass`), moves the playhead back by the rollback, and from then on the pass behaves as a punch take. `setPunchRange` is ignored during the pass, and `stop` clears the temporary range. The lanes take the live take's visible range from the engine (`recordingTakePunchIn` / `recordingTakePunchOut`), not from the project's punch range.
 4. Stop → writers are finalised and clip metadata loaded. Punch takes are trimmed to the range and get 10 ms fades.
 5. Clip position = start position − recording compensation (I/O latency + buffer + manual offset + master plug-in latency).
 
@@ -345,6 +347,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | Trying to grab a clip's start or end sometimes moved the fade handle instead | The fade dot's hit area (`contentShape(Rectangle().size(...))`) reached right and down from the dot and covered the top of the trim handle; the overlay added later wins | Trim handles are not drawn: a 10 pt strip at each clip edge takes the drag. A fade dot takes clicks only in a 16 pt square centred on it. The pointer shape shows which control is under it (→ at the start, ← at the end, pointing hand on fade dots and curve diamonds, up-down arrow on gain) |
 | The pointer shape over a handle went back to the arrow at once | A cursor pushed with `NSCursor.push()` from `onHover` is reset by the NSHostingView's own cursor updates | `pointerStyle` (`.columnResize(directions:)` / `.link` / `.rowResize`) on macOS 15 and later; `NSCursor.set()` on every `onContinuousHover` move before that |
 | Horizontal zoom and track height changes dropped to about 5 fps | `sample` showed the main thread almost entirely inside SwiftUI (graph updates, adding NSViews, layout). An unused `@Published` rebuilt the whole timeline, and every clip's handles and the lane grid were rebuilt on each step. Scrolling the `NSClipView` from the slider action forces a synchronous SwiftUI graph update | Removed the unused `@Published zoomRevision`; handles are left out while the waveform render scale differs from the live scale; the grid is drawn only inside the draw window. Afterwards the main thread had about 20% idle time. The synchronous scroll during slider drags (about 20%) was left as it is |
+| Dragging a clip's left edge past the start of the recording moved the whole clip | The left-trim gesture clamped the trim delta to the file's first sample (and the minimum length) but set the clip start from the unclamped pointer position | The clip start is the initial start plus the clamped delta, so the edge stops at the file's first sample |
 
 ---
 
