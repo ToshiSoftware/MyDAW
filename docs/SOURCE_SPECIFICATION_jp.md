@@ -124,8 +124,9 @@
 L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネルの最大絶対値を計算（モノラルは両側に同じ値）。`merged(with:)`、`falling(to:by:)`（アタック即時・指数減衰。-100 dB 未満は 0 にして、無音時に値が変わり続けないようにする）、`maximum`。
 
 ### `WaveformCache.swift`
-- `PeakPoint`（min/max）の列を合成（`peaks`）とチャンネル別（`channelPeaks`）で保持。既定 512 サンプル／ピーク。
-- **`loadPeaks(from:)`**: `Task.detached` でファイルを読み、結果をメインスレッドで公開。ピークはファイル単位で共有する（キーはパス・サイズ・更新日時・`samplesPerPeak`）。読み込み済みならすぐ反映し、読み込み中なら完了を待つキャッシュの一覧に加わるので、分割したクリップが同じファイルを何度も読むことはない。
+- 2 段階のピークを持つ。どちらも区間の本当の最小・最大（0 を含めない。拡大時に波のその部分の位置に描かれる）。粗い段階は `PeakPoint` の列を合成（`peaks`）とチャンネル別（`channelPeaks`）で、512 サンプル／ピーク。細かい段階は `CompactPeak` の列（`fineCombinedPeaks`、`fineChannelPeaks`、`finePeaks(for:)`）で、`fineSamplesPerPeak` = 64 サンプル／ピークを Int16 の最小・最大（4 バイト）で持つ（モノラルのファイルでは合成の列がチャンネルの列と記憶域を共有）。細かい段階は 48 kHz・800 px/秒でほぼ 1pt に 1 点。録音中のテイクは粗い段階（ライブピーク）だけ。
+- **サンプルそのもの**: `requestSamples(_:)` が `sampleWindow`（`SampleWindow`：開始フレーム、チャンネル別と平均のサンプル）を指定のフレーム範囲を覆うようにし、前後に同じ長さを足して裏で読む。描画のたびに呼んでよい（すでにある範囲・読み込み中の範囲は読み直さない。1 回は 48 kHz で最大 4 秒分なので、全体を描く波形がファイルを丸ごと読むことはない。新しい要求や `loadPeaks`／`clear` は古い読み込みを無効にする）。
+- **`loadPeaks(from:)`**: `Task.detached` でファイルを読み、結果をメインスレッドで公開。1 回の走査で 2 段階とも作る（粗いピーク 1 点は細かいピーク 8 点から）。ピークはファイル単位で共有する（キーはパス・サイズ・更新日時・`samplesPerPeak`）。読み込み済みならすぐ反映し、読み込み中なら完了を待つキャッシュの一覧に加わるので、分割したクリップが同じファイルを何度も読むことはない。
 - **`appendLivePeaks`／`appendLiveChannelPeaks`**: 録音中のライブ波形追加。
 
 ### `ProjectDocument.swift`（`.mydaw` JSON）
@@ -162,7 +163,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 - **ファイル**: `createNewProject`（NSSavePanel で保存先と名前を指定。`canCreateDirectories`、展開表示、拡張子 `.mydaw`。選んだフォルダーに `.mydaw` と `Recordings/` を作成）、`loadProject`（NSOpenPanel で `.mydaw` ファイルを選び、その親フォルダーをプロジェクトフォルダーとする）。両パネルの初期位置は直前のプロジェクトのフォルダーの 1 つ上（`projectPanelStartDirectory`）。`openRecentProject(_:)`（ファイルの存在を確認し、そのフォルダーで `loadProject(from:projectFolderURL:)`）、`saveProject`（書き込みに成功すると `RecentProjects.noteSaved`。`loadProject(from:)` は成功時に `noteOpened`）、`saveProjectAndShowConfirmation`、`openProjectFile(_:)`（Finder から開く。アプリを前面に出し、同じファイルが開いていれば何もしない。再生・録音中はエラー。プロジェクトが開いていれば保存／保存しない／キャンセルを確認してから `loadProject(from:projectFolderURL:)`）、`saveProjectAs()`（NSAlert のテキスト欄で名前だけを入力し、同じフォルダーの `<名前>.mydaw` へ保存して `currentProjectURL` を切り替える。空・「.」始まり・「/」「:」を含む名前は拒否、既存ファイルは置き換えを確認、失敗時は元の URL に戻す）、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
 - **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
 - **書き出し**: `beginMasterExportDialog`、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。
-- **表示**: `zoomIn`、`zoomOut`、`setPixelsPerSecond(_:)`（再生位置を基準）、`setPixelsPerSecond(_:anchorOffset:)`（ポインター位置を基準、ホイール・ピンチ用）、`snappedTimelineTime`（1 拍単位）。
+- **表示**: `zoomIn`、`zoomOut`、`setPixelsPerSecond(_:)`（再生位置を基準）、`setPixelsPerSecond(_:anchorOffset:)`（ポインター位置を基準、ホイール・ピンチ用。どちらもスクロール時刻が変わらなくても `setScrollTimeAfterZoom` でトラックをスクロールする）、`minimumPixelsPerSecond`／`maximumPixelsPerSecond`（5／3200）、`snappedTimelineTime`（1 拍単位）。
 
 ### `RecentProjects.swift`（v1.8 新規）
 - **`RecentProject: Codable, Identifiable`**: `path`（`.mydaw` ファイルのパス。正規化済みで `id` を兼ねる）、`lastSavedAt`。派生値 `url`、`name`（拡張子を除いたファイル名）、`exists`。
@@ -381,7 +382,9 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 - **クリップのドラッグ表示**: `clipDragPreviews` が `clipDragPreview` の全クリップを、自分のトラックの位置から縦の移動量だけずらして描く（波形・フェードは移動先の重なりで表示）。
 - **トラックとフォルダの並べ替え**: 波形レーンの領域は表示域の下端まで広げてあり、最後のトラックより下へドラッグしたレーンも切れない。ヘッダの `DragGesture`（`reorderGesture`、4pt 以上、ヘッダ列の座標空間 `trackHeaderColumn`）。フォルダをドラッグすると中のトラックも一緒に動く（`reorderMovingIDs`）。`reorderDropTarget()` が落とし先（`RowDropTarget`：前に入る行、入るフォルダ、線の高さ、インデントの有無、閉じたフォルダ）を決める：動かす行を除いた行の間のうちポインタに最も近い所。トラックは、下の行がフォルダ内のトラックならそのフォルダ内。開いたフォルダのヘッダ・最後のトラックの直下は、ポインタがまだその行の上ならフォルダ内、下の行にかかればフォルダ外。閉じたフォルダのヘッダの中央半分の上ではそのフォルダの末尾。フォルダは、下の行がフォルダ・フォルダ外のトラック・末尾の所にだけ落とせる。`dropIndicator` が白い線（フォルダ内はインデント）か閉じたフォルダの枠を描く。`ReorderLift` はドラッグ中の行に枠・影を付けて手前に出す。離すと `moveTrack`／`moveFolder` をアニメーション付きで実行。
 - **ヘッダの右クリックメニュー**（`headerMenu(for:)`）: `LaneMenuMonitor` で開く `NSMenu`。トラックならカレントにする。トラックを追加（`addTrack(above:)`）、フォルダを追加（フォルダ内のトラックでは出さない）、区切り線、ミキサーに表示（`mixerScrollRequests` へ行 ID を送る）。
-- **横スクロール**: `timelineScrollTime` の変更は `setTrackScrollOffset` でトラックの `NSClipView` を直接スクロールし、次のメインキューで新しいレイアウトの後にもう一度合わせ直す（`scrollTo` は古いレイアウトで位置を決めることがあるため）。`ScrollOffsetObserver` がユーザーのスクロールを `timelineScrollTime` へ戻す。
+- **横スクロール**: `timelineScrollTime` の変更は `setTrackScrollOffset` でトラックの `NSClipView` を直接スクロールし（`followScrollTime`。クリップビューがすでにその位置なら何もしない。ズーム後は同じ時刻でもスクロール量が変わるので、時刻でなく pt で比べる）、次のメインキューで新しいレイアウトの後にもう一度合わせ直す（`scrollTo` は古いレイアウトで位置を決めることがあるため）。ズーム後は内容の幅が数回のレイアウトの後に広がり、それまでスクロールが手前で止められるので、`ScrollOffsetObserver` は内容（documentView）の大きさの変化も監視し、届いていない位置へ広がるたびにスクロールし直す。0.5 秒たっても届かなければ、`timelineScrollTime` をトラックの実際の位置に合わせる。`ScrollOffsetObserver` はユーザーのスクロールを `timelineScrollTime` へ戻し、毎回の位置を `TimelineScrollPosition.trackOffset` に知らせる。
+- **ルーラーの位置**: ルーラーはトラックの実際のスクロール量でずらす（`TimelineScrollOffset` が `trackOffset` を使う。なければ `time × pixelsPerSecond`）。ズームでトラックが一瞬止められても、ボールと再生位置の線は一致する。
+- **タイムラインの長さと幅**: `songLength()` ＝ 60 秒、最後のクリップの終わり＋5 秒、終了フラグ＋5 秒のうち最大。ルーラーのクリックや再生しっぱなしでは延びない。`timelineWidth(viewportWidth:)` ＝ 表示幅と、（曲の長さ・`parkedPlayheadTime`・`playheadExtentTime` の最大）× 拡大率の大きいほう。`playheadExtentTime` は再生・録音中だけ再生位置の 1 画面＋30 秒先まで上げ（自動スクロールに 1 画面先の内容が要る）、停止で 0 に戻す。`parkedPlayheadTime` は、停止中に曲の終わりより先にある再生位置を残す（それ以外は 0。クロックから更新するので、先頭へ戻すと幅も戻る）。`pastSongShade` が曲の終わりより先のルーラーとレーンを暗くする（黒 28%、操作は受けない）。
 - **`KnobOnlySlider`**: 下部の横スクロールバー。つまみ（●）のドラッグでだけ動き、つまみ以外のクリックは無視。
 - **`ArrangerWheelMonitor`**: アレンジャー全体（ルーラー含む）でのスクロールホイールとピンチをローカルイベントモニターで受ける。ルーラー上のホイールとピンチはポインター位置を基準に時間方向ズーム、⌥＋ホイールはトラック高さ、⌥⇧＋ホイールは波形縦倍率（shift による横スクロール変換にも対応）。処理したイベントはスクロールビューへ渡さない。
 
@@ -402,7 +405,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 **横の拡大・縮小とトラックの縦幅**: ルーラー・ヘッダ・クリップの箱はすぐに新しい値で描くが、波形だけは `ProjectState.waveformRenderPixelsPerSecond`／`waveformRenderTrackHeightScale`（波形を描く倍率）で描いたまま、`scaleEffect` で今の箱の大きさに伸縮する。`WaveformCanvas` は `Equatable`（`.equatable()`。エンベロープは値型の `ClipLayering.Envelope`）なので、入力が変わらなければ描き直さない。倍率の変更が 0.1 秒止まると `syncWaveformRender` が描く倍率を合わせ、波形を正しく描き直す（描画範囲 `drawWindow` もこのときに合わせ直す）。プロジェクトを開いたときはすぐに合わせる。この 2 つの倍率がずれている間（変更中）は、`AudioClipView` がトリム・ゲイン・フェード・カーブのハンドルを作らない（クリップごとに何個もの部品を毎ステップ動かさずに済む）。レーンのグリッド線も `drawWindow` の中だけ描く。`ArrangerView` がスクロール追従のために持つ値（最後に読んだスクロール時刻、向かっている位置）は `@State` でなく参照型の `ScrollFollow` に置く：ズームの 1 ステップごとに書くので、`@State` だとそのたびにアレンジャー全体がもう一度作り直されていた。**波形の縦倍率**（スライダー、⌥⇧＋ホイール）は `previewWaveformVerticalScale` を呼び、操作中は値を変えずに `waveformScalePreview` の `scale` だけを変えて、描画済みの波形を `VerticalStretch`（中心基準）で伸縮する。0.1 秒止まると `commitPreviews` が本当の値を設定する。
 
 ### `WaveformCanvas.swift`
-`WaveformCache` のピークを SwiftUI `Canvas` で描画（チャンネル別、ゲイン倍率、`envelope` による振幅）。1 ピクセルに複数のピークが入るほど縮小したときは、まとめて最大・最小だけを描く。描くのは `drawWindow`（`ProjectState.waveformDrawWindow`（`DrawWindowState`）：見えている範囲と左右 2 画面分。`ProjectState.refreshDrawWindow` が、見えている範囲が端から半画面以内に近づいたときと、波形を描く倍率・表示幅が変わったときだけ動かす）の中だけなので、拡大・高さ変更の描き直しは曲全体でなく数画面分で済み、スクロール中もほとんど描き直さない。`WaveformLaneView` はこの範囲（と選択中・録音中のクリップ）以外のクリップの部品を作らない。
+波形を SwiftUI `Canvas` で描画（チャンネル別、ゲイン倍率、`envelope` による振幅）。1pt 幅の列ごとに、その列に入るサンプルの最小〜最大の縦の棒を塗る（最低 1pt。値の位置を中心に）。元にするデータは 1 列に入るサンプル数で変わる：粗いピークが 1 列に収まる間は粗いピーク、それより拡大（48 kHz で約 94 px/秒）すると細かいピーク、細かいピークより細かく（約 750 px/秒）なると見えている範囲のサンプルそのもの（`WaveformCache.requestSamples`。隣の列とつながるよう 1 つ前のサンプルも含める。届くまでは細かいピークで描く）。描くのは `drawWindow`（`ProjectState.waveformDrawWindow`（`DrawWindowState`）：見えている範囲と左右 2 画面分。`ProjectState.refreshDrawWindow` が、見えている範囲が端から半画面以内に近づいたときと、波形を描く倍率・表示幅が変わったときだけ動かす）の中だけなので、拡大・高さ変更の描き直しは曲全体でなく数画面分で済み、スクロール中もほとんど描き直さない。`WaveformLaneView` はこの範囲（と選択中・録音中のクリップ）以外のクリップの部品を作らない。
 - **`FadeLinesOverlay`**: フェードイン／アウトの線をクリップの高さ全体にカーブの形で描く（ステレオでも 1 本）。
 
 ### `MixerView.swift`
