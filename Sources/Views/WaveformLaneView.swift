@@ -501,7 +501,6 @@ private struct AudioClipView: View {
 
     var body: some View {
         let audioEngine = projectState.audioEngine
-        let beatDuration = 60.0 / max(20.0, min(400.0, audioEngine.bpm))
         // The take being recorded: from the record start (also before a
         // punch-in, when the engine is not yet "recording") until its file
         // is finalized after stop.
@@ -509,15 +508,12 @@ private struct AudioClipView: View {
         let now = liveTime ?? audioEngine.currentTime
         let liveEndTime = audioEngine.isPunchRecording
             ? now
-            : min(now, projectState.punchRange.enabled
-                ? projectState.punchRange.endBeat * beatDuration
-                : now)
-        // A punch take records the whole pass and is cut to the punch range
-        // on stop; while it records, only the part inside the range is shown
+            : min(now, audioEngine.recordingTakePunchOut ?? now)
+        // A punch take (also a rollback take, punched in at the playhead)
+        // records the whole pass and is cut to the punch range on stop;
+        // while it records, only the part inside the range is shown
         // (nothing before punch-in).
-        let punchStartTime = projectState.punchRange.enabled
-            ? projectState.punchRange.startBeat * beatDuration
-            : nil
+        let punchStartTime = audioEngine.recordingTakePunchIn
         let hiddenLead = isActiveClip ? max(0.0, (punchStartTime ?? clip.startTime) - clip.startTime) : 0.0
         let displayStartTime = clip.startTime + hiddenLead
         let liveDuration = max(0.0, liveEndTime - displayStartTime)
@@ -1059,8 +1055,10 @@ private struct AudioClipView: View {
                     initialDuration - 0.02,
                     max(-initialSource, snappedStartTime - initialStart)
                 )
+                // From the clamped delta: past the file's first sample (or
+                // the minimum length) the edge stops instead of the clip moving.
                 clip.setTrim(
-                    startTime: snappedStartTime,
+                    startTime: initialStart + snappedDelta,
                     sourceStartTime: initialSource + snappedDelta,
                     duration: initialDuration - snappedDelta
                 )

@@ -129,6 +129,20 @@ public final class ProjectState: ObservableObject {
             UserDefaults.standard.set(autoScrollEnabled, forKey: "MyDAW.autoScroll")
         }
     }
+    /// Rollback recording: a normal (non-punch) recording starts playing
+    /// `recordRollbackBars` bars before the playhead and records from the
+    /// playhead on, so the take starts where the playhead was.
+    @Published public var recordRollbackEnabled: Bool = UserDefaults.standard.bool(forKey: "MyDAW.recordRollback") {
+        didSet {
+            UserDefaults.standard.set(recordRollbackEnabled, forKey: "MyDAW.recordRollback")
+        }
+    }
+    public static let recordRollbackBarsRange = 1...16
+    @Published public var recordRollbackBars: Int = UserDefaults.standard.object(forKey: "MyDAW.recordRollbackBars") as? Int ?? 2 {
+        didSet {
+            UserDefaults.standard.set(recordRollbackBars, forKey: "MyDAW.recordRollbackBars")
+        }
+    }
     @Published public var pluginManager: PluginManager
     @Published public private(set) var startupLog: [String] = [String(localized: "Starting MyDAW...")]
     @Published public private(set) var isShowingStartupLog = true
@@ -320,6 +334,10 @@ public final class ProjectState: ObservableObject {
             enabled: punchRange.enabled
         )
         audioEngine.songEndTime = songEndTime
+        // Bars of 4 beats, as on the ruler.
+        audioEngine.recordRollbackDuration = recordRollbackEnabled
+            ? Double(recordRollbackBars) * 4.0 * beatDuration
+            : 0.0
         audioEngine.startPlayOrRecord(
             tracks: tracks,
             fxChannels: fxChannels,

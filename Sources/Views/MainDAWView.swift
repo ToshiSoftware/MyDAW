@@ -193,13 +193,9 @@ public struct MainDAWView: View {
                 guard !projectState.isShowingMasterExportDialog else { return }
                 projectState.rewindToSongStart()
             } record: {
+                // Same as the record (red circle) button.
                 guard !projectState.isShowingMasterExportDialog else { return }
-                if let selectedTrackID = projectState.selectedTrackId,
-                   let track = projectState.tracks.first(where: { $0.id == selectedTrackID }) {
-                    projectState.toggleRecordArm(for: track)
-                } else if let firstTrack = projectState.tracks.first {
-                    projectState.toggleRecordArm(for: firstTrack)
-                }
+                projectState.toggleTransport(recordArmedTracks: true)
             } undo: {
                 guard !projectState.isShowingMasterExportDialog else { return }
                 projectState.undo()
@@ -501,6 +497,13 @@ private struct SpacebarHandler: NSViewRepresentable {
                 switch event.keyCode {
                 case 123:
                     self.rewind()
+                    return nil
+                case 15:
+                    // R: start recording (or stop, like the record button).
+                    // Holding the key must not toggle again.
+                    if !event.isARepeat {
+                        self.record()
+                    }
                     return nil
                 case 53:
                     // Pass Escape on so dialogs can still use it to cancel.

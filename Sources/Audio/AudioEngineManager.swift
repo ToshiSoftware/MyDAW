@@ -282,6 +282,17 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let punchOut: Double
     }
     private var recordingPunchTrim: PunchTrim?
+    /// The punch range of the take being recorded, kept until its file is
+    /// finalized after the stop (the lanes draw only the part inside it).
+    private var recordingTakePunchTrim: PunchTrim?
+    public var recordingTakePunchIn: Double? { recordingTakePunchTrim?.punchIn }
+    public var recordingTakePunchOut: Double? { recordingTakePunchTrim?.punchOut }
+    /// Rollback recording: a recording without a punch range starts playing
+    /// this many seconds before the playhead and records from the playhead
+    /// on (a punch-in at the playhead with no punch-out). 0 = off.
+    public var recordRollbackDuration: Double = 0.0
+    /// True while such a pass runs; the punch range is then the rollback's.
+    private var isRollbackPass = false
     private static let punchCrossfadeDuration = 0.01
     private let recordingTimingLock = NSLock()
     private var recordingTimelineStart: Double = 0.0
@@ -591,6 +602,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
 
     public func setPunchRange(startTime: Double?, endTime: Double?, enabled: Bool) {
+        // A rollback pass keeps its own punch-in until it stops.
+        guard !isRollbackPass else { return }
         punchInTime = enabled ? startTime : nil
         punchOutTime = enabled ? endTime : nil
     }
@@ -3375,6 +3388,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             return
         }
 
+        if hasArmedTracks, punchInTime == nil, recordRollbackDuration > 0 {
+            // Record from the playhead, playing from the rollback point.
+            isRollbackPass = true
+            punchInTime = currentTime
+            punchOutTime = .infinity
+            currentTime = max(0.0, currentTime - recordRollbackDuration)
+        }
+
         // The start time is fixed after the clips are scheduled (see
         // startPlayback), so slow scheduling never costs the opening.
         isStartingPlayback = false
@@ -3743,6 +3764,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         } else {
             recordingPunchTrim = nil
         }
+        recordingTakePunchTrim = recordingPunchTrim
         recordingTimingLock.withLock {
             recordingTimelineStart = currentTime
             recordingTransportStartHostTime = sharedStartTime.hostTime
@@ -3864,6 +3886,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         punchArmedTrackIDs.removeAll()
         punchPlaybackState = 0
         isPunchRecording = false
+        if isRollbackPass {
+            isRollbackPass = false
+            punchInTime = nil
+            punchOutTime = nil
+        }
         // Keep AVAudioEngine running during normal transport stop. This is the
         // host's continuous render path and lets Audio Units preserve tails,
         // meters, and GUI-related runtime state between transport operations.
@@ -3906,6 +3933,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 self.syncTracks(tracks, fxChannels: self.syncedFXChannels)
             }
             self?.activeClips.removeAll()
+            self?.recordingTakePunchTrim = nil
             self?.hasPendingRecording = false
             self?.recordingFinalizationTask = nil
         }

@@ -26,6 +26,14 @@ public struct TransportBarView: View {
         audioEngine.isPlaying || audioEngine.isStartingPlayback
     }
 
+    private var rollbackHelp: LocalizedStringKey {
+        let bars = projectState.recordRollbackBars
+        if projectState.recordRollbackEnabled {
+            return "Disable Rollback Recording (\(bars) bars)"
+        }
+        return "Enable Rollback Recording (\(bars) bars)"
+    }
+
     private func commitBPMText() {
         let parsedValue = Double(bpmText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? audioEngine.bpm
         let clamped = max(20.0, min(400.0, parsedValue))
@@ -130,7 +138,7 @@ public struct TransportBarView: View {
                         )
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help(anyArmed ? "Record Armed Tracks" : "No Tracks Armed for Recording")
+                .help(anyArmed ? "Record Armed Tracks (R)" : "No Tracks Armed for Recording")
 
                 Button {
                     projectState.setPunchEnabled(!projectState.punchRange.enabled)
@@ -144,6 +152,27 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .help(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
+
+                // Rollback recording; a punch recording ignores it (dimmed).
+                Button {
+                    projectState.recordRollbackEnabled.toggle()
+                } label: {
+                    let isOn = projectState.recordRollbackEnabled
+                    HStack(spacing: 1) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 9, weight: .black))
+                        Text(verbatim: "\(projectState.recordRollbackBars)")
+                            .font(.system(size: 11, weight: .black))
+                    }
+                    .foregroundColor(isOn ? .black : .red.opacity(0.75))
+                    .frame(width: 34, height: 20)
+                    .background(isOn ? Color.red : Color.white.opacity(0.08))
+                    .cornerRadius(3)
+                    .opacity(isOn && projectState.punchRange.enabled ? 0.45 : 1.0)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(audioEngine.isPlaying || audioEngine.isRecording)
+                .help(rollbackHelp)
 
                 Toggle(isOn: $audioEngine.metronomeEnabled) {
                     Image(systemName: "metronome")
@@ -427,6 +456,7 @@ public struct TransportBarView: View {
             BufferSettingsView(
                 deviceManager: projectState.deviceManager,
                 audioEngine: audioEngine,
+                projectState: projectState,
                 onAudioDevicesChanged: {
                     // Let the sheet close before the modal alert appears.
                     DispatchQueue.main.async {
@@ -590,6 +620,7 @@ private struct TransportTimeText: View {
 private struct BufferSettingsView: View {
     @ObservedObject var deviceManager: AudioDeviceManager
     @ObservedObject var audioEngine: AudioEngineManager
+    @ObservedObject var projectState: ProjectState
     /// Called after a change that needs a restart (device, sample rate or
     /// language) was applied.
     let onAudioDevicesChanged: () -> Void
@@ -600,6 +631,7 @@ private struct BufferSettingsView: View {
     @State private var selectedSampleRate: Double
     @State private var recordingCompensationText: String
     @State private var clickTimingOffsetText: String
+    @State private var rollbackBarsText: String
     @State private var selectedLanguage = AppLanguage.current
 
     private let bufferSizes = [128, 256, 512, 1024, 2048, 4096]
@@ -608,10 +640,13 @@ private struct BufferSettingsView: View {
     init(
         deviceManager: AudioDeviceManager,
         audioEngine: AudioEngineManager,
+        projectState: ProjectState,
         onAudioDevicesChanged: @escaping () -> Void
     ) {
         self.deviceManager = deviceManager
         self.audioEngine = audioEngine
+        self.projectState = projectState
+        _rollbackBarsText = State(initialValue: "\(projectState.recordRollbackBars)")
         self.onAudioDevicesChanged = onAudioDevicesChanged
         _selectedBufferSize = State(initialValue: deviceManager.bufferFrameSize)
         _selectedInputDeviceID = State(initialValue: deviceManager.selectedInputDeviceID)
@@ -643,101 +678,140 @@ private struct BufferSettingsView: View {
         clickTimingOffsetText = String(format: "%.1f", audioEngine.metronomeTimingOffsetMs)
     }
 
+    private func commitRollbackBars() {
+        let range = ProjectState.recordRollbackBarsRange
+        if let value = Int(rollbackBarsText.trimmingCharacters(in: .whitespaces)) {
+            projectState.recordRollbackBars = min(range.upperBound, max(range.lowerBound, value))
+        }
+        rollbackBarsText = "\(projectState.recordRollbackBars)"
+    }
+
+    private func sectionHeader(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.bold))
+    }
+
+    private func note(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("Settings")
                 .font(.headline)
 
-            Text("Input and output devices use the same Core Audio buffer size.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader("Environment")
+                Picker("Language", selection: $selectedLanguage) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(verbatim: language.displayName).tag(language)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Recordings folder")
-                    .font(.subheadline.weight(.semibold))
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader("Audio")
                 HStack(spacing: 8) {
+                    Text("Recordings folder")
                     Text(audioEngine.recordingsDirectory.path)
                         .font(.caption)
+                        .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }
 
-            Picker("Language", selection: $selectedLanguage) {
-                ForEach(AppLanguage.allCases) { language in
-                    Text(verbatim: language.displayName).tag(language)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Picker("Input device", selection: $selectedInputDeviceID) {
-                ForEach(deviceManager.inputDevices) { device in
-                    Text(device.name).tag(device.id)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Picker("Output device", selection: $selectedOutputDeviceID) {
-                ForEach(deviceManager.outputDevices) { device in
-                    Text(device.name).tag(device.id)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Picker("Sample rate", selection: $selectedSampleRate) {
-                ForEach(sampleRates, id: \.self) { rate in
-                    Text("\(Int(rate / 1000.0)) kHz").tag(rate)
-                }
-            }
-            .pickerStyle(.menu)
-
-            HStack {
-                Text("Additional recording compensation")
-                TextField("0", text: $recordingCompensationText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 72)
-                    .onSubmit {
-                        commitRecordingCompensation()
+                Picker("Input device", selection: $selectedInputDeviceID) {
+                    ForEach(deviceManager.inputDevices) { device in
+                        Text(device.name).tag(device.id)
                     }
-                Text("ms")
-            }
-
-            Text("Enter the measured remaining offset. Positive values move new recordings earlier on the timeline.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            HStack {
-                Text("Click timing offset")
-                TextField("0", text: $clickTimingOffsetText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 72)
-                    .onSubmit {
-                        commitClickTimingOffset()
-                    }
-                Text("ms")
-            }
-
-            Text("Positive values delay the click; negative values make it sound earlier. Range: -500 to +500 ms.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            HStack {
-                Text("Click volume")
-                Slider(value: $audioEngine.metronomeVolume, in: 0.0...1.0)
-                    .frame(width: 150)
-                Text("\(Int(audioEngine.metronomeVolume * 100.0))%")
-                    .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
-            }
-
-            Picker("Buffer size", selection: $selectedBufferSize) {
-                ForEach(bufferSizes, id: \.self) { size in
-                    Text("\(size) frames (\(String(format: "%.1f", Double(size) / max(1.0, audioEngine.hardwareSampleRate) * 1000.0)) ms)")
-                        .tag(size)
                 }
+                .pickerStyle(.menu)
+
+                Picker("Output device", selection: $selectedOutputDeviceID) {
+                    ForEach(deviceManager.outputDevices) { device in
+                        Text(device.name).tag(device.id)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("Sample rate", selection: $selectedSampleRate) {
+                    ForEach(sampleRates, id: \.self) { rate in
+                        Text("\(Int(rate / 1000.0)) kHz").tag(rate)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("Buffer size", selection: $selectedBufferSize) {
+                    ForEach(bufferSizes, id: \.self) { size in
+                        Text("\(size) frames (\(String(format: "%.1f", Double(size) / max(1.0, audioEngine.hardwareSampleRate) * 1000.0)) ms)")
+                            .tag(size)
+                    }
+                }
+                .pickerStyle(.menu)
+                note("Input and output devices use the same Core Audio buffer size.")
             }
-            .pickerStyle(.menu)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader("Compensation")
+                HStack {
+                    Text("Recording latency (optional)")
+                    TextField("0", text: $recordingCompensationText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 72)
+                        .onSubmit {
+                            commitRecordingCompensation()
+                        }
+                    Text("ms")
+                }
+                note("Corrects the position of recorded clips. Positive values move them earlier.")
+
+                HStack {
+                    Text("Click timing")
+                    TextField("0", text: $clickTimingOffsetText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 72)
+                        .onSubmit {
+                            commitClickTimingOffset()
+                        }
+                    Text("ms")
+                }
+                note("Corrects when the click sounds. Positive values make it sound later.")
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader("Other")
+                HStack {
+                    Text("Click volume")
+                    Slider(value: $audioEngine.metronomeVolume, in: 0.0...1.0)
+                        .frame(width: 150)
+                    Text("\(Int(audioEngine.metronomeVolume * 100.0))%")
+                        .monospacedDigit()
+                        .frame(width: 42, alignment: .trailing)
+                }
+
+                HStack {
+                    Text("Rollback when recording")
+                    TextField("2", text: $rollbackBarsText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 48)
+                        .onSubmit {
+                            commitRollbackBars()
+                        }
+                    Text("bars")
+                }
+                note("In normal recording, the playhead rolls back by this many bars. Recording starts at the current playhead position.")
+            }
 
             HStack {
                 Spacer()
@@ -747,6 +821,7 @@ private struct BufferSettingsView: View {
                 Button("Apply") {
                     commitRecordingCompensation()
                     commitClickTimingOffset()
+                    commitRollbackBars()
                     let devicesChanged = selectedInputDeviceID != deviceManager.selectedInputDeviceID ||
                         selectedOutputDeviceID != deviceManager.selectedOutputDeviceID
                     let sampleRateChanged = abs(selectedSampleRate - audioEngine.hardwareSampleRate) > 0.5
@@ -784,7 +859,7 @@ private struct BufferSettingsView: View {
             }
         }
         .padding(24)
-        .frame(width: 400)
+        .frame(width: 440)
     }
 }
 

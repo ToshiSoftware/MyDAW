@@ -29,6 +29,8 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - Per-track input channel selection from any Core Audio interface.
 - Sample-accurate placement of takes, with automatic and manual latency compensation.
 - **Punch in/out**: records only inside the punch range; the whole pass is kept so the take can be extended later.
+- **Rollback recording** (↺ button, right of P): a normal recording starts playing a set number of bars (1–16, in Settings) before the playhead and records from the playhead, so the take starts where the playhead was. The run-up is kept in the file; drag the clip's left edge to reveal it.
+- **R key** starts recording on the armed tracks (same as the red Record button; stops when running).
 - **Input monitoring** (`I` button): hear the live input through the track's effects while it is armed (the recording stays dry).
 - Metronome with BPM, bars-and-beats ruler and adjustable click timing/volume. It can be switched on/off while playing or recording. Right-clicking the metronome button pops up a volume fader that works while playing.
 - **Song start / end flags** on the ruler: Rewind goes to the start flag (again: to 00:00), playback and recording stop at the end flag, and the flags set the export range.
@@ -118,7 +120,7 @@ When the project is inside a Google Drive folder, the script removes extended at
 2. Allow microphone access when macOS asks.
 3. Click the gear button and choose your input/output device and buffer size.
 4. Arm a track with **R**, choose its input channel, and check the meter moves.
-5. Press the red **Record** button to record and **Space** to stop.
+5. Press the red **Record** button (or **R**) to record and **Space** to stop.
 6. Press **Space** to play. Adjust levels in the mixer at the bottom.
 
 See the [Operation Manual](OperationManual_en.pdf) for step-by-step instructions.
