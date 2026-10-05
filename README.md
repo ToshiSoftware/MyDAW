@@ -53,7 +53,9 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Track folders**: **Add Folder** from the track list's + menu or a header's right-click menu, then drag tracks into it (tracks inside are indented; an indented drop line means the track goes into the folder). ▼ / ▶ opens and closes a folder; the tracks of a closed folder are not drawn (they still play and record). A folder's [M] / [S] mute or solo all its tracks (their own buttons light grey), and turning it off brings back each track's own state. Folders move with their tracks when dragged, take a colour, and are renamed by double-clicking. Folders do not nest.
 - **Header right-click menu**: right-clicking a track makes it current and offers **Add Track** / **Add Folder** above it (only Add Track for a track inside a folder) and **Show in Mixer** (scrolls the mixer so that track or folder is at its left edge).
 - WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
-- View: mouse wheel over the ruler or a pinch zooms horizontally, option+wheel sets track height, option+shift+wheel sets waveform height.
+- Detailed waveforms: one min–max bar per point, from the samples themselves when zoomed in far, so single cycles are visible.
+- The timeline is as long as the song (clips and end flag, at least 60 s); the part past it is darkened. Ruler clicks and playing on do not lengthen it.
+- View: mouse wheel over the ruler or a pinch zooms horizontally (5–3200 px/s), option+wheel sets track height, option+shift+wheel sets waveform height.
 - **Auto-scroll**: the view follows the playhead while playing or recording; turn it on/off with the |→ button at the right end of the transport bar. The horizontal scroll bar moves only when its knob (●) is dragged.
 
 ### Mixing

@@ -67,13 +67,16 @@ public struct WaveformCanvas: View, Equatable {
 
     public var body: some View {
         Canvas { context, size in
-            let peaks = waveformCache.peaks(for: channelIndex)
-            guard !peaks.isEmpty else { return }
+            let coarse = waveformCache.peaks(for: channelIndex)
+            guard !coarse.isEmpty, pixelsPerSecond > 0 else { return }
+            let fine = waveformCache.finePeaks(for: channelIndex)
 
             let centerY = size.height / 2.0
             let maxAmplitude = (size.height / 2.0) * 0.92 * verticalScale
-            let secondsPerPeak = Double(waveformCache.samplesPerPeak) / (sampleRate > 0 ? sampleRate : 48000.0)
-            let pixelsPerPeak = secondsPerPeak * Double(pixelsPerSecond)
+            let rate = sampleRate > 0 ? sampleRate : 48000.0
+            let pointsPerSecond = Double(pixelsPerSecond)
+            // Samples covered by one point-wide column.
+            let samplesPerColumn = rate / pointsPerSecond
 
             // Draw center reference line
             var centerLine = Path()
@@ -81,89 +84,110 @@ public struct WaveformCanvas: View, Equatable {
             centerLine.addLine(to: CGPoint(x: size.width, y: centerY))
             context.stroke(centerLine, with: .color(Color.white.opacity(0.12)), lineWidth: 1)
 
-            // Build mirrored polygon path
-            var topPath = Path()
-            var bottomPoints: [CGPoint] = []
+            // The coarse level while each of its peaks fits in a column;
+            // zoomed in further, the fine level (when loaded), so the
+            // waveform keeps one peak per column instead of stretching.
+            let useFine = !fine.isEmpty && samplesPerColumn < Double(waveformCache.samplesPerPeak)
+            let samplesPerPeak = Double(useFine ? WaveformCache.fineSamplesPerPeak : waveformCache.samplesPerPeak)
+            let peakCount = useFine ? fine.count : coarse.count
 
-            let startIndex = min(
-                peaks.count,
-                max(0, Int(sampleOffset * sampleRate / Double(waveformCache.samplesPerPeak)))
-            )
-            let visiblePeakCount = visibleDuration.map {
-                max(1, Int(ceil($0 * sampleRate / Double(waveformCache.samplesPerPeak))))
-            } ?? peaks.count
-            let endIndex = min(peaks.count, startIndex + visiblePeakCount)
-
-            // Zoomed far out, several peaks share a pixel: draw each group's
-            // extremes once instead of every peak.
-            let group = max(1, Int(1.0 / max(pixelsPerPeak, 0.000_001)))
-            // Only the peaks inside the draw window (in seconds from the
-            // canvas's left edge), started on a group boundary.
+            // Columns from the canvas's left edge (= `sampleOffset`), only
+            // inside the clip's visible part and the draw window.
+            let startSample = sampleOffset * rate
+            let clipColumns = visibleDuration.map { $0 * pointsPerSecond }
+                ?? (Double(peakCount) * samplesPerPeak - startSample) / samplesPerColumn
+            // Clamped as Doubles first: the unbounded window is ±infinity
+            // once scaled, which Int() cannot take.
             let window = drawWindow.range
-            let windowStart = (window.lowerBound - timelineOrigin) / secondsPerPeak
-            let windowEnd = (window.upperBound - timelineOrigin) / secondsPerPeak
-            var firstIndex = startIndex
-            if windowStart > 0 {
-                let skipped = Int(min(windowStart, Double(endIndex - startIndex)))
-                firstIndex = startIndex + skipped - skipped % group
+            let columnLimit = max(0.0, min(Double(size.width), clipColumns))
+            let windowStart = (window.lowerBound - timelineOrigin) * pointsPerSecond
+            let windowEnd = (window.upperBound - timelineOrigin) * pointsPerSecond
+            let firstColumn = Int(floor(max(0.0, min(columnLimit, windowStart))))
+            let lastColumn = Int(ceil(max(0.0, min(columnLimit, windowEnd))))
+            guard firstColumn < lastColumn else { return }
+
+            // Zoomed in past the fine level, the raw samples of the visible
+            // part (read in the background; the fine level until then).
+            let fineSamples = Double(WaveformCache.fineSamplesPerPeak)
+            var samples: [Float] = []
+            var samplesStart = 0
+            if useFine && samplesPerColumn < fineSamples {
+                let neededStart = Int(startSample + Double(firstColumn) * samplesPerColumn)
+                let neededEnd = Int(ceil(startSample + Double(lastColumn) * samplesPerColumn))
+                waveformCache.requestSamples(max(0, neededStart - 1)..<neededEnd)
+                if let window = waveformCache.sampleWindow {
+                    samples = window.samples(for: channelIndex)
+                    samplesStart = window.startFrame
+                }
             }
-            let lastIndex = windowEnd < Double(endIndex - startIndex)
-                ? min(endIndex, startIndex + Int(max(0, windowEnd)) + group + 1)
-                : endIndex
-            guard firstIndex < lastIndex else { return }
-            for i in stride(from: firstIndex, to: lastIndex, by: group) {
-                let groupEnd = min(lastIndex, i + group)
-                var peak = peaks[i]
-                if groupEnd - i > 1 {
-                    var low = peak.min
-                    var high = peak.max
-                    for j in (i + 1)..<groupEnd {
-                        low = Swift.min(low, peaks[j].min)
-                        high = Swift.max(high, peaks[j].max)
+
+            // One rectangle per column, from its lowest to its highest
+            // sample (true extremes, so zoomed in the bars follow the wave
+            // instead of all rising from the centre line), as the waveform
+            // is heard (envelope gain).
+            var bars = Path()
+            for column in firstColumn..<lastColumn {
+                let columnStart = startSample + Double(column) * samplesPerColumn
+                var low: Float = .infinity
+                var high: Float = -.infinity
+                // Frames of this column relative to the sample window; the
+                // previous sample is included so neighbouring columns join.
+                let sampleFirst = Int(columnStart) - 1 - samplesStart
+                let sampleLast = Int(ceil(columnStart + samplesPerColumn)) - samplesStart
+                if !samples.isEmpty, sampleFirst >= 0, sampleLast <= samples.count {
+                    for index in sampleFirst..<max(sampleFirst + 1, sampleLast) {
+                        let value = samples[index]
+                        low = Swift.min(low, value)
+                        high = Swift.max(high, value)
                     }
-                    peak = PeakPoint(id: peak.id, min: low, max: high)
-                }
-                let x = CGFloat(Double(i - startIndex) * pixelsPerPeak)
-                if x > size.width { break }
-
-                let gain = envelope.map {
-                    CGFloat($0.gain(at: $0.span.start + Double(i - startIndex) * secondsPerPeak))
-                } ?? 1.0
-                // Kept inside the lane when the vertical zoom pushes peaks past it.
-                let topY = max(0.0, centerY - max(1.0, CGFloat(peak.max) * maxAmplitude * gain))
-                let bottomY = min(size.height, centerY - min(-1.0, CGFloat(peak.min) * maxAmplitude * gain))
-
-                if i == firstIndex {
-                    topPath.move(to: CGPoint(x: x, y: centerY))
-                    topPath.addLine(to: CGPoint(x: x, y: topY))
                 } else {
-                    topPath.addLine(to: CGPoint(x: x, y: topY))
+                    let first = Int(columnStart / samplesPerPeak)
+                    guard first < peakCount else { break }
+                    let last = min(peakCount, max(first + 1, Int(ceil((columnStart + samplesPerColumn) / samplesPerPeak))))
+                    if useFine {
+                        for index in first..<last {
+                            let peak = fine[index]
+                            low = Swift.min(low, peak.minValue)
+                            high = Swift.max(high, peak.maxValue)
+                        }
+                    } else {
+                        for index in first..<last {
+                            let peak = coarse[index]
+                            low = Swift.min(low, peak.min)
+                            high = Swift.max(high, peak.max)
+                        }
+                    }
                 }
-                bottomPoints.append(CGPoint(x: x, y: bottomY))
+                let gain = envelope.map {
+                    CGFloat($0.gain(at: $0.span.start + (Double(column) + 0.5) / pointsPerSecond))
+                } ?? 1.0
+                var topY = centerY - CGFloat(high) * maxAmplitude * gain
+                var bottomY = centerY - CGFloat(low) * maxAmplitude * gain
+                // At least 1 pt thick, around the value (silence: the centre line).
+                if bottomY - topY < 1.0 {
+                    let middle = (topY + bottomY) / 2.0
+                    topY = middle - 0.5
+                    bottomY = middle + 0.5
+                }
+                // Kept inside the lane when the vertical zoom pushes peaks past it.
+                topY = min(max(0.0, topY), size.height)
+                bottomY = min(max(0.0, bottomY), size.height)
+                guard bottomY > topY else { continue }
+                bars.addRect(CGRect(x: CGFloat(column), y: topY, width: 1.0, height: bottomY - topY))
             }
 
-            // Reverse bottom points to close the polygon
-            for pt in bottomPoints.reversed() {
-                topPath.addLine(to: pt)
-            }
-            topPath.closeSubpath()
-
-            // Fill with smooth gradient
             let gradient = Gradient(colors: [
-                trackColor.opacity(0.85),
-                trackColor.opacity(0.45)
+                trackColor.opacity(0.95),
+                trackColor.opacity(0.6)
             ])
             context.fill(
-                topPath,
+                bars,
                 with: .linearGradient(
                     gradient,
                     startPoint: CGPoint(x: 0, y: 0),
                     endPoint: CGPoint(x: 0, y: size.height)
                 )
             )
-
-            // Crisp stroke contour
-            context.stroke(topPath, with: .color(trackColor.opacity(0.95)), lineWidth: 1.0)
         }
         .modifier(VerticalStretch(preview: scalePreview, anchor: .center))
         .clipped()

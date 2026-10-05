@@ -19,32 +19,50 @@ public struct ArrangerView: View {
     @State private var reorderRowID: UUID?
     @State private var reorderTranslation: CGSize = .zero
     @State private var reorderPointerY: CGFloat = 0
-    /// How far the timeline must reach for the playhead: raised in steps as
-    /// the playhead moves, so this view (which does not observe the playhead)
-    /// is rebuilt only now and then.
+    /// While playing or recording, how far the timeline reaches for the
+    /// playhead: raised in steps as the playhead moves (so this view, which
+    /// does not observe the playhead, is rebuilt only now and then) and
+    /// cleared on stop, so the timeline goes back to the song's length.
     @State private var playheadExtentTime: Double = 0
+    /// When stopped, a playhead left past the song's end (else 0); kept here
+    /// rather than read from the engine so that a rewind narrows the
+    /// timeline again (this view does not observe the playhead).
+    @State private var parkedPlayheadTime: Double = 0
 
-    // Dynamic timeline width (minimum 2500 pt, extends with zoom & duration).
-    // It always reaches a screen past the playhead, where auto-scroll puts
-    // the view: the ruler is offset by `timelineScrollTime` while the tracks
-    // scroll for real, and a scroll clamped at the content's end would leave
-    // the ruler (flags, playhead ball) drawn ahead of the tracks.
-    private func timelineWidth(viewportWidth: CGFloat) -> CGFloat {
+    /// The song's length: its clips and end flag, at least a minute. Moving
+    /// the playhead (clicking the ruler, playing on) does not lengthen it.
+    private func songLength() -> Double {
         let clipEndTime = projectState.tracks
             .flatMap { $0.clips }
             .map { $0.startTime + $0.duration }
             .max() ?? 0.0
+        return max(60.0, clipEndTime + 5.0, (projectState.songEndTime ?? 0.0) + 5.0)
+    }
+
+    /// The timeline's width: the song, and while playing or recording a
+    /// screen past the playhead (where auto-scroll puts the view: the ruler
+    /// is offset by `timelineScrollTime` while the tracks scroll for real,
+    /// and a scroll clamped at the content's end would leave the ruler
+    /// drawn ahead of the tracks). When stopped it also reaches a playhead
+    /// left past the song's end. Never narrower than the view, so the ruler
+    /// always runs to the right edge without the song getting longer.
+    private func timelineWidth(viewportWidth: CGFloat) -> CGFloat {
         let pixelsPerSecond = max(0.001, projectState.pixelsPerSecond)
-        let visibleDuration = Double(max(1.0, viewportWidth - ArrangerLayout.headerColumnWidth) / pixelsPerSecond)
-        let maxDuration = max(
-            60.0,
-            audioEngine.currentTime + 30.0,
-            clipEndTime + 5.0,
-            (projectState.songEndTime ?? 0.0) + 5.0,
-            audioEngine.currentTime + visibleDuration + 5.0,
-            playheadExtentTime
-        )
-        return max(2500.0, CGFloat(maxDuration) * pixelsPerSecond)
+        let visibleWidth = max(1.0, viewportWidth - ArrangerLayout.headerColumnWidth)
+        let length = max(songLength(), parkedPlayheadTime, playheadExtentTime)
+        return max(visibleWidth, CGFloat(length) * pixelsPerSecond)
+    }
+
+    /// Darkens the ruler or lanes past the song's end: the part that is
+    /// only there to fill the view (or reach the playhead), not the song.
+    private func pastSongShade(timelineWidth: CGFloat) -> some View {
+        let songEndX = CGFloat(songLength()) * projectState.pixelsPerSecond
+        return Rectangle()
+            .fill(Color.black.opacity(0.28))
+            .frame(width: max(0, timelineWidth - songEndX))
+            .frame(maxHeight: .infinity)
+            .offset(x: songEndX)
+            .allowsHitTesting(false)
     }
 
     public init(projectState: ProjectState, audioEngine: AudioEngineManager) {
@@ -412,8 +430,15 @@ public struct ArrangerView: View {
     /// Scrolls the tracks to a new `timelineScrollTime`, unless the change
     /// came from the tracks' own scrolling.
     private func followScrollTime(_ time: Double, proxy horizontalProxy: ScrollViewProxy) {
-        guard time != scrollFollow.scrolledTime else { return }
         let requested = CGFloat(time) * projectState.pixelsPerSecond
+        // Nothing to do when the tracks are already there (the change came
+        // from their own scrolling). Compared in points, not as a time: after
+        // a zoom the same time is a different offset.
+        if let clipView = timelineScrollView.scrollView?.contentView {
+            guard abs(clipView.bounds.origin.x - requested) >= 0.5 else { return }
+        } else {
+            guard time != scrollFollow.scrolledTime else { return }
+        }
         scrollFollow.requestedOffset = requested
         guard timelineScrollView.scrollView != nil else {
             withAnimation(nil) {
@@ -444,11 +469,22 @@ public struct ArrangerView: View {
             // out, which may have clamped it.
             timelineScrollView.scrollView?.window?.contentView?.layoutSubtreeIfNeeded()
             setTrackScrollOffset(requested)
-            // A target past the content's end is
-            // never reached; stop waiting for it.
-            if scrollFollow.requestedOffset == requested {
-                scrollFollow.requestedOffset = nil
-            }
+        }
+        // After a zoom the content may widen only some layout passes later;
+        // until then the offset is clamped short of the target, and it is
+        // applied again whenever the content resizes (see
+        // `ScrollOffsetObserver`). If it is still not reached after this
+        // wait, the ruler takes the tracks' real position instead, so the
+        // two never stay apart.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard scrollFollow.requestedOffset == requested else { return }
+            scrollFollow.requestedOffset = nil
+            guard let clipView = timelineScrollView.scrollView?.contentView else { return }
+            let offset = clipView.bounds.origin.x
+            guard abs(offset - requested) >= 1.0 else { return }
+            let actualTime = max(0.0, Double(offset / projectState.pixelsPerSecond))
+            scrollFollow.scrolledTime = actualTime
+            projectState.timelineScrollTime = actualTime
         }
     }
 
@@ -493,6 +529,9 @@ public struct ArrangerView: View {
                         projectState: projectState,
                         width: timelineWidth
                     )
+                    .overlay(alignment: .topLeading) {
+                        pastSongShade(timelineWidth: timelineWidth)
+                    }
                     .modifier(TimelineScrollOffset(
                         scroll: projectState.timelineScroll,
                         pixelsPerSecond: projectState.pixelsPerSecond
@@ -567,6 +606,9 @@ public struct ArrangerView: View {
                                             }
                                         }
                                     }
+                                    .overlay(alignment: .topLeading) {
+                                        pastSongShade(timelineWidth: timelineWidth)
+                                    }
 
                                     if let selection = projectState.timeSelection {
                                         timeSelectionHighlight(selection)
@@ -621,7 +663,16 @@ public struct ArrangerView: View {
                                 // Read from AppKit: a SwiftUI geometry
                                 // preference is not updated while the user
                                 // scrolls with the wheel or trackpad.
-                                .background(ScrollOffsetObserver(scrollView: timelineScrollView) { offset in
+                                .background(ScrollOffsetObserver(scrollView: timelineScrollView, onContentResize: {
+                                    // A scroll clamped by the old width
+                                    // goes on to its target.
+                                    if let requested = scrollFollow.requestedOffset {
+                                        setTrackScrollOffset(requested)
+                                    }
+                                }) { offset in
+                                    if projectState.timelineScroll.trackOffset != offset {
+                                        projectState.timelineScroll.trackOffset = offset
+                                    }
                                     guard !projectState.isRestoringScrollPosition else { return }
                                     if let requested = scrollFollow.requestedOffset {
                                         guard abs(offset - requested) < 1.0 else { return }
@@ -656,11 +707,17 @@ public struct ArrangerView: View {
                                         1.0,
                                         Double(visibleWidth) / Double(projectState.pixelsPerSecond)
                                     )
-                                    if time + visibleDuration + 5.0 > playheadExtentTime {
-                                        playheadExtentTime = time + visibleDuration + 60.0
+                                    guard audioEngine.isPlaying || audioEngine.isRecording else {
+                                        let parked = time > songLength() ? time : 0.0
+                                        if parked != parkedPlayheadTime { parkedPlayheadTime = parked }
+                                        return
                                     }
-                                    guard projectState.autoScrollEnabled,
-                                          audioEngine.isPlaying || audioEngine.isRecording else { return }
+                                    // Only while the transport runs; cleared
+                                    // on stop (see `playheadExtentTime`).
+                                    if time + visibleDuration + 5.0 > playheadExtentTime {
+                                        playheadExtentTime = time + visibleDuration + 30.0
+                                    }
+                                    guard projectState.autoScrollEnabled else { return }
                                     let rightMarginTime = visibleDuration * 0.1
                                     let scrollTriggerTime = projectState.timelineScrollTime + visibleDuration - rightMarginTime
                                     if time >= scrollTriggerTime {
@@ -673,6 +730,14 @@ public struct ArrangerView: View {
                                             time - rightMarginTime
                                         )
                                     }
+                                }
+                                // On stop the timeline goes back to the
+                                // song (and a playhead left past its end).
+                                .onChange(of: audioEngine.isPlaying || audioEngine.isRecording) { running in
+                                    guard !running else { return }
+                                    let time = audioEngine.currentTime
+                                    parkedPlayheadTime = time > songLength() ? time : 0.0
+                                    playheadExtentTime = 0
                                 }
                                 .onChange(of: projectState.scrollRestoreRevision) { _ in
                                     Task { @MainActor in
@@ -1277,7 +1342,9 @@ private struct TimelineScrollOffset: ViewModifier {
     let pixelsPerSecond: CGFloat
 
     func body(content: Content) -> some View {
-        content.offset(x: -CGFloat(scroll.time) * pixelsPerSecond)
+        // The tracks' real offset, so the ball and the playhead line agree
+        // even mid-zoom (see `TimelineScrollPosition.trackOffset`).
+        content.offset(x: -(scroll.trackOffset ?? CGFloat(scroll.time) * pixelsPerSecond))
     }
 }
 
@@ -1370,23 +1437,29 @@ private final class ScrollFollow {
 /// scroll view scrolls, however the scroll was made.
 private struct ScrollOffsetObserver: NSViewRepresentable {
     let scrollView: WeakScrollView
+    /// Called when the scrolled content changes size.
+    var onContentResize: () -> Void = {}
     let onScroll: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> ObserverView {
         let view = ObserverView()
         view.scrollViewBox = scrollView
         view.onScroll = onScroll
+        view.onContentResize = onContentResize
         return view
     }
 
     func updateNSView(_ nsView: ObserverView, context: Context) {
         nsView.onScroll = onScroll
+        nsView.onContentResize = onContentResize
     }
 
     final class ObserverView: NSView {
         var onScroll: ((CGFloat) -> Void)?
+        var onContentResize: (() -> Void)?
         var scrollViewBox: WeakScrollView?
         private weak var clipView: NSClipView?
+        private weak var documentView: NSView?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -1397,6 +1470,12 @@ private struct ScrollOffsetObserver: NSViewRepresentable {
                     self, name: NSView.boundsDidChangeNotification, object: clipView
                 )
                 self.clipView = nil
+            }
+            if let documentView {
+                NotificationCenter.default.removeObserver(
+                    self, name: NSView.frameDidChangeNotification, object: documentView
+                )
+                self.documentView = nil
             }
             guard window != nil, let scrollView = enclosingScrollView else { return }
             let clip = scrollView.contentView
@@ -1409,6 +1488,20 @@ private struct ScrollOffsetObserver: NSViewRepresentable {
                 name: NSView.boundsDidChangeNotification,
                 object: clip
             )
+            if let document = scrollView.documentView {
+                documentView = document
+                document.postsFrameChangedNotifications = true
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(documentFrameDidChange),
+                    name: NSView.frameDidChangeNotification,
+                    object: document
+                )
+            }
+        }
+
+        @objc private func documentFrameDidChange() {
+            onContentResize?()
         }
 
         @objc private func boundsDidChange() {

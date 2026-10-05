@@ -160,7 +160,7 @@ public final class ProjectState: ObservableObject {
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
     public static let minimumPixelsPerSecond: CGFloat = 5.0
-    public static let maximumPixelsPerSecond: CGFloat = 800.0
+    public static let maximumPixelsPerSecond: CGFloat = 3200.0
     public static let maximumWaveformVerticalScale: CGFloat = 256.0
 
     @Published public var waveformVerticalScale: CGFloat = 1.0 {
@@ -1842,7 +1842,18 @@ public final class ProjectState: ObservableObject {
 
         let anchorTime = timelineScrollTime + Double(anchorOffset / pixelsPerSecond)
         pixelsPerSecond = clampedValue
-        timelineScrollTime = max(0.0, anchorTime - Double(anchorOffset / clampedValue))
+        setScrollTimeAfterZoom(max(0.0, anchorTime - Double(anchorOffset / clampedValue)))
+    }
+
+    /// After a zoom the tracks must scroll even when the scroll time stays
+    /// the same: the same time is now a different offset in points.
+    private func setScrollTimeAfterZoom(_ time: Double) {
+        if timelineScrollTime != time {
+            timelineScrollTime = time
+        } else {
+            refreshDrawWindow()
+            timelineScroll.onChange?(time)
+        }
     }
 
     public func setPixelsPerSecond(_ newValue: CGFloat) {
@@ -1851,10 +1862,10 @@ public final class ProjectState: ObservableObject {
 
         let cursorOffsetPixels = max(0.0, audioEngine.currentTime - timelineScrollTime) * Double(pixelsPerSecond)
         pixelsPerSecond = clampedValue
-        timelineScrollTime = max(
+        setScrollTimeAfterZoom(max(
             0.0,
             audioEngine.currentTime - cursorOffsetPixels / Double(clampedValue)
-        )
+        ))
     }
 
     public func snappedTimelineTime(_ time: Double) -> Double {
@@ -1870,6 +1881,11 @@ public final class ProjectState: ObservableObject {
 @MainActor
 public final class TimelineScrollPosition: ObservableObject {
     @Published public var time: Double = 0.0
+    /// Where the tracks' scroll view really is (points), reported on every
+    /// scroll step. The ruler is placed by it, so the ruler and the tracks
+    /// stay together even while a zoom has the tracks' scroll clamped short
+    /// of `time` for a moment. Nil until the scroll view reports.
+    @Published public var trackOffset: CGFloat?
 
     /// Set by the arranger: scrolls the tracks to follow a change at once.
     public var onChange: ((Double) -> Void)?
