@@ -25,3 +25,8 @@
 
 # ThirdParty: 登録しない（VST3 SDK は各自取得）
 /ThirdParty/
+
+# scripts: ビルドに不要な作業用スクリプト（手元のみ）
+/scripts/extract-strings.sh
+/scripts/make-document-icon.swift
+/scripts/copy-to-note.sh
