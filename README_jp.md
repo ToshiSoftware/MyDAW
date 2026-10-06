@@ -1,6 +1,6 @@
 # MyDAW — プロフェッショナル オーディオ ワークステーション for Mac（Apple Silicon）
 
-**バージョン 2.1** ・ [English README](README.md)
+**バージョン 2.2** ・ [English README](README.md)
 
 MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ録音／編集／ミキシング DAW（Digital Audio Workstation）です。Core Audio（AVAudioEngine / Core Audio HAL）を基盤とし、Audio Unit と VST3 のエフェクトを使用できます。
 
@@ -76,7 +76,7 @@ MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ�
 ### プロジェクト
 - プロジェクトは `.mydaw` ファイルと、同じ場所の `Recordings/` フォルダー（例: `MySong/Ballad.mydaw` と `MySong/Recordings/`）。ファイル名とフォルダー名は自由で、フォルダーごと別の Mac へ移行できます。1 つのフォルダーに複数の `.mydaw` を置くと `Recordings/` を共有します。**名前を変えて保存**（⇧⌘S）は同じフォルダーにのみ保存します。Finder で `.mydaw` をダブルクリックすると、そのプロジェクトが開きます（ファイルには MyDAW の書類アイコンが付きます）。
 - 起動画面の**最近使ったプロジェクト**: 最大 50 件を最後に保存した日時とともに表示し、名前をクリックすると開きます。
-- マスター出力を 24-bit WAV へ書き出し。開始・終了位置でサンプル単位に正確に切り出します（プラグインの遅延も補正）。
+- マスター出力の書き出し。ダイアログでファイル名・保存先・形式を指定し、WAV（16／24-bit）または MP3（固定ビットレート／VBR）、44.1／48／96 kHz（MP3 は 48 kHz まで）で書き出します。開始・終了位置でサンプル単位に正確に切り出します（プラグインの遅延も補正）。マスターをリアルタイムで書き出してから変換します。
 - **未使用の録音ファイルの移動**: プロジェクトで使われなくなった `Recordings/` 内の WAV（削除したパンチのテイクなど）を `Recordings/Unused/` へ移動します。同じフォルダーのほかの `.mydaw` が使っているファイルは残します。
 
 ### オーディオデバイス
@@ -104,13 +104,13 @@ MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ�
 正式なビルド手順はシェルスクリプトです。
 
 ```bash
-./scripts/build.sh      # VST3 ブリッジ（CMake）とアプリをビルド
+./scripts/build.sh      # VST3 ブリッジ（CMake）、MP3 エンコーダ（LAME）、アプリをビルド
 open build/MyDAW.app    # 起動
 
 ./scripts/run.sh        # ビルドして起動
 ```
 
-> Xcode でもビルドできます。`MyDAW.xcodeproj` を開いて Product > Build（⌘B）を実行するか、`xcodebuild -project MyDAW.xcodeproj -target MyDAW -configuration Release build` を実行してください。成果物は `build/Release/MyDAW.app` です。最初のビルドフェーズで VST3 ブリッジを CMake でビルドするため、CMake を `/opt/homebrew/bin` か `/usr/local/bin` に入れておく必要があります。`Package.swift` は現行ソースに追従して**いません**。
+> Xcode でもビルドできます。`MyDAW.xcodeproj` を開いて Product > Build（⌘B）を実行するか、`xcodebuild -project MyDAW.xcodeproj -target MyDAW -configuration Release build` を実行してください。成果物は `build/Release/MyDAW.app` です。最初のビルドフェーズで VST3 ブリッジを CMake でビルドするため、CMake を `/opt/homebrew/bin` か `/usr/local/bin` に入れておく必要があります。MP3 エンコーダは後のビルドフェーズで `scripts/build-lame.sh` により組み込まれます。`Package.swift` は現行ソースに追従して**いません**。
 
 Google Drive のフォルダー内でビルドする場合、スクリプトが署名前に拡張属性を取り除きます。
 
@@ -137,7 +137,7 @@ MyDAW/
 ├── VST3Host/           C++ VST3 ホストブリッジ
 ├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
 ├── Resources/          翻訳（en.lproj、ja.lproj）
-├── scripts/            build.sh、run.sh、extract-strings.sh（翻訳漏れの確認）、
+├── scripts/            build.sh、run.sh、build-lame.sh（MP3 エンコーダ）、extract-strings.sh（翻訳漏れの確認）、
 │                       make-document-icon.swift（.mydaw のアイコン作成）
 ├── docs/               解析書、仕様書、マニュアル原稿（docs/manual）
 ├── OperationManual_*.pdf
@@ -145,6 +145,8 @@ MyDAW/
 ├── DocumentIcon.icns   .mydaw ファイルのアイコン（書類＋アプリアイコン）
 └── snapshots/          作業ごとのソーススナップショット
 ```
+
+MP3 エンコーダには [LAME](https://lame.sourceforge.io/) 3.100（LGPL）を使っています。`scripts/build-lame.sh` がソースをダウンロードし（SHA-256 で確認）、`libmp3lame.0.dylib` をビルドします。このライブラリは差し替え可能な別ファイルとして `MyDAW.app/Contents/Frameworks` に入り、ライセンスは `Contents/Resources/LAME-COPYING.txt` に入ります。このため、最初のビルドにはインターネット接続が必要です。
 
 ---
 
@@ -163,4 +165,4 @@ MyDAW/
 
 ## バージョン
 
-現在の About ダイアログのバージョンは **2.1** です。v2.1 では、トラックフォルダ、トラックヘッダの右クリックメニュー、ミキサーをたたむボタンなどを追加しました（フォルダを含むプロジェクトは v2.0 で開くとフォルダが失われます）。v2.0 では、プロジェクトをフォルダーではなく `.mydaw` ファイルで指定するようになり、ファイル名とフォルダー名を揃える必要がなくなりました。
+現在の About ダイアログのバージョンは **2.2** です。v2.2 では、書き出しを保存パネルから書き出しダイアログ（ファイル名・保存先・形式）に変え、MP3 書き出し（固定ビットレート／VBR）と、16-bit WAV・44.1〜96 kHz の選択を追加しました。v2.1 では、トラックフォルダ、トラックヘッダの右クリックメニュー、ミキサーをたたむボタンなどを追加しました（フォルダを含むプロジェクトは v2.0 で開くとフォルダが失われます）。v2.0 では、プロジェクトをフォルダーではなく `.mydaw` ファイルで指定するようになり、ファイル名とフォルダー名を揃える必要がなくなりました。

@@ -1,6 +1,6 @@
 # MyDAW Project Analysis (v2.1)
 
-> Version covered: **2.1** (source as of 2026-10-05)
+> Version covered: **2.2** (source as of 2026-10-06)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -19,7 +19,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 | Audio stack | AVAudioEngine, Core Audio HAL, AUAudioUnit (v3 subclasses) |
 | Recording format | 24-bit Linear PCM WAV, 44.1 / 48 / 88.2 / 96 kHz, mono / stereo |
 | Plug-ins | Audio Unit effects, VST3 effects (VST3s that also exist as an AU are hidden) |
-| Code size | ~18,600 lines of Swift / ~900 lines of C++ (`Sources/` and `VST3Host/`) |
+| Code size | ~20,100 lines of Swift / ~900 lines of C++ (`Sources/` and `VST3Host/`) |
 | Build | `./scripts/build.sh` (builds the VST3 bridge with CMake and links it with `swiftc`) |
 
 ### 1.1 Main features
@@ -39,7 +39,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
-- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (24-bit WAV, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (dialog with file name / folder / format; WAV 16/24-bit or MP3 CBR/VBR at 44.1/48/96 kHz, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
 
 ---
 
@@ -61,11 +61,13 @@ MyDAW/
 │   │   ├── ClipLayering.swift      Overlap / crossfade maths (pure functions)
 │   │   ├── FXChannel.swift         FX channel and FXSend
 │   │   ├── ProjectDocument.swift   .mydaw JSON DTOs
+│   │   ├── ExportSettings.swift    Master export format (WAV/MP3, rate, bit depth, MP3 mode)
 │   │   ├── StereoPeak.swift        L/R peak value
 │   │   └── WaveformCache.swift     Waveform peak cache
 │   ├── Audio/                  Audio engine, devices, plug-ins
 │   │   ├── AudioEngineManager.swift  AVAudioEngine graph, playback, recording, meters
 │   │   ├── AudioDiskWriter.swift     Asynchronous WAV writer
+│   │   ├── ExportEncoder.swift       Export conversion (sample rate, 16-bit dither, WAV, MP3 via LAME)
 │   │   ├── ClipAudioProcessing.swift Offline processing (peak measurement, silence detection, reverse, import conversion)
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL (devices, channels, buffer size)
 │   │   ├── AudioLoadMonitor.swift    Audio processing load and dropout detection
@@ -95,12 +97,12 @@ MyDAW/
 ├── VST3Host/                   C++ VST3 host bridge (static library via CMake)
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  Translations (Localizable.strings and InfoPlist.strings in en.lproj / ja.lproj)
-├── scripts/                    build.sh, run.sh (the supported build path), extract-strings.sh (translation check)
+├── scripts/                    build.sh, run.sh (the supported build path), build-lame.sh (MP3 encoder), extract-strings.sh (translation check)
 ├── docs/                       This document, source specification, manual sources
 └── snapshots/                  Manual source snapshots taken around each change
 ```
 
-> **Note**: `./scripts/build.sh` and `MyDAW.xcodeproj` both produce the same app. The Xcode target runs the "Build VST3 Bridge" script phase (CMake), links the bridge and SDK static libraries through `OTHER_LDFLAGS`, then runs "Strip Extended Attributes" (`xattr -cr`) before signing. Both use arm64 only, ad-hoc signing and no hardened runtime. `Package.swift` is not kept in sync.
+> **Note**: `./scripts/build.sh` and `MyDAW.xcodeproj` both produce the same app. The Xcode target runs the "Build VST3 Bridge" script phase (CMake), links the bridge and SDK static libraries through `OTHER_LDFLAGS`, then runs "Strip Extended Attributes" (copies the translations, installs the LAME dylib with `build-lame.sh`, `xattr -cr`) before signing. Both use arm64 only, ad-hoc signing and no hardened runtime. `Package.swift` is not kept in sync.
 
 ---
 
@@ -136,7 +138,7 @@ flowchart TD
 
 - **UI → ProjectState**: views call `ProjectState` methods; `ProjectState` updates the model and pushes changes to the engine (`AudioEngineManager.syncTracks` etc.).
 - **ProjectState**: owns track/FX/master configuration, undo/redo, save/load, import and export. Editing operations (selection, range selection, clipboard) live in the `ProjectState+Editing.swift` extension.
-- **AudioEngineManager**: the central class (~4,500 lines) for the AVAudioEngine node graph, playback scheduling, recording, meters and plug-in creation.
+- **AudioEngineManager**: the central class (~4,300 lines) for the AVAudioEngine node graph, playback scheduling, recording, meters and plug-in creation.
 - **ClipLayering**: overlap and fade-curve maths extracted as pure functions so playback and drawing (waveform amplitude) use exactly the same calculation.
 
 ### 3.2 Audio signal paths
@@ -211,6 +213,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 | Audio render thread | AVAudioEngine rendering, `VST3AudioUnit` / `InputMonitorAudioUnit` render blocks | Lock-free (preallocated buffers); a `std::mutex` inside the VST3 bridge only (uncontended) |
 | Input tap thread | `processInputAudioBuffer` (peaks, recording extraction) | `captureLock`, `recordingTimingLock`, `peakLock` |
 | Writer queue | `AudioDiskWriter` WAV writes | Serial `DispatchQueue` |
+| Export conversion task | `ExportEncoder` (sample-rate conversion, WAV / MP3 writing) | `Task.detached`; progress is handed to the main thread. It only reads the capture's temporary file, no shared state |
 | Load monitor timer (10 Hz) | `AudioLoadMonitor`: collects the output unit's render notify timings (measured on the render thread), detects dropouts, updates the CPU meter | The render thread only writes aligned 64-bit values (no locks); the main thread takes differences of running totals |
 | Meter timer (30 Hz) | Peak collection, notifications, punch state. Published properties are assigned only when the value changes (assigning every tick keeps observing views redrawing and stops tooltips from appearing) | `peakLock` |
 | Child process | VST3 scan | stdout (JSON) |
@@ -222,6 +225,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - `.mydaw` is JSON (`ProjectDocument` version 5). Audio is referenced by relative WAV paths, never embedded.
 - Folders (v2.1, version 5) are saved as `folders` (name, colour, open state, M/S and `position`, the index among all rows of tracks and folders) plus each track's `folderID`. Loading inserts the folders into the track list in increasing position to rebuild the rows. Version 4 and older files open without folders. Opened in v2.0, a v2.1 file loses its folders (the tracks stay).
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
+- The master export's file name, format (`masterExportSettings`) and folder (`masterExportFolderPath`, relative when inside the project folder) are saved in the `.mydaw` as well.
 - New fields (e.g. `isInputMonitoring`, a clip's `fadeInCurve` / `fadeOutCurve`) are decoded with `decodeIfPresent`, so older files still load.
 - UI preferences such as mixer section heights, the folded mixer (`mixer.collapsed`), snap (`MyDAW.snapToGrid`), auto-scroll (`MyDAW.autoScroll`) and rollback recording (`MyDAW.recordRollback`, `MyDAW.recordRollbackBars`) live in `UserDefaults` (app-wide).
 - The start screen's Recent Projects (up to 50 `.mydaw` paths with their last-saved dates) are also kept in `UserDefaults` (key `MyDAW.recentProjects`).
@@ -311,6 +315,14 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Display**: the arranger draws `visibleRows` only (no tracks of closed folders). A folder's row has a fixed height (`TrackFolder.rowHeight` = 28 pt, not scaled by the track height zoom) and an empty lane. The header column is always 230 + 18 pt (`ArrangerLayout`); tracks in folders are shifted 18 pt right.
 - **Folders are never current**: clicking, dragging or right-clicking a folder leaves `selectedTrackId` as it is.
 
+### 4.11 Master export (v2.2)
+
+1. Menu → `beginMasterExportDialog` opens the dialog directly (no save panel). File name, folder and format (`ExportSettings`) start from the values saved in the project.
+2. Export → `ProjectState.exportMasterMix` checks the name, adds the format's extension and confirms replacing an existing file.
+3. **Capture (real time)**: `AudioEngineManager.exportMasterMix` taps the last node of the master path, plays the range the same way as normal playback, cuts it to the sample with `ExportWindow` and writes a temporary file (32-bit float CAF at the hardware rate).
+4. **Conversion**: in a detached task, `ExportEncoder.encode` reads the temporary file, resamples if needed (`AVAudioConverter`, Mastering) and writes WAV (16-bit with TPDF dither) or MP3 (LAME).
+5. The temporary file is always deleted; a cancel or failure during conversion also deletes the partial output.
+
 ---
 
 ## 5. Design decisions and lessons learned
@@ -352,15 +364,17 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | Zoomed in, the bars all rose from the centre line | Peaks (and the drawing) started their min/max at 0, so every block included 0 | True extremes from the first sample |
 | After dragging the zoom slider, waveforms disappeared or were half drawn, and the ruler jumped on the next layout | The content widens only some layout passes after a zoom, clamping the tracks' scroll short of the target, and the retry gave up after one turn; also, when the scroll time stayed the same (playhead at the left edge) the tracks were not scrolled at all, though the same time is a different offset after a zoom | Re-apply the scroll whenever the content resizes, fall back to the tracks' real position after 0.5 s, compare offsets in points, scroll after every zoom; the ruler is placed by the tracks' real offset |
 | A ruler click at the far right while zoomed out doubled the timeline | The timeline always reached a screen past the playhead (for auto-scroll) and never shrank; zoomed out, a screen is minutes | Song length from clips and end flag only; the screen-ahead extension only while playing or recording, cleared on stop; the ruler fills the view without lengthening the song |
+| macOS alone cannot write MP3 | AVFoundation / Audio Toolbox only decode MP3 | Ship LAME 3.100 as a dylib inside the app, loaded with `dlopen` (a separate, replaceable file because of the LGPL). MPEG-1 Layer III stops at 48 kHz, so 96 kHz is not offered for MP3 |
 
 ---
 
 ## 6. Known limitations
 
-- **Build**: `Package.swift` is out of date; use `./scripts/build.sh` or `MyDAW.xcodeproj`.
+- **Build**: `Package.swift` is out of date; use `./scripts/build.sh` or `MyDAW.xcodeproj`. `MyDAW.xcodeproj` lists each source file, so a new Swift file must also be added to `project.pbxproj` (eight files were missing between v1.6 and v2.1, which broke the Xcode build).
 - **Device and sample-rate changes**: the engine and VST3 instances are built for the device and rate at launch, so changes apply after a restart (MyDAW offers one when you change them).
 - **macOS default devices**: while MyDAW runs, the chosen devices are the macOS default input/output and affect other apps too. They are not restored after a crash.
 - **Shaped pieces of mismatched-rate audio**: imports are converted, but audio at a rate different from the device (for example clips recorded before a sample-rate change) has shaped and plain pieces converted separately, which can leave a tiny step at the join.
+- **Export time**: the master export captures in real time, so it takes as long as the song (then converts). MP3 files get no ID3 tag (title etc.).
 - **Heavy work on the main thread**: import conversion and Reverse run synchronously on the main thread, so long files briefly pause the UI.
 - **Input monitoring switched while playing**: takes effect after stopping — when turned on, the input is heard once tails have faded (at most 8 s); when turned off, the input stays audible until stop.
 - **Tooltip re-registration**: re-registering tooltips when an overlay goes away relies on a workaround (briefly changing the window width).
@@ -381,13 +395,13 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 ## 7. Improvement candidates
 
 ### High priority
-1. Update or remove `Package.swift` (the Xcode project was updated in v1.6).
+1. Update or remove `Package.swift` (the Xcode project lists all sources again as of v2.2).
 2. Device, sample-rate and language changes without a restart (rebuilding the engine and VST3 instances, switching the GUI language live).
 3. Automated tests, starting with pure logic (`ClipLayering`, `FadeCurve`, range edits, dB conversion, recording trim).
 4. Run import conversion and Reverse in the background with progress.
 
 ### Medium priority
-1. Split `AudioEngineManager` (~4,500 lines) into graph building, playback scheduling, recording and metering types.
+1. Split `AudioEngineManager` (~4,300 lines) into graph building, playback scheduling, recording and metering types.
 2. More robust saving (atomic writes, autosave, tracking unsaved changes).
 3. Integration with the system clipboard; undo for track reordering and vertical auto-scroll while dragging a track.
 4. Unify conversion of shaped pieces to remove joins in mismatched-rate audio.

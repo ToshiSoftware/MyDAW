@@ -1,6 +1,6 @@
 # MyDAW プロジェクト解析（v2.1）
 
-> 対象バージョン: **2.1**（2026-10-05 時点のソース）
+> 対象バージョン: **2.2**（2026-10-06 時点のソース）
 > 英語版: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 > 型・関数単位の詳細: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 
@@ -19,7 +19,7 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 | 音声基盤 | AVAudioEngine、Core Audio HAL、AUAudioUnit（v3 サブクラス） |
 | 録音形式 | 24-bit Linear PCM WAV、44.1 / 48 / 88.2 / 96 kHz、モノラル／ステレオ |
 | プラグイン | Audio Unit エフェクト、VST3 エフェクト（同名の AU がある VST3 は一覧から除外） |
-| ソース規模 | Swift 約 18,600 行 / C++ 約 900 行（`Sources/` と `VST3Host/`） |
+| ソース規模 | Swift 約 20,100 行 / C++ 約 900 行（`Sources/` と `VST3Host/`） |
 | ビルド | `./scripts/build.sh`（CMake で VST3 ブリッジを構築し `swiftc` でリンク） |
 
 ### 1.1 主な機能
@@ -39,7 +39,7 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 - **デバイス**: 入力と出力に別々のデバイスを選択可能。起動中は macOS の既定入出力を切り替え、終了時に復元。デバイス・サンプルレート変更時は保存と再起動を確認。
 - **表示言語**: GUI は日本語・英語に対応（初期値は macOS の言語）。設定画面で切り替え、再起動後に反映。
 - **曲の開始・終了フラグ**: ルーラー上に任意で設定。先頭へ戻るで開始フラグへ（もう一度で 0 へ）、終了フラグで再生・録音を停止、書き出し範囲の初期値にも使用。
-- **その他**: BPM・小節表示ルーラー（拍ごとに跳ねる再生位置の ●）、メトロノーム（再生・録音中も ON／OFF 可）、マスター書き出し（24-bit WAV、サンプル単位で正確な範囲）、プロジェクト保存／読込、WAV 取り込み（サンプルレート・ビット数を変換）、未使用の録音ファイルを `Recordings/Unused` へ移動、トラック色変更、ヘルプメニューから操作マニュアル（Web の PDF）を表示。
+- **その他**: BPM・小節表示ルーラー（拍ごとに跳ねる再生位置の ●）、メトロノーム（再生・録音中も ON／OFF 可）、マスター書き出し（ダイアログでファイル名・保存先・形式を指定。WAV 16／24-bit または MP3 固定／VBR、44.1／48／96 kHz、サンプル単位で正確な範囲）、プロジェクト保存／読込、WAV 取り込み（サンプルレート・ビット数を変換）、未使用の録音ファイルを `Recordings/Unused` へ移動、トラック色変更、ヘルプメニューから操作マニュアル（Web の PDF）を表示。
 
 ---
 
@@ -61,11 +61,13 @@ MyDAW/
 │   │   ├── ClipLayering.swift      クリップ重なり・クロスフェード計算（純粋関数）
 │   │   ├── FXChannel.swift         FX チャンネルと FXSend
 │   │   ├── ProjectDocument.swift   .mydaw JSON の DTO 群
+│   │   ├── ExportSettings.swift    マスター書き出しの形式（WAV／MP3、レート、ビット深度、MP3 モード）
 │   │   ├── StereoPeak.swift        L/R ピーク値
 │   │   └── WaveformCache.swift     波形ピークキャッシュ
 │   ├── Audio/                  音声エンジン・デバイス・プラグイン
 │   │   ├── AudioEngineManager.swift  AVAudioEngine グラフ、再生、録音、メーター
 │   │   ├── AudioDiskWriter.swift     WAV 非同期書き込み
+│   │   ├── ExportEncoder.swift       書き出しの変換（サンプルレート、16-bit ディザ、WAV、LAME による MP3）
 │   │   ├── ClipAudioProcessing.swift オフライン処理（ピーク測定、無音区間の検出、逆再生、取り込み時の変換）
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL（デバイス・チャンネル・バッファ）
 │   │   ├── AudioLoadMonitor.swift    オーディオ処理負荷の計測と音飛びの検出
@@ -95,12 +97,12 @@ MyDAW/
 ├── VST3Host/                   C++ VST3 ホストブリッジ（CMake で静的ライブラリ化）
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  翻訳（en.lproj・ja.lproj の Localizable.strings、InfoPlist.strings）
-├── scripts/                    build.sh・run.sh（正式なビルド手順）、extract-strings.sh（翻訳漏れの確認）
+├── scripts/                    build.sh・run.sh（正式なビルド手順）、build-lame.sh（MP3 エンコーダ）、extract-strings.sh（翻訳漏れの確認）
 ├── docs/                       本書、ソース仕様書、マニュアル原稿
 └── snapshots/                  作業ごとのソーススナップショット（手動バックアップ）
 ```
 
-> **注意**: `./scripts/build.sh` でも `MyDAW.xcodeproj` でも同じアプリができます。Xcode ターゲットは「Build VST3 Bridge」スクリプトフェーズ（CMake）を実行し、`OTHER_LDFLAGS` でブリッジと SDK の静的ライブラリをリンクし、署名の前に「Strip Extended Attributes」（`xattr -cr`）を実行します。どちらも arm64 のみ、アドホック署名、Hardened Runtime なしです。`Package.swift` は現行ソースに追従していません。
+> **注意**: `./scripts/build.sh` でも `MyDAW.xcodeproj` でも同じアプリができます。Xcode ターゲットは「Build VST3 Bridge」スクリプトフェーズ（CMake）を実行し、`OTHER_LDFLAGS` でブリッジと SDK の静的ライブラリをリンクし、署名の前に「Strip Extended Attributes」（翻訳のコピー、`build-lame.sh` による LAME の dylib の組み込み、`xattr -cr`）を実行します。どちらも arm64 のみ、アドホック署名、Hardened Runtime なしです。`Package.swift` は現行ソースに追従していません。
 
 ---
 
@@ -136,7 +138,7 @@ flowchart TD
 
 - **UI → ProjectState**: 画面操作は原則 `ProjectState` のメソッドを呼び、`ProjectState` がモデルを更新して `AudioEngineManager.syncTracks` などでエンジンへ反映します。
 - **ProjectState**: トラック・FX・マスター構成、UNDO／REDO、保存／読込、取り込み、書き出しの窓口です。選択・範囲選択・クリップボードなどの編集操作は拡張 `ProjectState+Editing.swift` にあります。
-- **AudioEngineManager**: AVAudioEngine のノード構成（グラフ）と再生スケジュール、録音、メーター、プラグイン生成を担う中心クラスです（約 4,500 行）。
+- **AudioEngineManager**: AVAudioEngine のノード構成（グラフ）と再生スケジュール、録音、メーター、プラグイン生成を担う中心クラスです（約 4,300 行）。
 - **ClipLayering**: クリップ重なりとフェードカーブの計算を純粋関数として切り出したもので、再生と画面表示（波形の振幅）が同じ計算を共有します。
 
 ### 3.2 オーディオ信号経路
@@ -211,6 +213,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 | オーディオ描画スレッド | AVAudioEngine の描画、`VST3AudioUnit`／`InputMonitorAudioUnit` の render block | ロックなし（事前確保バッファ）、VST3 側のみ `std::mutex`（競合なし） |
 | 入力タップスレッド | `processInputAudioBuffer`（ピーク計算、録音データ切り出し） | `captureLock`、`recordingTimingLock`、`peakLock` |
 | 書き込みキュー | `AudioDiskWriter` の WAV 書き込み | シリアル `DispatchQueue` |
+| 書き出しの変換タスク | `ExportEncoder`（サンプルレート変換、WAV／MP3 の書き込み） | `Task.detached`。進捗はメインへ渡す。取り込みの一時ファイルを読むだけで共有状態なし |
 | 負荷モニター Timer（10 Hz） | `AudioLoadMonitor`: 出力ユニットの render notify（描画スレッド上で処理時間を計測）の集計、音飛びの判定、CPU 表示の更新 | 描画スレッドは整列した 64 bit 値を書くだけ（ロックなし）。メイン側が累計の差分を取る |
 | メーター Timer（30 Hz） | ピーク集計、通知、パンチ状態更新。公開プロパティは値が変わったときだけ代入（毎回代入すると監視ビューが常時再描画され、ツールチップが出なくなる） | `peakLock` |
 | 子プロセス | VST3 スキャン | 標準出力（JSON） |
@@ -222,6 +225,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - `.mydaw` は JSON（`ProjectDocument` バージョン 5）。音声は WAV への相対パスで参照し、埋め込みません。
 - フォルダ（v2.1、バージョン 5）は `folders`（名前・色・開閉・M／S と、トラックとフォルダを合わせた行の中の位置 `position`）と、トラックごとの `folderID` で保存します。読み込みでは、トラックの列に位置の小さい順にフォルダを差し込んで行を復元します。バージョン 4 以前のファイルはフォルダなしとして開けます。v2.0 で v2.1 のファイルを開くと、フォルダは無視されます（トラックは残る）。
 - AU の状態は `fullStateForDocument` を binary plist 化、VST3 の状態は `getState` のバイト列を `format: "vst3-state"` で保存します。
+- マスター書き出しのファイル名・形式（`masterExportSettings`）・保存先（`masterExportFolderPath`。プロジェクトのフォルダ内なら相対パス）も `.mydaw` に保存します。
 - 新しい項目（`isInputMonitoring`、クリップの `fadeInCurve`／`fadeOutCurve` など）は `decodeIfPresent` で後方互換を保ちます。
 - ミキサーの区画の高さ、ミキサーをたたんだ状態（`mixer.collapsed`）、スナップ（`MyDAW.snapToGrid`）、自動スクロール（`MyDAW.autoScroll`）、録音時のロールバック（`MyDAW.recordRollback`、`MyDAW.recordRollbackBars`）など画面設定は `UserDefaults`（アプリ共通）に保存します。
 - 起動画面の「最近使ったプロジェクト」（最大 50 件、`.mydaw` のパスと最終保存日時）も `UserDefaults`（キー `MyDAW.recentProjects`）に保存します。
@@ -311,6 +315,14 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - **表示**: アレンジャーは `visibleRows`（閉じたフォルダのトラックを除く）だけを描く。フォルダの行は高さ固定（`TrackFolder.rowHeight` = 28pt、縦の拡大に追従しない）、レーンは空のまま。ヘッダ列は常に 230 + 18pt（`ArrangerLayout`）で、フォルダ内のトラックは 18pt 右へずらす。
 - **フォルダはカレントにならない**: クリック、ドラッグ、右クリックのいずれでも `selectedTrackId` を変えない。
 
+### 4.11 マスター書き出し（v2.2）
+
+1. メニュー → `beginMasterExportDialog` がダイアログを直接開く（保存パネルは使わない）。ファイル名・保存先・形式（`ExportSettings`）はプロジェクトに保存した前回の値で始まる。
+2. 「書き出し」→ `ProjectState.exportMasterMix` が名前を確認し、形式の拡張子を付け、同名ファイルがあれば置き換えを確認する。
+3. **取り込み（リアルタイム）**: `AudioEngineManager.exportMasterMix` がマスター経路の最後のノードにタップを付け、通常の再生と同じ手順で範囲を再生し、`ExportWindow` でサンプル単位に切り出して一時ファイル（ハードウェアのレートの 32-bit float CAF）へ書く。
+4. **変換**: 切り離したタスクで `ExportEncoder.encode` が一時ファイルを読み、必要ならサンプルレートを変換し（`AVAudioConverter`、Mastering）、WAV（16-bit は TPDF ディザ）または MP3（LAME）で書く。
+5. 一時ファイルは常に削除。キャンセル・失敗が変換中なら書きかけの出力も削除する。
+
 ---
 
 ## 5. 設計判断と得られた知見
@@ -352,15 +364,17 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 | 拡大すると棒がすべて中心線から伸びる | ピーク（と描画）の最小・最大の初期値が 0 で、どの区間も 0 を含んでいた | 区間の本当の最小・最大を取る |
 | ズームスライダーの操作後に波形が消える・半分しか描かれない、次のレイアウトでルーラーが飛ぶ | ズーム後は内容の幅が数回のレイアウトの後に広がり、トラックのスクロールが手前で止められ、再試行は 1 回であきらめていた。またスクロール時刻が変わらない場合（再生位置が左端など）はトラックをまったく動かしていなかった（ズーム後は同じ時刻でもスクロール量が違う） | 内容の大きさが変わるたびにスクロールし直し、0.5 秒で届かなければトラックの実際の位置に合わせる。pt で比べ、ズーム後は必ずスクロールする。ルーラーはトラックの実際の位置でずらす |
 | 縮小した状態でルーラーの右端をクリックすると曲の長さが 2 倍になる | タイムラインは（自動スクロールのため）常に再生位置の 1 画面先まであり、縮めることがなかった。縮小時は 1 画面が数分 | 曲の長さはクリップと終了フラグだけで決める。1 画面先までの延長は再生・録音中だけにし、停止で戻す。ルーラーは曲を延ばさずに画面を埋める |
+| macOS だけでは MP3 を書き出せない | AVFoundation／Audio Toolbox の MP3 は読み込み（デコード）のみ | LAME 3.100 を dylib としてアプリに同梱し、`dlopen` で読み込む（LGPL のため差し替え可能な別ファイルにする）。MPEG-1 Layer III は 48 kHz までなので、MP3 では 96 kHz を選べなくした |
 
 ---
 
 ## 6. 既知の制約
 
-- **ビルド**: `Package.swift` は現行ソースに追従していない。`./scripts/build.sh` か `MyDAW.xcodeproj` を使用すること。
+- **ビルド**: `Package.swift` は現行ソースに追従していない。`./scripts/build.sh` か `MyDAW.xcodeproj` を使用すること。`MyDAW.xcodeproj` はソースファイルを個別に登録しているため、Swift ファイルを追加したら `project.pbxproj` にも登録すること（v1.6〜2.1 の間に 8 ファイルの登録が漏れ、Xcode ビルドが失敗していた）。
 - **デバイス・サンプルレートの変更**: エンジンと VST3 インスタンスは起動時のデバイスとサンプルレートで構築されるため、変更は再起動後に反映される（変更時に再起動を確認する）。
 - **macOS の既定デバイス**: MyDAW の起動中は選択デバイスが macOS の既定入出力になり、ほかのアプリにも影響する。異常終了時は元に戻らない。
 - **異なるレートの素材の整形区間**: 取り込み時は変換されるが、サンプルレート変更前に録音したクリップなどデバイスと異なるレートの素材では、整形区間とそれ以外で変換処理が分かれるため継ぎ目にごく小さな段差が出る可能性がある。
+- **書き出しの所要時間**: マスター書き出しはリアルタイムで取り込むため、曲の長さと同じ時間がかかる（そのあと変換）。MP3 に ID3 タグ（曲名など）は付けない。
 - **重い処理のメインスレッド実行**: 取り込み時の変換と逆再生はメインスレッドで同期実行するため、長いファイルでは画面が一時停止する。
 - **再生中のインプットモニター**: 再生中の I の切り替えは停止後に反映される。オンにした場合は停止して残響が消えてから（最大 8 秒）、オフにした場合は停止まで入力が聞こえ続ける。
 - **ツールチップの再登録**: オーバーレイが消えたときのツールチップ再登録は、ウィンドウ幅を一瞬変える回避策に頼っている。
@@ -381,13 +395,13 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 ## 7. 改善候補
 
 ### 優先度高
-1. `Package.swift` の更新または削除（Xcode プロジェクトは v1.6 で更新済み）。
+1. `Package.swift` の更新または削除（Xcode プロジェクトは v2.2 で全ソースを登録済み）。
 2. 再起動なしでのデバイス・サンプルレート・言語の変更（エンジンと VST3 インスタンスの作り直し、表示言語の即時切り替え）。
 3. 自動テストの整備（`ClipLayering`、`FadeCurve`、範囲編集、dB 変換、録音トリミングなど純粋ロジックから）。
 4. 取り込み時の変換と逆再生のバックグラウンド実行（進捗表示付き）。
 
 ### 優先度中
-1. `AudioEngineManager`（約 4,500 行）の分割（グラフ構築、再生スケジュール、録音、メーターを別型へ）。
+1. `AudioEngineManager`（約 4,300 行）の分割（グラフ構築、再生スケジュール、録音、メーターを別型へ）。
 2. プロジェクト保存の堅牢化（原子的書き込み、自動保存、未保存の変更の判定）。
 3. システムのクリップボードとの連携。トラックの並べ替えの UNDO と、並べ替えドラッグ中の縦の自動スクロール。
 4. 整形区間の変換を一本化し、異なるサンプルレート素材の継ぎ目を解消。

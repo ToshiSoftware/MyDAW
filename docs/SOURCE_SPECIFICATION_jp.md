@@ -1,6 +1,6 @@
 # MyDAW ソースコード仕様書（v2.1）
 
-> 対象バージョン: **2.1** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **2.2** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -26,7 +26,7 @@
 - **`init()`**: 最初に `raiseOpenFileLimit()` で同時に開けるファイル数の上限（RLIMIT_NOFILE の soft 値、既定 256）を `kern.maxfilesperproc` と hard 値の範囲で最大 65,536 まで上げる（再生用にクリップごとに WAV を開いたままにするため、クリップが数百になると上限を超え、AppKit がメニューの部品を読めずにクラッシュした）。次に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。`.handlesExternalEvents(matching: [])` で、Finder から開いたファイルごとに SwiftUI が新しいウィンドウを作るのを防ぐ。
 - **Finder から開く**: Info.plist の `CFBundleDocumentTypes`／`UTExportedTypeDeclarations` で `.mydaw`（`com.tokada.mydaw.project`、`public.data`／`public.content` に準拠。`public.json` にすると Finder が中身のテキストをサムネイルにしてアイコンが出ない）を宣言し、`MyDAWApplicationDelegate.application(_:open:)` が受け取る（複数なら最後の 1 つ）。ウィンドウの `onAppear` で `openProjectFile` が設定されるまでは `pendingProjectURL` に保持し、設定後に `ProjectState.openProjectFile(_:)` を呼ぶ。`build.sh` は署名後に `lsregister -f` でビルドを LaunchServices に登録する。書類のアイコンは `DocumentIcon.icns`（`scripts/make-document-icon.swift` が `AppIcon.iconset` から、折り返し付きの白い書類の中央にアプリアイコンを角丸で描いて作る。アプリアイコンを変えたら再実行する）。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `2.1`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `2.2`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Save Project As…（⇧⌘S）、区切り線、Export Master Mix…、区切り線、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
   - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
@@ -132,7 +132,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 ### `ProjectDocument.swift`（`.mydaw` JSON）
 | 型 | 主な内容 |
 | --- | --- |
-| `ProjectDocument` | `version`（現行 5）、ズーム、スクロール、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、フォルダ（`folders`、v2.1）、FX、マスタープラグイン、プラグイン状態、パンチ範囲 |
+| `ProjectDocument` | `version`（現行 5）、ズーム、スクロール、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、フォルダ（`folders`、v2.1）、FX、マスタープラグイン、プラグイン状態、パンチ範囲、曲の範囲、マスター書き出しの設定（ファイル名・形式・保存先） |
 | `TrackDocument` | 名前、チャンネル、入力、R/M/S、**I（`isInputMonitoring`）**、音量、パン、高さ、色、所属フォルダ（`folderID`、v2.1）、クリップ、プラグイン、Send |
 | `TrackFolderDocument` | フォルダの ID・名前・色・開閉（`isOpen`）・M／S と、トラックとフォルダを合わせた行の中の位置 `position`。`makeFolder()` で `TrackFolder` に戻す。読み込みでは位置の小さい順にトラック列へ差し込む |
 | `ClipDocument` | ID、開始位置、ソース位置、長さ、元の長さ、ゲイン、ミュート、フェード、フェードカーブ（`fadeInCurve`／`fadeOutCurve`、読めない場合は `.auto`）、ファイルパス（プロジェクトからの相対） |
@@ -140,7 +140,9 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 | `PluginStateDocument` | `pluginID`、`stateData`、`format`（AU は plist、VST3 は `"vst3-state"`） |
 | `PunchRangeDocument` | `startBeat`、`endBeat`、`enabled` |
 | `SongRangeDocument` | 曲の開始・終了フラグ。`startBeat`、`endBeat`（どちらも省略可） |
-| `ProjectDocument.masterExportFileName` | マスター書き出しで最後に選んだファイル名（省略可）。書き出しパネルはプロジェクトのフォルダで、この名前か `<プロジェクト名>_Master_Mix.wav` で開く |
+| `ProjectDocument.masterExportFileName` | マスター書き出しで最後に使ったファイル名（拡張子付き、省略可）。ダイアログには拡張子を除いて表示。無ければ `<プロジェクト名>_Master_Mix` |
+| `ProjectDocument.masterExportSettings` | （v2.2）マスター書き出しで最後に使った `ExportSettings`（省略可。最初の書き出しまでは無く、そのときダイアログはハードウェアのレートが 44.1／48／96 kHz ならそれで始まる） |
+| `ProjectDocument.masterExportFolderPath` | （v2.2）書き出し先フォルダ（省略可。nil はプロジェクトのフォルダ）。プロジェクトのフォルダ内なら相対パス、フォルダ自体は `.`、外なら絶対パス。存在しないフォルダはプロジェクトのフォルダに戻す |
 | `ColorDocument` | RGBA |
 
 全デコーダは `decodeIfPresent` で欠落項目に既定値を補い、旧バージョンのファイルを読み込めます。
@@ -162,8 +164,11 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 - **FX**: `addFXChannel()`（名前は既存の "FX 数字" の最大値 + 1、色は最初の FX と同じ）、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
 - **ファイル**: `createNewProject`（NSSavePanel で保存先と名前を指定。`canCreateDirectories`、展開表示、拡張子 `.mydaw`。選んだフォルダーに `.mydaw` と `Recordings/` を作成）、`loadProject`（NSOpenPanel で `.mydaw` ファイルを選び、その親フォルダーをプロジェクトフォルダーとする）。両パネルの初期位置は直前のプロジェクトのフォルダーの 1 つ上（`projectPanelStartDirectory`）。`openRecentProject(_:)`（ファイルの存在を確認し、そのフォルダーで `loadProject(from:projectFolderURL:)`）、`saveProject`（書き込みに成功すると `RecentProjects.noteSaved`。`loadProject(from:)` は成功時に `noteOpened`）、`saveProjectAndShowConfirmation`、`openProjectFile(_:)`（Finder から開く。アプリを前面に出し、同じファイルが開いていれば何もしない。再生・録音中はエラー。プロジェクトが開いていれば保存／保存しない／キャンセルを確認してから `loadProject(from:projectFolderURL:)`）、`saveProjectAs()`（NSAlert のテキスト欄で名前だけを入力し、同じフォルダーの `<名前>.mydaw` へ保存して `currentProjectURL` を切り替える。空・「.」始まり・「/」「:」を含む名前は拒否、既存ファイルは置き換えを確認、失敗時は元の URL に戻す）、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
 - **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
-- **書き出し**: `beginMasterExportDialog`、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。
+- **書き出し**: `beginMasterExportDialog`（保存パネルを出さず、ダイアログを直接開く）、`masterExportSettings`／`masterExportBaseName`／`masterExportFolder`（ダイアログの選択内容）、`chooseMasterExportFolder`（NSOpenPanel、フォルダのみ）、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。`exportMasterMix` は名前を確認し（「別名で保存」と同じ規則。入力された .wav／.mp3 は除く）、形式の拡張子を付け、同名ファイルがあれば置き換えを確認してから、(1) `AudioEngineManager.exportMasterMix` でマスターを一時ファイル（`NSTemporaryDirectory` の 32-bit float CAF）へリアルタイムで取り込み、(2) 切り離したタスクで `ExportEncoder.encode` を実行する。`masterExportStage`（`.capturing`／`.converting`）と `masterExportProgress`（0〜1）がダイアログの進捗バーに使われる。キャンセル・失敗時は書きかけの出力を削除し、一時ファイルは常に削除する。
 - **表示**: `zoomIn`、`zoomOut`、`setPixelsPerSecond(_:)`（再生位置を基準）、`setPixelsPerSecond(_:anchorOffset:)`（ポインター位置を基準、ホイール・ピンチ用。どちらもスクロール時刻が変わらなくても `setScrollTimeAfterZoom` でトラックをスクロールする）、`minimumPixelsPerSecond`／`maximumPixelsPerSecond`（5／3200）、`snappedTimelineTime`（1 拍単位）。
+
+### `ExportSettings.swift`（v2.2 新規）
+マスター書き出しの形式（Codable。`ProjectDocument.masterExportSettings` に保存）: `format`（`.wav`／`.mp3`）、`sampleRate`（44.1／48／96 kHz。MP3 は MPEG-1 Layer III の上限により 44.1／48 kHz）、`wavBitDepth`（16／24）、`mp3Mode`（`.constant`／`.variable`）、`mp3Bitrate`（128／192／256／320 kbps）、`mp3VBRQuality`（V0／V2／V4）。初期値は WAV、48 kHz、24-bit、MP3 は固定 320 kbps、V0。`normalize()` は選択肢にない値を戻す（例: MP3 で 96 kHz → 48 kHz）。デコード時にも呼ぶ。
 
 ### `RecentProjects.swift`（v1.8 新規）
 - **`RecentProject: Codable, Identifiable`**: `path`（`.mydaw` ファイルのパス。正規化済みで `id` を兼ねる）、`lastSavedAt`。派生値 `url`、`name`（拡張子を除いたファイル名）、`exists`。
@@ -254,7 +259,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 - **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind(tracks:to:)`、`seek(to:)`、`setPunchRange`（ロールバックの回の間は無視）。`recordRollbackDuration`（秒。`toggleTransport` が設定）: armed トラックがありパンチ範囲がない録音のとき、`beginPlayOrRecord` がその回を「再生位置でパンチイン、パンチアウト +∞」の録音にし（`isRollbackPass`）、再生位置をその分戻す。`stop` で一時的な範囲を消す。`recordingTakePunchIn`／`recordingTakePunchOut`: 録音中のテイクのパンチ範囲（`recordingTakePunchTrim`）。ファイル確定まで保持し、波形レーンはその範囲内だけを描く。`songEndTime`: 再生位置タイマーがこれをまたぐと `onReachSongEnd` を呼びます（それより前から再生を始めた場合のみ）。この停止では、録音したクリップを終了位置で切り揃え、再生位置を終了位置に置きます。
 - **デバイス**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（デバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
 - **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`。
-- **その他**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:)`（マスター経路を実時間で 24-bit WAV へ）、`shutdown()`（エンジン停止、VST3 解放、macOS 既定入出力デバイスの復元）、録音フォルダ関連。
+- **その他**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:progress:)`（マスター経路を実時間でハードウェアのレートの 32-bit float ファイルへ。取り込んだ割合を通知し、レートを返す）、`shutdown()`（エンジン停止、VST3 解放、macOS 既定入出力デバイスの復元）、録音フォルダ関連。
 
 #### 主な内部処理
 | メソッド | 内容 |
@@ -282,6 +287,12 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 
 #### スレッド・ロック
 `captureLock`（録音設定・writer）、`recordingTimingLock`（開始時刻）、`peakLock`（ピーク）。タップと Timer はこれらを介してメインスレッドと値を交換します。
+
+### `ExportEncoder.swift`（v2.2 新規）
+リアルタイムで取り込んだファイルを、書き出す形式に変換する（`encode(source:to:settings:progress:)`。メインスレッド外で実行し、チャンクごとに `Task.isCancelled` を確認）。
+- 取り込みファイルを 32,768 フレームずつ読む。書き出しのレートが取り込みのレートと違えば `AVAudioConverter`（品質 max、`AVSampleRateConverterAlgorithm_Mastering`）で変換する。
+- **WAV**: 24-bit は float のまま `AVAudioFile` に変換させる。16-bit はここで量子化する：±1 LSB の TPDF ディザ（xorshift32 の一様乱数 2 つの差）を加え、丸めて Int16 にクリップ。
+- **MP3**: LAME（`Contents/Frameworks` の `libmp3lame.0.dylib`。初回使用時に `dlopen`／`dlsym` で読み込むので、LGPL のライブラリを差し替えられ、無くてもアプリは動く。その場合 `isMP3Available` が false になり、ダイアログで MP3 を無効にする）。ジョイントステレオ、`lame_set_quality(2)`。固定は `lame_set_brate`、VBR は `vbr_mtrh` と `lame_set_VBR_q` 0／2／4。`lame_encode_buffer_ieee_float` でエンコードしてフラッシュし、最後に `lame_get_lametag_frame`（長さとエンコーダ遅延を持つ Xing／LAME ヘッダ）を先頭フレームに上書きする。ID3 タグは付けない。
 
 ### `ClipAudioProcessing.swift`（v1.6 新規）
 クリップが参照するファイル範囲に対するオフライン処理（メインスレッドで同期実行）。
@@ -358,6 +369,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### `MainDAWView.swift`
 上からトランスポート、アレンジャー、ミキサー、ステータスバー（デバイス、`AudioLoadIndicator`、録音フォルダー、ショートカットの案内）を配置。タイトルバーの帯（`.hiddenTitleBar` で標準のタイトルは非表示）の中央に `ProjectState.openProjectName` をオーバーレイで表示する（帯の高さは GeometryReader の `frame(in: .global).minY`＝内容の上端までの距離。その分だけ上にずらして表示し、クリックは通す。`ignoresSafeArea` した GeometryReader の `safeAreaInsets.top` はこの環境では 0 になり使えなかった）。ウィンドウのタイトル（`navigationTitle`）も「MyDAW - <名前>」にする（Window メニュー・Mission Control 用。プラグインのウィンドウとは「MyDAW」で始まるかで区別している）。`currentProjectURL` は表示を更新するため `@Published`。起動ログ（プラグイン検出の進捗。表示を終えたらビュー階層から外す）、マスター書き出しダイアログ、ウィンドウを閉じる時の確認、キー処理（`SpacebarHandler`: ⌘Z／⇧⌘Z／⌘Y、← で先頭へ、R で録音（`toggleTransport(recordArmedTracks: true)`。録音ボタンと同じ。キーリピートは無視）、⌘X／⌘C／⌘V／⌘A を `EditCommand` として処理、Esc で選択解除（イベントは通過させる）。テキスト入力中は処理しない）を含む。
+- **`MasterExportDialog`**: ファイル名欄（拡張子は形式に合わせて表示）、保存先と**変更…**、形式、サンプルレート（MP3 は 44.1／48 のみ）、続いて WAV ならビット深度、MP3 ならモードとビットレート／VBR 品質、開始・終了（秒）、2 段階の進捗バー。設定を変えると `ExportSettings.normalize` で正し、「完了」表示を消す。`ExportEncoder.isMP3Available` が false なら MP3 を無効にする。
 - **最小サイズ**: 外枠は `.frame(minWidth: 800)` だけで、高さの下限は付けない（付けると内容の最小の高さが隠れ、ウィンドウが内容より小さくなってトランスポートとミキサーが切れる）。ウィンドウの最小の高さ＝トランスポート＋アレンジャーの最小（`minimumArrangerHeight` = 180pt）＋ミキサー＋ステータスバー。
 - **アレンジャーの高さ**: `arrangerHeight` を読み取り、`MixerView` へ `growthLimit`（アレンジャーが最小になるまでの余り）として渡す。
 - **`TitleBarZoomHandler`** を背景に置く（`WindowCloseHandler.swift`）。

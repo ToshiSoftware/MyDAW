@@ -150,11 +150,21 @@ public final class ProjectState: ObservableObject {
     @Published public var isExportingMasterMix = false
     @Published public var masterExportCompleted = false
     @Published public var masterExportError: String?
+    /// What the running export is doing, and how far (0...1).
+    @Published public private(set) var masterExportStage: MasterExportStage = .capturing
+    @Published public private(set) var masterExportProgress: Double = 0.0
+    /// The format chosen in the export dialog; saved with the project.
+    @Published public var masterExportSettings = ExportSettings()
+    /// The export file name without extension, as edited in the dialog.
+    @Published public var masterExportBaseName = ""
+    /// The folder the export goes to (nil: the project folder).
+    @Published public private(set) var masterExportFolderURL: URL?
     @Published public private(set) var saveConfirmationMessage: String?
     @Published public private(set) var isProjectOpen = false
-    public var masterExportURL: URL?
     /// The master export's file name as last chosen; saved with the project.
     public var masterExportFileName: String?
+    /// True when the project has its own saved export format.
+    private var hasSavedMasterExportSettings = false
     private var masterExportTask: Task<Void, Never>?
     private var saveConfirmationTask: Task<Void, Never>?
     @Published public private(set) var canUndo = false
@@ -696,53 +706,149 @@ public final class ProjectState: ObservableObject {
         }
     }
 
+    public enum MasterExportStage {
+        case capturing, converting
+    }
+
     public func beginMasterExportDialog() {
         guard !audioEngine.isPlaying && !audioEngine.isRecording else { return }
-        let panel = NSSavePanel()
-        panel.title = String(localized: "Export Master Mix")
-        panel.nameFieldStringValue = masterExportFileName ?? defaultMasterExportFileName
-        panel.directoryURL = projectFolderURL ?? audioEngine.recordingsDirectory.deletingLastPathComponent()
-        panel.allowedContentTypes = [.wav]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        masterExportURL = url
-        masterExportFileName = url.lastPathComponent
+        let savedName = masterExportFileName ?? defaultMasterExportBaseName
+        let savedExtension = (savedName as NSString).pathExtension.lowercased()
+        masterExportBaseName = ExportSettings.FileFormat(rawValue: savedExtension) != nil
+            ? (savedName as NSString).deletingPathExtension
+            : savedName
+        if !hasSavedMasterExportSettings,
+           ExportSettings.sampleRates.contains(audioEngine.hardwareSampleRate) {
+            // First export of this project: the rate it is recorded at.
+            masterExportSettings.sampleRate = audioEngine.hardwareSampleRate
+        }
+        masterExportSettings.normalize()
+        if let folder = masterExportFolderURL,
+           !FileManager.default.fileExists(atPath: folder.path) {
+            masterExportFolderURL = nil
+        }
         masterExportCompleted = false
         masterExportError = nil
+        masterExportProgress = 0.0
         isShowingMasterExportDialog = true
     }
 
-    /// "<project name>_Master_Mix.wav".
-    private var defaultMasterExportFileName: String {
+    /// The folder the export goes to.
+    public var masterExportFolder: URL {
+        masterExportFolderURL ?? projectFolderURL ?? audioEngine.recordingsDirectory.deletingLastPathComponent()
+    }
+
+    public func chooseMasterExportFolder() {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Choose Export Folder")
+        panel.prompt = String(localized: "Choose")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = masterExportFolder
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        masterExportFolderURL = url.standardizedFileURL
+        masterExportCompleted = false
+        masterExportError = nil
+    }
+
+    /// "<project name>_Master_Mix".
+    private var defaultMasterExportBaseName: String {
         let projectName = currentProjectURL?.deletingPathExtension().lastPathComponent
             ?? projectFolderURL?.lastPathComponent
             ?? "MyDAW"
-        return "\(projectName)_Master_Mix.wav"
+        return "\(projectName)_Master_Mix"
     }
 
     public func exportMasterMix(startTime: Double, endTime: Double) {
-        guard !isExportingMasterMix, let url = masterExportURL else { return }
+        guard !isExportingMasterMix else { return }
+        var settings = masterExportSettings
+        settings.normalize()
+        masterExportSettings = settings
+
+        var name = masterExportBaseName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typedExtension = (name as NSString).pathExtension.lowercased()
+        if ExportSettings.FileFormat(rawValue: typedExtension) != nil {
+            name = (name as NSString).deletingPathExtension
+        }
+        guard !name.isEmpty, !name.hasPrefix("."),
+              name.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) == nil else {
+            masterExportError = String(localized: "The name cannot be empty, start with “.”, or contain “/” or “:”.")
+            return
+        }
+        masterExportBaseName = name
+        let fileName = "\(name).\(settings.format.fileExtension)"
+        let url = masterExportFolder.appendingPathComponent(fileName)
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            let replace = NSAlert()
+            replace.messageText = String(localized: "\(fileName) already exists. Do you want to replace it?")
+            replace.alertStyle = .warning
+            replace.addButton(withTitle: String(localized: "Replace"))
+            let keepButton = replace.addButton(withTitle: String(localized: "Cancel"))
+            keepButton.keyEquivalent = "\u{1b}"
+            guard replace.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        masterExportFileName = fileName
+        hasSavedMasterExportSettings = true
         isExportingMasterMix = true
         masterExportCompleted = false
         masterExportError = nil
+        masterExportStage = .capturing
+        masterExportProgress = 0.0
 
+        // The master is captured in real time into a float file, then
+        // converted to the chosen format.
+        let captureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MyDAW-export-\(UUID().uuidString).caf")
         masterExportTask = Task { @MainActor in
+            var isWritingOutput = false
+            defer {
+                try? FileManager.default.removeItem(at: captureURL)
+                masterExportTask = nil
+            }
             do {
                 try await audioEngine.exportMasterMix(
-                    to: url,
+                    to: captureURL,
                     startTime: startTime,
                     endTime: endTime,
                     tracks: tracks,
-                    fxChannels: fxChannels
+                    fxChannels: fxChannels,
+                    progress: { fraction in
+                        self.masterExportProgress = fraction
+                    }
                 )
+                try Task.checkCancellation()
+                masterExportStage = .converting
+                masterExportProgress = 0.0
+                isWritingOutput = true
+                let conversion = Task.detached(priority: .userInitiated) {
+                    try ExportEncoder.encode(source: captureURL, to: url, settings: settings) { fraction in
+                        Task { @MainActor in
+                            guard self.masterExportStage == .converting else { return }
+                            self.masterExportProgress = fraction
+                        }
+                    }
+                }
+                try await withTaskCancellationHandler {
+                    try await conversion.value
+                } onCancel: {
+                    conversion.cancel()
+                }
                 isExportingMasterMix = false
                 masterExportCompleted = true
             } catch {
                 isExportingMasterMix = false
-                if !Task.isCancelled {
+                // A partly written file is not kept.
+                if isWritingOutput {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                if !Task.isCancelled && !(error is CancellationError) {
                     masterExportError = error.localizedDescription
                 }
             }
-            masterExportTask = nil
         }
     }
 
@@ -1203,7 +1309,13 @@ public final class ProjectState: ObservableObject {
             pluginStates: audioEngine.capturePluginStates(),
             punchRange: punchRange,
             songRange: songRange,
-            masterExportFileName: masterExportFileName
+            masterExportFileName: masterExportFileName,
+            masterExportSettings: hasSavedMasterExportSettings ? masterExportSettings : nil,
+            masterExportFolderPath: masterExportFolderURL.map { folder in
+                folder.standardizedFileURL.path == projectFolderURL.standardizedFileURL.path
+                    ? "."
+                    : relativePath(for: folder, to: projectFolderURL)
+            }
         )
 
         do {
@@ -1454,6 +1566,9 @@ public final class ProjectState: ObservableObject {
             audioEngine.recordingsDirectory = recordingsURL.standardizedFileURL
             // A new project starts from its own default export name.
             masterExportFileName = nil
+            masterExportSettings = ExportSettings()
+            hasSavedMasterExportSettings = false
+            masterExportFolderURL = nil
             isProjectOpen = true
             return saveProject()
         } catch {
@@ -1549,6 +1664,11 @@ public final class ProjectState: ObservableObject {
             punchRange = document.punchRange
             songRange = document.songRange
             masterExportFileName = document.masterExportFileName
+            masterExportSettings = document.masterExportSettings ?? ExportSettings()
+            hasSavedMasterExportSettings = document.masterExportSettings != nil
+            masterExportFolderURL = document.masterExportFolderPath.map {
+                $0 == "." ? projectFolderURL : resolveClipURL($0, relativeTo: projectFolderURL)
+            }
             audioEngine.setSavedPluginStates(document.pluginStates)
             let beatDuration = 60.0 / max(20.0, min(400.0, document.bpm))
             audioEngine.setPunchRange(

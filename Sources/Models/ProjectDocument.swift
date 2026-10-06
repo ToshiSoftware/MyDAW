@@ -64,10 +64,15 @@ public struct ProjectDocument: Codable {
     public let songRange: SongRangeDocument
     /// File name last used for the master export (nil: the default).
     public let masterExportFileName: String?
+    /// Format last used for the master export (nil: never exported).
+    public let masterExportSettings: ExportSettings?
+    /// Folder of the master export, relative to the project folder when
+    /// inside it ("." is the project folder itself; nil: the project folder).
+    public let masterExportFolderPath: String?
 
     private enum CodingKeys: String, CodingKey {
         case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
-        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, folders, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName
+        case showsBeats, bpm, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, folders, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName, masterExportSettings, masterExportFolderPath
     }
 
     public init(
@@ -91,7 +96,9 @@ public struct ProjectDocument: Codable {
         pluginStates: [PluginStateDocument] = [],
         punchRange: PunchRangeDocument = PunchRangeDocument(),
         songRange: SongRangeDocument = SongRangeDocument(),
-        masterExportFileName: String? = nil
+        masterExportFileName: String? = nil,
+        masterExportSettings: ExportSettings? = nil,
+        masterExportFolderPath: String? = nil
     ) {
         self.version = 5
         self.pixelsPerSecond = pixelsPerSecond
@@ -115,6 +122,8 @@ public struct ProjectDocument: Codable {
         self.punchRange = punchRange
         self.songRange = songRange
         self.masterExportFileName = masterExportFileName
+        self.masterExportSettings = masterExportSettings
+        self.masterExportFolderPath = masterExportFolderPath
     }
 
     public init(from decoder: Decoder) throws {
@@ -141,6 +150,8 @@ public struct ProjectDocument: Codable {
         punchRange = try values.decodeIfPresent(PunchRangeDocument.self, forKey: .punchRange) ?? PunchRangeDocument()
         songRange = try values.decodeIfPresent(SongRangeDocument.self, forKey: .songRange) ?? SongRangeDocument()
         masterExportFileName = try values.decodeIfPresent(String.self, forKey: .masterExportFileName)
+        masterExportSettings = try values.decodeIfPresent(ExportSettings.self, forKey: .masterExportSettings)
+        masterExportFolderPath = try values.decodeIfPresent(String.self, forKey: .masterExportFolderPath)
     }
 }
 

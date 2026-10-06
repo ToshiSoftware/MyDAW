@@ -1,6 +1,6 @@
 # MyDAW Source Code Specification (v2.1)
 
-> Version covered: **2.1** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
+> Version covered: **2.2** / Japanese edition: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 > System structure, signal paths and design decisions: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 
 For every file under `Sources/` and `VST3Host/`, this document describes responsibilities, types, the contracts of the main properties and methods, threading assumptions and side effects. Private methods are listed only where they are needed to follow the processing flow.
@@ -26,7 +26,7 @@ For every file under `Sources/` and `VST3Host/`, this document describes respons
 - **`init()`**: first raises the open-file limit with `raiseOpenFileLimit()` (RLIMIT_NOFILE soft value, 256 by default, up to 65,536 within `kern.maxfilesperproc` and the hard value): every clip keeps its WAV open for playback, and with hundreds of clips the limit was reached and AppKit crashed when it could not load menu resources. Then calls `PluginManager.runVST3ScanChildIfRequested()`. If launched with `--scan-vst3 <path>`, the process enumerates that VST3, writes JSON to stdout and exits (child-process mode). Otherwise it requests microphone permission.
 - **`body`**: a `WindowGroup` with `MainDAWView`, plus menus. The window uses `.hiddenTitleBar` (a transparent title bar with the content running under it) and `.windowResizability(.contentMinSize)` (it cannot get smaller than its content's minimum). `.handlesExternalEvents(matching: [])` stops SwiftUI from opening another window for each file opened from the Finder.
 - **Opening from the Finder**: Info.plist declares `.mydaw` (`com.tokada.mydaw.project`, conforming to `public.data` / `public.content`; with `public.json` the Finder shows the text as a thumbnail instead of the icon) in `CFBundleDocumentTypes` / `UTExportedTypeDeclarations`; `MyDAWApplicationDelegate.application(_:open:)` receives it (the last one when several). Until the window's `onAppear` sets `openProjectFile`, the file waits in `pendingProjectURL`; then `ProjectState.openProjectFile(_:)` is called. `build.sh` registers the build with LaunchServices (`lsregister -f`) after signing. The document icon is `DocumentIcon.icns`, drawn by `scripts/make-document-icon.swift` from `AppIcon.iconset`: a white page with a folded corner and the app icon, rounded, in the middle. Run it again whenever the app icon changes. Menus:
-  - About (shows the version; falls back to `2.1` without Info.plist)
+  - About (shows the version; falls back to `2.2` without Info.plist)
   - File: New Project… (⌘N), Open Project… (⌘O), Save Project… (⌘S), Save Project As… (⇧⌘S), separator, Export Master Mix…, separator, Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit (⌘Z), Redo Clip Edit (⇧⌘Z / ⌘Y)
   - Help: MyDAW Help (⌘?). Opens `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` for `AppLanguage.current` with `NSWorkspace.open` (the system picks the app)
@@ -132,7 +132,7 @@ L/R peak values. `init(buffer:)` computes each channel's maximum absolute sample
 ### `ProjectDocument.swift` (`.mydaw` JSON)
 | Type | Main contents |
 | --- | --- |
-| `ProjectDocument` | `version` (currently 5), zoom, scroll, playhead, BPM, metronome, master volume, display scales, tracks, folders (`folders`, v2.1), FX, master plug-ins, plug-in states, punch range |
+| `ProjectDocument` | `version` (currently 5), zoom, scroll, playhead, BPM, metronome, master volume, display scales, tracks, folders (`folders`, v2.1), FX, master plug-ins, plug-in states, punch range, song range, master export settings (file name, format, folder) |
 | `TrackDocument` | Name, channels, input, R/M/S, **I (`isInputMonitoring`)**, volume, pan, height, colour, folder (`folderID`, v2.1), clips, plug-ins, sends |
 | `TrackFolderDocument` | A folder's ID, name, colour, open state (`isOpen`), M / S and `position`, its index among all rows of tracks and folders. `makeFolder()` turns it back into a `TrackFolder`; loading inserts folders into the track list in increasing position |
 | `ClipDocument` | ID, start, source offset, duration, original duration, gain, mute, fades, fade curves (`fadeInCurve` / `fadeOutCurve`, `.auto` if unreadable), file path (relative to the project) |
@@ -140,7 +140,9 @@ L/R peak values. `init(buffer:)` computes each channel's maximum absolute sample
 | `PluginStateDocument` | `pluginID`, `stateData`, `format` (plist for AU, `"vst3-state"` for VST3) |
 | `PunchRangeDocument` | `startBeat`, `endBeat`, `enabled` |
 | `SongRangeDocument` | Song start / end flags: optional `startBeat`, `endBeat` |
-| `ProjectDocument.masterExportFileName` | File name last chosen for the master export (optional). The export panel opens in the project folder with this name, or `<project name>_Master_Mix.wav` |
+| `ProjectDocument.masterExportFileName` | File name (with extension) last used for the master export (optional). The dialog shows it without the extension; without it, `<project name>_Master_Mix` |
+| `ProjectDocument.masterExportSettings` | (v2.2) `ExportSettings` last used for the master export (optional; absent until the first export, when the dialog starts from the hardware rate if it is 44.1 / 48 / 96 kHz) |
+| `ProjectDocument.masterExportFolderPath` | (v2.2) Export folder (optional; nil: the project folder). Relative to the project folder when inside it, `.` for the folder itself, absolute otherwise. A folder that no longer exists falls back to the project folder |
 | `ColorDocument` | RGBA |
 
 Every decoder uses `decodeIfPresent` with defaults, so files from older versions load.
@@ -162,8 +164,11 @@ Every decoder uses `decodeIfPresent` with defaults, so files from older versions
 - **FX**: `addFXChannel()` (named one past the highest "FX number", coloured like the first FX channel), `renameFXChannel(id:to:)` (ignores empty names), `removeFXChannel(id:)` (the UI calls `confirmRemoveFXChannel(id:)`; the NSAlert makes Return and Esc cancel), `setSend(trackID:fxChannelID:level:)`.
 - **Files**: `createNewProject` (an NSSavePanel for folder and name: `canCreateDirectories`, opened expanded, `.mydaw` type; creates the `.mydaw` and `Recordings/` in the chosen folder), `loadProject` (an NSOpenPanel for a `.mydaw` file; its parent becomes the project folder). Both panels start one level above the last project's folder (`projectPanelStartDirectory`). `openRecentProject(_:)` (checks the file exists, then `loadProject(from:projectFolderURL:)` with the file's folder), `saveProject` (a successful write calls `RecentProjects.noteSaved`; a successful `loadProject(from:)` calls `noteOpened`), `saveProjectAndShowConfirmation`, `openProjectFile(_:)` (from the Finder: brings the app to the front, does nothing if that file is already open, shows an error while playing or recording, and asks Save / Don't Save / Cancel when a project is open before `loadProject(from:projectFolderURL:)`), `saveProjectAs()` (asks only for a name in an NSAlert text field, saves to `<name>.mydaw` in the same folder and switches `currentProjectURL`; rejects empty names, a leading “.”, “/” and “:”, confirms replacing an existing file, restores the old URL on failure), `importAudioFile(_:intoTrackId:)` (copies 24-bit integer PCM at the current rate as is; otherwise converts it with `ClipAudioProcessing.writeConverted` into `Recordings/`), `locateClipFile` (matching sample rate only).
 - **Restart**: `promptRestartForAudioSettings()` (after a device, sample-rate or language change, asks Save and Restart / Restart Without Saving / Cancel), `relaunch()` (a `/bin/sh` waits for this process to exit, then `open -n` relaunches with the project as an argument).
-- **Export**: `beginMasterExportDialog`, `exportMasterMix(startTime:endTime:)`, `cancelMasterExport`.
+- **Export**: `beginMasterExportDialog` (opens the dialog directly; no save panel), `masterExportSettings` / `masterExportBaseName` / `masterExportFolder` (the dialog's choices), `chooseMasterExportFolder` (NSOpenPanel, folders only), `exportMasterMix(startTime:endTime:)`, `cancelMasterExport`. `exportMasterMix` checks the name (same rules as Save As; a typed .wav / .mp3 is dropped), adds the format's extension, confirms replacing an existing file, then (1) has `AudioEngineManager.exportMasterMix` capture the master in real time into a temporary 32-bit float CAF (`NSTemporaryDirectory`) and (2) runs `ExportEncoder.encode` in a detached task. `masterExportStage` (`.capturing` / `.converting`) and `masterExportProgress` (0…1) drive the dialog's progress bar. Cancel or failure deletes the partial output; the temporary file is always deleted.
 - **View**: `zoomIn`, `zoomOut`, `setPixelsPerSecond(_:)` (keeps the playhead in place), `setPixelsPerSecond(_:anchorOffset:)` (keeps the pointer position in place; for wheel and pinch; both scroll the tracks even when the scroll time stays the same, through `setScrollTimeAfterZoom`), `minimumPixelsPerSecond` / `maximumPixelsPerSecond` (5 / 3200), `snappedTimelineTime` (one beat).
+
+### `ExportSettings.swift` (new in v2.2)
+The master export format (Codable, saved in `ProjectDocument.masterExportSettings`): `format` (`.wav` / `.mp3`), `sampleRate` (44.1 / 48 / 96 kHz; MP3 44.1 / 48 kHz, the MPEG-1 Layer III limit), `wavBitDepth` (16 / 24), `mp3Mode` (`.constant` / `.variable`), `mp3Bitrate` (128 / 192 / 256 / 320 kbps), `mp3VBRQuality` (V0 / V2 / V4). Defaults: WAV, 48 kHz, 24-bit, MP3 constant 320 kbps, V0. `normalize()` pulls values outside the choices back (e.g. MP3 at 96 kHz → 48 kHz); the decoder calls it too.
 
 ### `RecentProjects.swift` (new in v1.8)
 - **`RecentProject: Codable, Identifiable`**: `path` (the `.mydaw` file, standardised; also the `id`), `lastSavedAt`; derived `url`, `name` (file name without extension), `exists`.
@@ -254,7 +259,7 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 - **Transport**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)` (starts playback/recording, or stops if running), `stop(tracks:)`, `rewind(tracks:to:)`, `seek(to:)`, `setPunchRange` (ignored during a rollback pass). `recordRollbackDuration` (seconds; set by `toggleTransport`): when recording with armed tracks and no punch range, `beginPlayOrRecord` makes the pass a punch-in at the playhead with punch-out +∞ (`isRollbackPass`) and moves the playhead back by it; `stop` clears that range. `recordingTakePunchIn` / `recordingTakePunchOut`: the punch range of the take being recorded (`recordingTakePunchTrim`), kept until its file is finalized; the lanes draw only the part inside it. `songEndTime`: the playhead timer calls `onReachSongEnd` when it crosses it (only if playback started before it); that stop cuts recorded clips at it and leaves the playhead there.
 - **Devices**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)` (sets the device sample rate and calls `bindIODevice` when the devices change), `applyInputBufferFrameSize`, `applyAutomaticTimingCompensation`.
 - **Plug-ins**: `openPluginUI(pluginID:)`, `isPluginUnavailable`, `capturePluginStates`, `setSavedPluginStates`, `prepareForPluginGraphRestore`.
-- **Other**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:)` (renders the master path in real time to 24-bit WAV), `shutdown()` (stops the engine, releases VST3, restores the macOS default input/output devices), recordings folder helpers.
+- **Other**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:progress:)` (renders the master path in real time to a 32-bit float file at the hardware rate, reports the captured fraction, returns the rate), `shutdown()` (stops the engine, releases VST3, restores the macOS default input/output devices), recordings folder helpers.
 
 #### Main internals
 | Method | Purpose |
@@ -282,6 +287,12 @@ The central class (@MainActor, `NSWindowDelegate`) for the AVAudioEngine graph, 
 
 #### Threads and locks
 `captureLock` (recording config, writers), `recordingTimingLock` (start time), `peakLock` (peaks). The tap and timers exchange values with the main thread through these.
+
+### `ExportEncoder.swift` (new in v2.2)
+Converts the real-time capture into the exported file, off the main thread (`encode(source:to:settings:progress:)`, checks `Task.isCancelled` per chunk).
+- Reads the capture in 32,768-frame chunks. When the export rate differs from the capture rate, `AVAudioConverter` resamples (quality max, `AVSampleRateConverterAlgorithm_Mastering`).
+- **WAV**: 24-bit is written from float by `AVAudioFile`. 16-bit is quantized here: TPDF dither of ±1 LSB (two xorshift32 uniforms), rounded and clipped to Int16.
+- **MP3**: LAME (`libmp3lame.0.dylib` in `Contents/Frameworks`, loaded with `dlopen`/`dlsym` on first use, so the LGPL library stays replaceable and the app runs without it; `isMP3Available` then is false and the dialog disables MP3). Joint stereo, `lame_set_quality(2)`; constant: `lame_set_brate`; VBR: `vbr_mtrh` with `lame_set_VBR_q` 0 / 2 / 4. Encodes with `lame_encode_buffer_ieee_float`, flushes, then writes `lame_get_lametag_frame` (Xing/LAME header with length and encoder delay) over the first frame. No ID3 tag.
 
 ### `ClipAudioProcessing.swift` (new in v1.6)
 Offline processing of the file range a clip plays (runs synchronously on the main thread).
@@ -358,6 +369,7 @@ Generic UI that builds sliders from an AU's parameter tree (used when there is n
 
 ### `MainDAWView.swift`
 Stacks the transport, arranger, mixer and status bar (device, `AudioLoadIndicator`, recordings folder, shortcut hints). The open project's name (`ProjectState.openProjectName`) is overlaid in the middle of the title-bar strip (the standard title is hidden by `.hiddenTitleBar`), with the strip height taken as the content's distance from the window top (`frame(in: .global).minY`) and the text shifted up by it; clicks pass through (`safeAreaInsets.top` of a GeometryReader that ignores the safe area reads 0 here, so it cannot be used). The window title (`navigationTitle`) becomes “MyDAW - <name>” for the Window menu and Mission Control (plug-in windows are told apart by the “MyDAW” prefix). `currentProjectURL` is `@Published` so the name updates. Contains the startup log (plug-in discovery progress; removed from the view hierarchy once done), the master export dialog, the close-window confirmation and key handling (`SpacebarHandler`: ⌘Z / ⇧⌘Z / ⌘Y, ← to rewind, R to record (`toggleTransport(recordArmedTracks: true)`, like the record button; key repeats ignored), ⌘X / ⌘C / ⌘V / ⌘A as `EditCommand`s, Esc clears the selection and is passed on; nothing is handled while typing in a text field).
+- **`MasterExportDialog`**: file name field (the extension follows the format), folder with **Change…**, format, sample rate (MP3: 44.1 / 48 only), then bit depth (WAV) or mode with bitrate / VBR quality (MP3), start / end seconds, and a progress bar for the two stages. Changing a setting normalizes it (`ExportSettings.normalize`) and clears the “completed” state. MP3 is disabled when `ExportEncoder.isMP3Available` is false.
 - **Minimum size**: the outer frame is only `.frame(minWidth: 800)`, with no height floor (one would hide the content's minimum height, letting the window get shorter than its content and cut off the transport and mixer). The window's minimum height is the transport + the arranger's minimum (`minimumArrangerHeight` = 180 pt) + the mixer + the status bar.
 - **Arranger height**: `arrangerHeight` is read and handed to `MixerView` as `growthLimit` (the room left before the arranger reaches its minimum).
 - **`TitleBarZoomHandler`** sits in the background (`WindowCloseHandler.swift`).

@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="2.1"
+BASE_VERSION="2.2"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -57,6 +57,9 @@ cmake -S "$PROJECT_DIR/VST3Host" -B "$VST3_BUILD_DIR" \
 cmake --build "$VST3_BUILD_DIR" --target MyDAWVST3Bridge -j2
 VST3_BRIDGE_LIBRARY_DIR="$VST3_BUILD_DIR"
 VST3_SDK_LIBRARY_DIR="$VST3_BUILD_DIR/lib/Release"
+
+# Build the MP3 encoder (LAME); it is installed in the bundle below.
+"$SCRIPT_DIR/build-lame.sh"
 
 # Copy sources to local cache directory to prevent Google Drive timestamp modification error during compilation
 TEMP_SRC_DIR="$CACHE_DIR/Sources"
@@ -106,6 +109,10 @@ if [ -f "DocumentIcon.icns" ]; then
 else
     echo "Warning: DocumentIcon.icns not found in project root"
 fi
+
+# MP3 encoder library (Contents/Frameworks) and its license.
+rm -rf "$CONTENTS_DIR/Frameworks"
+"$SCRIPT_DIR/build-lame.sh" "$APP_BUNDLE"
 
 # Code signing with entitlements for audio input
 echo "Signing application bundle with entitlements..."

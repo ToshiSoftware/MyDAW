@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DAWB00A00000000000000001 /* AppLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A00000000000000001 /* AppLanguage.swift */; };
+		DAWB00A10000000000000001 /* TrackFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A10000000000000001 /* TrackFolder.swift */; };
+		DAWB00A20000000000000001 /* ProjectState+Editing.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A20000000000000001 /* ProjectState+Editing.swift */; };
+		DAWB00A30000000000000001 /* ProjectState+Folders.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A30000000000000001 /* ProjectState+Folders.swift */; };
+		DAWB00A40000000000000001 /* ClipAudioProcessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A40000000000000001 /* ClipAudioProcessing.swift */; };
+		DAWB00A50000000000000001 /* TrackRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A50000000000000001 /* TrackRenderer.swift */; };
+		DAWB00A60000000000000001 /* FolderHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A60000000000000001 /* FolderHeaderView.swift */; };
+		DAWB00A70000000000000001 /* PreviewStretch.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A70000000000000001 /* PreviewStretch.swift */; };
 		DAWB00010000000000000001 /* MyDAWApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00010000000000000001 /* MyDAWApp.swift */; };
 		DAWB00020000000000000001 /* AudioTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00020000000000000001 /* AudioTrack.swift */; };
 		DAWB00030000000000000001 /* WaveformCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00030000000000000001 /* WaveformCache.swift */; };
@@ -26,6 +34,8 @@
 		DAWB00160000000000000001 /* ProjectDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00160000000000000001 /* ProjectDocument.swift */; };
 		DAWB00170000000000000001 /* PluginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00170000000000000001 /* PluginManager.swift */; };
 		DAWB00960000000000000001 /* AudioLoadMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00960000000000000001 /* AudioLoadMonitor.swift */; };
+		DAWB00980000000000000001 /* ExportSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00980000000000000001 /* ExportSettings.swift */; };
+		DAWB00990000000000000001 /* ExportEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00990000000000000001 /* ExportEncoder.swift */; };
 		DAWB00180000000000000001 /* VST3Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00180000000000000001 /* VST3Host.swift */; };
 		DAWB00190000000000000001 /* VST3NativeInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00190000000000000001 /* VST3NativeInstance.swift */; };
 		DAWB00200000000000000001 /* VST3HostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00200000000000000001 /* VST3HostBridge.swift */; };
@@ -42,9 +52,18 @@
 		DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */; };
 		DAWB00940000000000000001 /* DelayCompensationAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */; };
 		DAWB00920000000000000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = DAWF00920000000000000001 /* AppIcon.icns */; };
+		DAWB00A80000000000000001 /* DocumentIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = DAWF00A80000000000000001 /* DocumentIcon.icns */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		DAWF00A00000000000000001 /* AppLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLanguage.swift; sourceTree = "<group>"; };
+		DAWF00A10000000000000001 /* TrackFolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackFolder.swift; sourceTree = "<group>"; };
+		DAWF00A20000000000000001 /* ProjectState+Editing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProjectState+Editing.swift"; sourceTree = "<group>"; };
+		DAWF00A30000000000000001 /* ProjectState+Folders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProjectState+Folders.swift"; sourceTree = "<group>"; };
+		DAWF00A40000000000000001 /* ClipAudioProcessing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipAudioProcessing.swift; sourceTree = "<group>"; };
+		DAWF00A50000000000000001 /* TrackRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackRenderer.swift; sourceTree = "<group>"; };
+		DAWF00A60000000000000001 /* FolderHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderHeaderView.swift; sourceTree = "<group>"; };
+		DAWF00A70000000000000001 /* PreviewStretch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewStretch.swift; sourceTree = "<group>"; };
 		DAW000070000000000000001 /* MyDAW.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyDAW.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAWF00010000000000000001 /* MyDAWApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyDAWApp.swift; sourceTree = "<group>"; };
 		DAWF00020000000000000001 /* AudioTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioTrack.swift; sourceTree = "<group>"; };
@@ -65,6 +84,8 @@
 		DAWF00160000000000000001 /* ProjectDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDocument.swift; sourceTree = "<group>"; };
 		DAWF00170000000000000001 /* PluginManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginManager.swift; sourceTree = "<group>"; };
 		DAWF00960000000000000001 /* AudioLoadMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLoadMonitor.swift; sourceTree = "<group>"; };
+		DAWF00980000000000000001 /* ExportSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSettings.swift; sourceTree = "<group>"; };
+		DAWF00990000000000000001 /* ExportEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportEncoder.swift; sourceTree = "<group>"; };
 		DAWF00180000000000000001 /* VST3Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3Host.swift; sourceTree = "<group>"; };
 		DAWF00190000000000000001 /* VST3NativeInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3NativeInstance.swift; sourceTree = "<group>"; };
 		DAWF00200000000000000001 /* VST3HostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3HostBridge.swift; sourceTree = "<group>"; };
@@ -83,6 +104,7 @@
 		DAWF00900000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		DAWF00910000000000000001 /* MyDAW.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyDAW.entitlements; sourceTree = "<group>"; };
 		DAWF00920000000000000001 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		DAWF00A80000000000000001 /* DocumentIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = DocumentIcon.icns; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -103,6 +125,7 @@
 				DAWF00900000000000000001 /* Info.plist */,
 				DAWF00910000000000000001 /* MyDAW.entitlements */,
 				DAWF00920000000000000001 /* AppIcon.icns */,
+				DAWF00A80000000000000001 /* DocumentIcon.icns */,
 				DAW000060000000000000001 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -121,11 +144,16 @@
 		DAW000041000000000000001 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				DAWF00A30000000000000001 /* ProjectState+Folders.swift */,
+				DAWF00A20000000000000001 /* ProjectState+Editing.swift */,
+				DAWF00A10000000000000001 /* TrackFolder.swift */,
+				DAWF00A00000000000000001 /* AppLanguage.swift */,
 				DAWF00150000000000000001 /* AudioClip.swift */,
 				DAWF00020000000000000001 /* AudioTrack.swift */,
 				DAWF00250000000000000001 /* ClipLayering.swift */,
 				DAWF00140000000000000001 /* FXChannel.swift */,
 				DAWF00160000000000000001 /* ProjectDocument.swift */,
+				DAWF00980000000000000001 /* ExportSettings.swift */,
 				DAWF00040000000000000001 /* ProjectState.swift */,
 				DAWF00950000000000000001 /* RecentProjects.swift */,
 				DAWF00260000000000000001 /* StereoPeak.swift */,
@@ -137,8 +165,11 @@
 		DAW000042000000000000001 /* Audio */ = {
 			isa = PBXGroup;
 			children = (
+				DAWF00A50000000000000001 /* TrackRenderer.swift */,
+				DAWF00A40000000000000001 /* ClipAudioProcessing.swift */,
 				DAWF00060000000000000001 /* AudioDeviceManager.swift */,
 				DAWF00050000000000000001 /* AudioDiskWriter.swift */,
+				DAWF00990000000000000001 /* ExportEncoder.swift */,
 				DAWF00070000000000000001 /* AudioEngineManager.swift */,
 				DAWF00240000000000000001 /* GenericAUParameterView.swift */,
 				DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */,
@@ -157,6 +188,8 @@
 		DAW000043000000000000001 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				DAWF00A70000000000000001 /* PreviewStretch.swift */,
+				DAWF00A60000000000000001 /* FolderHeaderView.swift */,
 				DAWF00100000000000000001 /* ArrangerView.swift */,
 				DAWF00080000000000000001 /* MainDAWView.swift */,
 				DAWF00270000000000000001 /* MixerControls.swift */,
@@ -241,6 +274,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DAWB00920000000000000001 /* AppIcon.icns in Resources */,
+				DAWB00A80000000000000001 /* DocumentIcon.icns in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -276,7 +310,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# GUI translations (en.lproj / ja.lproj), same as scripts/build.sh.\nRES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$RES\"\nrm -rf \"$RES\"/*.lproj\ncp -R \"$PROJECT_DIR\"/Resources/*.lproj \"$RES/\"\n# Files synced by Google Drive carry extended attributes that codesign rejects.\nxattr -cr \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+			shellScript = "# GUI translations (en.lproj / ja.lproj), same as scripts/build.sh.\nRES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$RES\"\nrm -rf \"$RES\"/*.lproj\ncp -R \"$PROJECT_DIR\"/Resources/*.lproj \"$RES/\"\n# MP3 encoder library (Contents/Frameworks) and its license, same as scripts/build.sh.\n\"$PROJECT_DIR/scripts/build-lame.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n# Files synced by Google Drive carry extended attributes that codesign rejects.\nxattr -cr \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -286,6 +320,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DAWB00A00000000000000001 /* AppLanguage.swift in Sources */,
+				DAWB00A10000000000000001 /* TrackFolder.swift in Sources */,
+				DAWB00A20000000000000001 /* ProjectState+Editing.swift in Sources */,
+				DAWB00A30000000000000001 /* ProjectState+Folders.swift in Sources */,
+				DAWB00A40000000000000001 /* ClipAudioProcessing.swift in Sources */,
+				DAWB00A50000000000000001 /* TrackRenderer.swift in Sources */,
+				DAWB00A60000000000000001 /* FolderHeaderView.swift in Sources */,
+				DAWB00A70000000000000001 /* PreviewStretch.swift in Sources */,
 				DAWB00010000000000000001 /* MyDAWApp.swift in Sources */,
 				DAWB00020000000000000001 /* AudioTrack.swift in Sources */,
 				DAWB00030000000000000001 /* WaveformCache.swift in Sources */,
@@ -303,6 +345,8 @@
 				DAWB00140000000000000001 /* FXChannel.swift in Sources */,
 				DAWB00150000000000000001 /* AudioClip.swift in Sources */,
 				DAWB00160000000000000001 /* ProjectDocument.swift in Sources */,
+				DAWB00980000000000000001 /* ExportSettings.swift in Sources */,
+				DAWB00990000000000000001 /* ExportEncoder.swift in Sources */,
 				DAWB00170000000000000001 /* PluginManager.swift in Sources */,
 				DAWB00960000000000000001 /* AudioLoadMonitor.swift in Sources */,
 				DAWB00180000000000000001 /* VST3Host.swift in Sources */,
@@ -395,7 +439,7 @@
 					"$(HOME)/Library/Caches/MyDAW/vst3-build",
 					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.2;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lMyDAWVST3Bridge",
@@ -436,7 +480,7 @@
 					"$(HOME)/Library/Caches/MyDAW/vst3-build",
 					"$(HOME)/Library/Caches/MyDAW/vst3-build/lib/Release",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.2;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lMyDAWVST3Bridge",

@@ -4017,13 +4017,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         masterPluginNodes.removeAll()
     }
 
+    /// Renders the master output in real time into `url` as a 32-bit float
+    /// file at the hardware rate (`ExportEncoder` makes the final file).
+    /// Returns that rate. `progress` gets 0...1 as the range is captured.
+    @discardableResult
     public func exportMasterMix(
         to url: URL,
         startTime: Double,
         endTime: Double,
         tracks: [AudioTrack],
-        fxChannels: [FXChannel]
-    ) async throws {
+        fxChannels: [FXChannel],
+        progress: ((Double) -> Void)? = nil
+    ) async throws -> Double {
         guard !isPlaying && !isRecording else {
             throw NSError(domain: "MyDAW.Export", code: 1, userInfo: [NSLocalizedDescriptionKey: String(localized: "Stop playback before exporting.")])
         }
@@ -4045,8 +4050,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: hardwareSampleRate,
             AVNumberOfChannelsKey: 2,
-            AVLinearPCMBitDepthKey: 24,
-            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false
         ]
@@ -4113,6 +4118,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             let deadline = Date().addingTimeInterval((end - start) + transportPreRoll + masterPluginLatency + 3.0)
             while !window.isComplete && Date() < deadline {
                 try await Task.sleep(nanoseconds: 20_000_000)
+                progress?(window.fraction)
             }
         } catch {
             finish()
@@ -4124,6 +4130,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         guard isComplete else {
             throw NSError(domain: "MyDAW.Export", code: 4, userInfo: [NSLocalizedDescriptionKey: String(localized: "The export ended before the whole range was captured.")])
         }
+        return hardwareSampleRate
     }
 
     // MARK: - Transport: Rewind
@@ -4238,6 +4245,10 @@ private final class ExportWindow: @unchecked Sendable {
 
     var isComplete: Bool {
         lock.withLock { written >= frameCount }
+    }
+
+    var fraction: Double {
+        lock.withLock { frameCount > 0 ? min(1.0, Double(written) / Double(frameCount)) : 1.0 }
     }
 
     /// The part of `buffer` (starting at `when`) that belongs in the file.

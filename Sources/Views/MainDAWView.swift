@@ -296,6 +296,7 @@ private struct MasterExportDialog: View {
     @Environment(\.dismiss) private var dismiss
     @State private var startText: String
     @State private var endText: String
+    private let isMP3Available = ExportEncoder.isMP3Available
 
     init(projectState: ProjectState) {
         self.projectState = projectState
@@ -304,43 +305,151 @@ private struct MasterExportDialog: View {
         _endText = State(initialValue: String(format: "%.3f", projectState.songEndTime ?? projectState.audioContentEndTime))
     }
 
+    private var settings: Binding<ExportSettings> { $projectState.masterExportSettings }
+
+    private var isBusy: Bool { projectState.isExportingMasterMix }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Export Master Mix")
                 .font(.headline)
 
-            Text("The master output will be rendered in real time as a 24-bit WAV file.")
+            Text("The master output is rendered in real time, then converted to the chosen format.")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Output file")
-                    .font(.caption.weight(.semibold))
-                Text(projectState.masterExportURL?.path ?? String(localized: "No output file selected"))
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                    .background(Color.black.opacity(0.15))
-                    .cornerRadius(4)
-            }
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    label("File name")
+                    HStack(spacing: 4) {
+                        TextField("", text: $projectState.masterExportBaseName)
+                            .textFieldStyle(.roundedBorder)
+                        Text(".\(projectState.masterExportSettings.format.fileExtension)")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                GridRow {
+                    label("Folder")
+                    HStack(spacing: 6) {
+                        Text(projectState.masterExportFolder.path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(projectState.masterExportFolder.path)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(5)
+                            .background(Color.black.opacity(0.15))
+                            .cornerRadius(4)
+                        Button("Change…") {
+                            projectState.chooseMasterExportFolder()
+                        }
+                    }
+                }
 
-            HStack {
-                Text("Start (seconds)")
-                TextField("0.000", text: $startText)
-                    .textFieldStyle(.roundedBorder)
-            }
+                Divider().gridCellColumns(2)
 
-            HStack {
-                Text("End (seconds)")
-                TextField("0.000", text: $endText)
-                    .textFieldStyle(.roundedBorder)
-            }
+                GridRow {
+                    label("Format")
+                    Picker("", selection: settings.format) {
+                        Text("WAV").tag(ExportSettings.FileFormat.wav)
+                        Text("MP3").tag(ExportSettings.FileFormat.mp3)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                if !isMP3Available {
+                    GridRow {
+                        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        Text("MP3 is not available: the encoder library is missing.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                GridRow {
+                    label("Sample rate")
+                    Picker("", selection: settings.sampleRate) {
+                        ForEach(sampleRates, id: \.self) { rate in
+                            Text(sampleRateLabel(rate)).tag(rate)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                switch projectState.masterExportSettings.format {
+                case .wav:
+                    GridRow {
+                        label("Bit depth")
+                        Picker("", selection: settings.wavBitDepth) {
+                            ForEach(ExportSettings.wavBitDepths, id: \.self) { depth in
+                                Text("\(depth) bit").tag(depth)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                case .mp3:
+                    GridRow {
+                        label("Mode")
+                        Picker("", selection: settings.mp3Mode) {
+                            Text("Constant").tag(ExportSettings.MP3Mode.constant)
+                            Text("VBR").tag(ExportSettings.MP3Mode.variable)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    switch projectState.masterExportSettings.mp3Mode {
+                    case .constant:
+                        GridRow {
+                            label("Bitrate")
+                            Picker("", selection: settings.mp3Bitrate) {
+                                ForEach(ExportSettings.mp3Bitrates, id: \.self) { bitrate in
+                                    Text("\(bitrate) kbps").tag(bitrate)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                    case .variable:
+                        GridRow {
+                            label("Quality")
+                            Picker("", selection: settings.mp3VBRQuality) {
+                                Text("High (V0)").tag(ExportSettings.MP3VBRQuality.v0)
+                                Text("Standard (V2)").tag(ExportSettings.MP3VBRQuality.v2)
+                                Text("Low (V4)").tag(ExportSettings.MP3VBRQuality.v4)
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                    }
+                }
 
-            if projectState.isExportingMasterMix {
-                ProgressView("Exporting master mix…")
-                    .controlSize(.small)
+                Divider().gridCellColumns(2)
+
+                GridRow {
+                    label("Start (seconds)")
+                    TextField("0.000", text: $startText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                }
+                GridRow {
+                    label("End (seconds)")
+                    TextField("0.000", text: $endText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                }
+            }
+            .disabled(isBusy)
+
+            if isBusy {
+                ProgressView(value: projectState.masterExportProgress) {
+                    Text(projectState.masterExportStage == .capturing ? "Exporting master mix…" : "Converting…")
+                        .font(.caption)
+                }
+                .controlSize(.small)
             } else if let error = projectState.masterExportError {
                 Text("Export failed: \(error)")
                     .font(.caption)
@@ -368,12 +477,42 @@ private struct MasterExportDialog: View {
                           end > start else { return }
                     projectState.exportMasterMix(startTime: start, endTime: end)
                 }
-                .disabled(projectState.isExportingMasterMix || projectState.masterExportCompleted)
+                .disabled(isBusy || projectState.masterExportCompleted
+                    || (projectState.masterExportSettings.format == .mp3 && !isMP3Available))
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 380)
+        .frame(width: 460)
+        .onChange(of: projectState.masterExportSettings) { _ in
+            // Any change (e.g. MP3 with 96 kHz) is pulled back to a valid
+            // choice, and a finished export can be done again.
+            var normalized = projectState.masterExportSettings
+            normalized.normalize()
+            if normalized != projectState.masterExportSettings {
+                projectState.masterExportSettings = normalized
+            }
+            projectState.masterExportCompleted = false
+        }
+        .onChange(of: projectState.masterExportBaseName) { _ in
+            projectState.masterExportCompleted = false
+        }
+    }
+
+    private var sampleRates: [Double] {
+        projectState.masterExportSettings.format == .mp3 ? ExportSettings.mp3SampleRates : ExportSettings.sampleRates
+    }
+
+    private func sampleRateLabel(_ rate: Double) -> String {
+        rate.truncatingRemainder(dividingBy: 1000) == 0
+            ? "\(Int(rate / 1000)) kHz"
+            : String(format: "%.1f kHz", rate / 1000)
+    }
+
+    private func label(_ key: LocalizedStringKey) -> some View {
+        Text(key)
+            .font(.caption.weight(.semibold))
+            .gridColumnAlignment(.trailing)
     }
 }
 
