@@ -3,16 +3,19 @@
 # destination app bundle, installs it in Contents/Frameworks with its license
 # in Contents/Resources. Used by build.sh and the Xcode target.
 # The library ships separately (loaded at run time), so it stays replaceable.
-# The source is downloaded once and checked against its SHA-256.
+# The source is downloaded once and checked against its SHA-256. Everything
+# lives in ~/Library/Caches/MyDAW (outside the project), so the project's own
+# location does not matter. `make install` is not used: libtool cannot install
+# into a path with spaces, and only the dylib is needed.
 set -e
 
 LAME_VERSION="3.100"
 LAME_SHA256="ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
 LAME_CACHE_DIR="$HOME/Library/Caches/MyDAW"
 LAME_TARBALL="$LAME_CACHE_DIR/lame-$LAME_VERSION.tar.gz"
-LAME_SRC_DIR="$LAME_CACHE_DIR/lame-src"
-LAME_INSTALL_DIR="$LAME_CACHE_DIR/lame-install"
-LAME_DYLIB="$LAME_INSTALL_DIR/lib/libmp3lame.0.dylib"
+LAME_SRC_DIR="$LAME_CACHE_DIR/lame-$LAME_VERSION-src"
+LAME_LIB_DIR="$LAME_CACHE_DIR/lame-$LAME_VERSION-lib"
+LAME_DYLIB="$LAME_LIB_DIR/libmp3lame.0.dylib"
 
 if [ ! -f "$LAME_DYLIB" ]; then
     echo "Building LAME $LAME_VERSION..."
@@ -21,7 +24,7 @@ if [ ! -f "$LAME_DYLIB" ]; then
         curl -fL -o "$LAME_TARBALL" "https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz"
     fi
     echo "$LAME_SHA256  $LAME_TARBALL" | shasum -a 256 -c -
-    rm -rf "$LAME_SRC_DIR" "$LAME_INSTALL_DIR"
+    rm -rf "$LAME_SRC_DIR" "$LAME_LIB_DIR"
     mkdir -p "$LAME_SRC_DIR"
     tar xzf "$LAME_TARBALL" -C "$LAME_SRC_DIR" --strip-components 1
     # 3.100 exports a symbol it no longer defines; the macOS linker rejects it.
@@ -31,11 +34,12 @@ if [ ! -f "$LAME_DYLIB" ]; then
         export MACOSX_DEPLOYMENT_TARGET=13.0
         export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=13.0"
         export LDFLAGS="-arch arm64 -mmacosx-version-min=13.0"
-        ./configure --prefix="$LAME_INSTALL_DIR" --enable-shared --disable-static \
+        ./configure --enable-shared --disable-static \
             --disable-frontend --disable-dependency-tracking > "$LAME_CACHE_DIR/lame-configure.log"
         make -j4 > "$LAME_CACHE_DIR/lame-make.log"
-        make install > /dev/null
     )
+    mkdir -p "$LAME_LIB_DIR"
+    cp "$LAME_SRC_DIR/libmp3lame/.libs/libmp3lame.0.dylib" "$LAME_DYLIB"
 fi
 
 APP_BUNDLE="$1"
