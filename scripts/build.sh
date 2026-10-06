@@ -117,8 +117,16 @@ codesign --force --deep --sign - --entitlements "MyDAW.entitlements" "$APP_BUNDL
 # the project in this build.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" || true
 
+# Zip the app for GitHub (only build/MyDAW.zip is committed, not the .app).
+# ditto keeps the signature and permissions and adds no __MACOSX folder.
+echo "Zipping application bundle..."
+APP_ZIP="$BUILD_DIR/$APP_NAME.zip"
+rm -f "$APP_ZIP"
+ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
+
 echo "========================================"
 echo " Build Succeeded!                       "
 echo " App location: $APP_BUNDLE              "
+echo " Zip location: $APP_ZIP                 "
 echo " To run: open $APP_BUNDLE               "
 echo "========================================"

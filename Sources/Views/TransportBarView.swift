@@ -391,7 +391,7 @@ public struct TransportBarView: View {
                 Slider(
                     value: Binding(
                         get: { projectState.trackHeightScale },
-                        set: { projectState.setTrackHeightScale($0) }
+                        set: { projectState.zoomTrackHeightAroundCurrentTrack($0) }
                     ),
                     in: ProjectState.minimumTrackHeightScale...ProjectState.maximumTrackHeightScale
                 )

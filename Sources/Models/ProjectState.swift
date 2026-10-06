@@ -228,6 +228,20 @@ public final class ProjectState: ObservableObject {
         trackHeightScale = scale
     }
 
+    /// Set by the arranger: sets the track height scale (as
+    /// `setTrackHeightScale`) while keeping the current track where it is on
+    /// screen.
+    public var trackHeightZoomAroundCurrentTrack: ((CGFloat) -> Void)?
+
+    /// Track height scale from the slider: scales around the current track.
+    public func zoomTrackHeightAroundCurrentTrack(_ scale: CGFloat) {
+        if let zoom = trackHeightZoomAroundCurrentTrack {
+            zoom(scale)
+        } else {
+            setTrackHeightScale(scale)
+        }
+    }
+
     @Published public var currentProjectURL: URL?
     public private(set) var projectFolderURL: URL?
 

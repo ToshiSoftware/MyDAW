@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# ビルド中間ファイル
+/.build/
+/.build_cache/
+
+# 作業用・ローカル専用
+/.vscode/
+/snapshots/
+/Recordings/
+/OriginalIcon/
+/Chat.txt
+/prompt.txt
+/*.wav
+
+# docs: *.md のみ登録
+/docs/*
+!/docs/*.md
+
+# build: MyDAW.zip と README.md のみ登録
+/build/*
+!/build/MyDAW.zip
+!/build/README.md
+
+# ThirdParty: 登録しない（VST3 SDK は各自取得）
+/ThirdParty/

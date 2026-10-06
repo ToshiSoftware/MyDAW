@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Combine
 
 
@@ -13,6 +14,9 @@ public struct ArrangerView: View {
     /// The tracks' horizontal scroll view, which horizontal scrolls over the
     /// ruler are passed to.
     @State private var timelineScrollView = WeakScrollView()
+    /// The vertical scroll view holding the tracks, scrolled to keep a point
+    /// in place when the track height changes.
+    @State private var trackRowsScrollView = WeakScrollView()
     /// Track or folder being dragged by its header to a new place in the
     /// order, how far it has been dragged, and where the pointer is (in the
     /// header column, which lines up with the rows).
@@ -168,12 +172,101 @@ public struct ArrangerView: View {
         guard delta != 0 else { return true }
 
         if modifiers == [.option] {
-            projectState.setTrackHeightScale(projectState.trackHeightScale + delta * 0.1)
+            // Around the pointer (the tracks start below the ruler).
+            zoomTrackHeight(
+                projectState.trackHeightScale + delta * 0.1,
+                anchorViewportY: max(0.0, location.y - 32.0)
+            )
         } else {
             let current = projectState.waveformScalePreview.target ?? projectState.waveformVerticalScale
             projectState.previewWaveformVerticalScale(current * pow(1.1, delta))
         }
         return true
+    }
+
+    /// How far the tracks are scrolled down from their top.
+    private func verticalScrollOffset(_ scrollView: NSScrollView) -> CGFloat {
+        let bounds = scrollView.contentView.bounds
+        guard let document = scrollView.documentView else { return 0 }
+        return document.isFlipped ? bounds.minY : document.frame.height - bounds.maxY
+    }
+
+    /// Scrolls the tracks down to `offset` from their top (clamped to the
+    /// content).
+    private func setVerticalScrollOffset(_ offset: CGFloat) {
+        guard let scrollView = trackRowsScrollView.scrollView,
+              let document = scrollView.documentView else { return }
+        let clipView = scrollView.contentView
+        let maxOffset = max(0, document.frame.height - clipView.bounds.height)
+        let clamped = min(max(0, offset), maxOffset)
+        let y = document.isFlipped ? clamped : document.frame.height - clipView.bounds.height - clamped
+        guard abs(clipView.bounds.origin.y - y) >= 0.5 else { return }
+        clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: y))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    /// Sets the track height scale keeping one point of the tracks where it
+    /// is on screen: the one `anchorViewportY` below the top of the visible
+    /// tracks, or when nil, the middle of the current track.
+    private func zoomTrackHeight(_ scale: CGFloat, anchorViewportY: CGFloat?) {
+        guard let scrollView = trackRowsScrollView.scrollView else {
+            projectState.setTrackHeightScale(scale)
+            return
+        }
+        // A scroll still on its way counts as made, so steps in quick
+        // succession build on one another.
+        let offset = scrollFollow.requestedVerticalOffset ?? verticalScrollOffset(scrollView)
+        let rows = projectState.visibleRows
+
+        // The anchor as a row and a fraction of that row's height.
+        let anchorRowID: UUID
+        let fraction: CGFloat
+        let viewportY: CGFloat
+        if let anchorViewportY {
+            let contentY = offset + anchorViewportY
+            var top: CGFloat = 0
+            var found: (id: UUID, fraction: CGFloat)?
+            for row in rows {
+                let height = projectState.rowHeight(row)
+                found = (row.id, (contentY - top) / max(height, 1))
+                if contentY < top + height + 1 { break }
+                top += height + 1
+            }
+            guard let found else {
+                projectState.setTrackHeightScale(scale)
+                return
+            }
+            (anchorRowID, fraction, viewportY) = (found.id, found.fraction, anchorViewportY)
+        } else {
+            guard let trackID = projectState.selectedTrackId,
+                  let row = rows.first(where: { $0.id == trackID }) else {
+                projectState.setTrackHeightScale(scale)
+                return
+            }
+            let height = projectState.rowHeight(row)
+            (anchorRowID, fraction) = (trackID, 0.5)
+            viewportY = projectState.rowTopY(for: trackID) + height * 0.5 - offset
+        }
+
+        projectState.setTrackHeightScale(scale)
+        guard let row = projectState.visibleRows.first(where: { $0.id == anchorRowID }) else { return }
+        let newContentY = projectState.rowTopY(for: anchorRowID) + projectState.rowHeight(row) * fraction
+        let requested = max(0, newContentY - viewportY)
+        scrollFollow.requestedVerticalOffset = requested
+        // Taller content is laid out only later; until then the offset is
+        // clamped short of the target and is applied again whenever the
+        // content resizes (see `VerticalScrollObserver`).
+        scrollView.window?.contentView?.layoutSubtreeIfNeeded()
+        setVerticalScrollOffset(requested)
+        DispatchQueue.main.async {
+            guard scrollFollow.requestedVerticalOffset == requested else { return }
+            scrollView.window?.contentView?.layoutSubtreeIfNeeded()
+            setVerticalScrollOffset(requested)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard scrollFollow.requestedVerticalOffset == requested else { return }
+            scrollFollow.requestedVerticalOffset = nil
+        }
     }
 
     /// The dragged clips, each drawn from its own track moved by the
@@ -778,6 +871,16 @@ public struct ArrangerView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(VerticalScrollObserver(scrollView: trackRowsScrollView) {
+                    if let requested = scrollFollow.requestedVerticalOffset {
+                        setVerticalScrollOffset(requested)
+                    }
+                })
+                .onAppear {
+                    projectState.trackHeightZoomAroundCurrentTrack = { scale in
+                        zoomTrackHeight(scale, anchorViewportY: nil)
+                    }
+                }
             }
             .background(Color(red: 0.08, green: 0.09, blue: 0.11))
             .onDeleteCommand {
@@ -963,8 +1066,6 @@ struct TimelineRulerView: View {
     @ObservedObject var projectState: ProjectState
     let width: CGFloat
     @StateObject private var optionKey = OptionKeyMonitor()
-    /// Last pointer x over the ruler, where the context menu places a flag.
-    @State private var hoverX: CGFloat = 0.0
     /// Position of the last seek in the current ruler drag.
     @State private var seekTarget: Double?
 
@@ -996,27 +1097,10 @@ struct TimelineRulerView: View {
         }
         .frame(width: width, height: 32)
         .contentShape(Rectangle())
-        .onContinuousHover { phase in
-            if case .active(let location) = phase {
-                hoverX = location.x
-            }
-        }
-        .contextMenu {
-            let time = projectState.snappedTimelineTime(Double(hoverX / max(0.001, projectState.pixelsPerSecond)))
-            Button("Set Song Start Here") { projectState.setSongStart(time: time) }
-                .disabled(!projectState.canPlaceSongStart(at: time))
-            Button("Set Song End Here") { projectState.setSongEnd(time: time) }
-                .disabled(!projectState.canPlaceSongEnd(at: time))
-            if projectState.songRange.startBeat != nil || projectState.songRange.endBeat != nil {
-                Divider()
-            }
-            if projectState.songRange.startBeat != nil {
-                Button("Remove Song Start") { projectState.setSongStart(time: nil) }
-            }
-            if projectState.songRange.endBeat != nil {
-                Button("Remove Song End") { projectState.setSongEnd(time: nil) }
-            }
-        }
+        // The menu is built at each right-click from that click's x. (A
+        // SwiftUI context menu read a hover position that could be stale, so
+        // repeated right-clicks placed the flag at the first click.)
+        .background(LaneMenuMonitor(menu: { x in flagMenu(atX: x) }))
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
@@ -1036,6 +1120,36 @@ struct TimelineRulerView: View {
                     seekTarget = nil
                 }
         )
+    }
+    /// Song start / end menu for a right-click at `x` in the ruler.
+    private func flagMenu(atX x: CGFloat) -> NSMenu {
+        let time = projectState.snappedTimelineTime(Double(max(0, x) / max(0.001, projectState.pixelsPerSecond)))
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(ClosureMenuItem(
+            String(localized: "Set Song Start Here"), symbol: nil,
+            enabled: projectState.canPlaceSongStart(at: time)
+        ) { [projectState] in projectState.setSongStart(time: time) })
+        menu.addItem(ClosureMenuItem(
+            String(localized: "Set Song End Here"), symbol: nil,
+            enabled: projectState.canPlaceSongEnd(at: time)
+        ) { [projectState] in projectState.setSongEnd(time: time) })
+        let hasStart = projectState.songRange.startBeat != nil
+        let hasEnd = projectState.songRange.endBeat != nil
+        if hasStart || hasEnd {
+            menu.addItem(.separator())
+        }
+        if hasStart {
+            menu.addItem(ClosureMenuItem(String(localized: "Remove Song Start"), symbol: nil, enabled: true) { [projectState] in
+                projectState.setSongStart(time: nil)
+            })
+        }
+        if hasEnd {
+            menu.addItem(ClosureMenuItem(String(localized: "Remove Song End"), symbol: nil, enabled: true) { [projectState] in
+                projectState.setSongEnd(time: nil)
+            })
+        }
+        return menu
     }
 }
 
@@ -1431,6 +1545,61 @@ private final class ScrollFollow {
     /// Offset a scroll is heading for; offsets reported before it lands are
     /// stale.
     var requestedOffset: CGFloat?
+    /// Vertical offset a track height change is heading for (see
+    /// `zoomTrackHeight`).
+    var requestedVerticalOffset: CGFloat?
+}
+
+/// Finds the scroll view it sits in, and calls `onContentResize` when that
+/// scroll view's content changes size.
+private struct VerticalScrollObserver: NSViewRepresentable {
+    let scrollView: WeakScrollView
+    let onContentResize: () -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.scrollViewBox = scrollView
+        view.onContentResize = onContentResize
+        return view
+    }
+
+    func updateNSView(_ nsView: ObserverView, context: Context) {
+        nsView.onContentResize = onContentResize
+    }
+
+    final class ObserverView: NSView {
+        var onContentResize: (() -> Void)?
+        var scrollViewBox: WeakScrollView?
+        private weak var documentView: NSView?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let documentView {
+                NotificationCenter.default.removeObserver(
+                    self, name: NSView.frameDidChangeNotification, object: documentView
+                )
+                self.documentView = nil
+            }
+            guard window != nil, let scrollView = enclosingScrollView else { return }
+            scrollViewBox?.scrollView = scrollView
+            if let document = scrollView.documentView {
+                documentView = document
+                document.postsFrameChangedNotifications = true
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(documentFrameDidChange),
+                    name: NSView.frameDidChangeNotification,
+                    object: document
+                )
+            }
+        }
+
+        @objc private func documentFrameDidChange() {
+            onContentResize?()
+        }
+    }
 }
 
 /// Reports the horizontal offset of the scroll view it sits in whenever that
