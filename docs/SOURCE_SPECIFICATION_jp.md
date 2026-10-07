@@ -250,7 +250,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `trackDryDelayNodes`／`fxReturnDelayNodes` | 各トラックのドライ経路（分岐 → mainMixer。遅延 D。FX ソロ時のドライ消音も担当）と各 FX のリターン（PAN → 出力。遅延 D − 自分の遅延）にある `DelayCompensationAudioUnit`。`updateLatencyCompensation()` が設定 |
 | `trackPluginNodes` | インサート（AU／`VST3AudioUnit`） |
 | `trackPanNodes` | PAN ミキサー（インサートの後） |
-| `trackSplitterNodes` | 分岐ミキサー（mainMixer と Send へ 1 対多接続、メーター計測点） |
+| `trackSplitterNodes` | 分岐ミキサー（mainMixer と Send へ 1 対多接続） |
+| `trackMeters` | トラックごとの `RenderPeakMeter`。ドライ経路の `DelayCompensationAudioUnit` が描画のたびに入力（＝分岐の出力。ポストインサート・ポストフェーダー・ポストパン、ドライ消音の前）のピークを記録し、30 Hz タイマーが `take()` で読む。以前は分岐ミキサーのタップだったが、FX へのプラグイン挿入（UADx Pure Plate Reverb）の後に全トラックのタップが呼ばれなくなり、付け直しても戻らないことがあったため、タップを使わない |
 | `sendGainNodes` | Send ごとのゲインミキサー |
 | `inputMonitorNodes` | `InputMonitorAudioUnit`（I 有効時） |
 | `fxInputNodes`／`fxPluginNodes`／`fxPanNodes`／`fxOutputNodes` | FX チャンネルの入力（フェーダー音量）・インサート・PAN・出力（メーター。ミュート時とソロで外れたときは音量 0） |
@@ -270,7 +271,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | 選択デバイスを macOS の既定入力・既定出力に設定する（入力を使う AVAudioEngine は既定入出力の集約デバイスで動作するため）。初回に元の既定を記録し、`restoreOriginalDefaultDevices()` が `shutdown()` で戻す |
 | `startMeterTimer` | 30 Hz でピークを集計し通知。マスターのレベルは別オブジェクト `masterMeter`（`TrackMeter`）が持ち、変わったときだけ通知する（`MasterFaderColumn` だけが監視）。`masterPeak` は通知しない内部値 |
-| `checkTrackMeterTaps`、`installTrackMeterTap`、`noteGraphEvent`、`writeMeterRecoveryLog` | トラックメーターのタップ監視（原因不明で、全トラックのメーターだけが止まり、音・マスター・FX は正常な事象への対策）。各タップは呼ばれるたびに回数を数え（無音でも増える）、30 Hz タイマーで、再生・録音中かつエンジンが動作中で、マスターのタップ回数が直近 0.5 秒以内に増えているときに、1 秒以上回数が増えないトラックのタップを外して付け直す（`format: nil`。1 回の再生でトラックごとに最大 3 回）。そのとき状態と直近 60 件のエンジン・配線のイベント（エンジンの停止／開始、`AVAudioEngineConfigurationChange`、`setupEngine`、`syncTracks`、分岐の配線のやり直し・延期など）を `~/Library/Logs/MyDAW/MeterRecovery.log` に追記する（1 MB を超えたら古い分を捨てて約 0.5 MB に。付け直しはエンジンに接続中のノードだけ） |
+| `checkTrackMeters`、`noteGraphEvent`、`writeMeterRecoveryLog` | トラックメーターの監視。30 Hz タイマーで、再生・録音中かつエンジンが動作中で、マスターのタップ回数が直近 0.5 秒以内に増えているときに、`RenderPeakMeter` の描画回数（無音でも増える）が 1 秒以上増えないトラックがあれば、状態と直近 60 件のエンジン・配線のイベント（エンジンの停止／開始、`AVAudioEngineConfigurationChange`、`setupEngine`、`syncTracks`、分岐の配線のやり直し・延期など）を `~/Library/Logs/MyDAW/MeterRecovery.log` に追記する（記録のみ。1 回の再生でトラックごとに 1 回。1 MB を超えたら古い分を捨てて約 0.5 MB に） |
 | `wireSend` | Send のゲインミキサーを FX 入力へ接続。`wiredSendTargets` で接続先を覚え、変わったときだけつなぎ直す（毎回の再接続はインプットモニター有効時に `mixingDest` 例外になるため） |
 | `applyDeferredRewiresWhenQuiet` | 停止時に、保留した分岐の組み替えとインプットモニターの接続を、マスター出力が -60 dB 未満になるまで（最大 8 秒）待ってから行う。待機中は `isWaitingForQuietRewire` が立ち、`syncTracks` も組み替えをこちらに任せる。再生が始まれば中止し、次の停止で再試行 |
 | 停止時の録音確定（`stop` 内のタスク） | writer を確定してクリップを読み込む。録音したファイルがあるときだけ `syncTracks` を呼ぶ |
@@ -328,7 +329,7 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 - **アトミック操作**: Swift の Atomics は macOS 15 以降のため、`VST3Host/RealtimeAtomics.cpp` の `MyDAWAtomicLoad64`／`MyDAWAtomicStore64`／`MyDAWMemoryFence` を `@_silgen_name` で呼ぶ。
 
 ### `DelayCompensationAudioUnit.swift`（v1.8 新規）
-`StereoDelayLine`（レンダースレッド用のリングバッファ。保持できない遅延は素通し）と、`delayFrames`・`isMuted`（約 5 ms のランプ）を持つアプリ内 AUv3（`aufx`/`dlcp`/`MyDW`）。最大 1 秒まで。自身のレイテンシーは 0 と報告します。`VST3AudioUnit` も `StereoDelayLine` を使い、バイパス時の出力をプラグインのレイテンシー分だけ遅らせます。
+`StereoDelayLine`（レンダースレッド用のリングバッファ。保持できない遅延は素通し）と、`delayFrames`・`isMuted`（約 5 ms のランプ）・`meter` を持つアプリ内 AUv3（`aufx`/`dlcp`/`MyDW`）。`RenderPeakMeter` はトラックのドライ経路で入力のピークと描画回数を記録する（レンダースレッドは `os_unfair_lock_trylock` が取れたときだけ渡し、取れなければ次の回へ持ち越すので待たない）。最大 1 秒まで。自身のレイテンシーは 0 と報告します。`VST3AudioUnit` も `StereoDelayLine` を使い、バイパス時の出力をプラグインのレイテンシー分だけ遅らせます。
 
 `AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（バイパス中も含む）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら各レンダラーの `anchorFrame` を合わせ直します（`updateRendererAnchors`）。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。トランスポートの開始時刻はエンジンの計算済み区間の先（`lastRenderTime` から IO バッファ 2 つ分・最低 50 ms）に P を足した時刻で、各トラックのレンダラーは自分の先読み（自分の遅延 ＋ D）だけ早く音を出すので、開始位置以降の音は欠けません。録音は、開始時刻が決まった後・レンダラーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
 

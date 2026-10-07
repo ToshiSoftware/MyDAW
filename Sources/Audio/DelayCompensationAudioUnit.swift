@@ -56,8 +56,65 @@ final class StereoDelayLine {
     }
 }
 
+/// Peak level of the audio a unit renders, for a meter. The render thread
+/// never waits: it hands its peaks over only when the lock is free and keeps
+/// them for the next cycle otherwise.
+final class RenderPeakMeter {
+    private let lock: UnsafeMutablePointer<os_unfair_lock> = {
+        let lock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock())
+        return lock
+    }()
+    // Render thread only.
+    private var pendingLeft: Float = 0
+    private var pendingRight: Float = 0
+    private var pendingCycles = 0
+    // Under the lock.
+    private var sharedLeft: Float = 0
+    private var sharedRight: Float = 0
+    private var sharedCycles = 0
+
+    /// Render thread.
+    func record(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frames: Int) {
+        var peakLeft = pendingLeft
+        var peakRight = pendingRight
+        for frame in 0..<frames {
+            peakLeft = max(peakLeft, abs(left[frame]))
+            peakRight = max(peakRight, abs(right[frame]))
+        }
+        pendingLeft = peakLeft
+        pendingRight = peakRight
+        pendingCycles += 1
+        guard os_unfair_lock_trylock(lock) else { return }
+        sharedLeft = max(sharedLeft, pendingLeft)
+        sharedRight = max(sharedRight, pendingRight)
+        sharedCycles &+= pendingCycles
+        os_unfair_lock_unlock(lock)
+        pendingLeft = 0
+        pendingRight = 0
+        pendingCycles = 0
+    }
+
+    /// The peak since the last call, and the number of render cycles so far.
+    func take() -> (peak: StereoPeak, cycles: Int) {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        let peak = StereoPeak(left: sharedLeft, right: sharedRight)
+        sharedLeft = 0
+        sharedRight = 0
+        return (peak, sharedCycles)
+    }
+
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+}
+
 private final class DelayCompensationKernel {
     let line = StereoDelayLine()
+    /// Set before the unit renders; a track's dry delay meters the track.
+    var meter: RenderPeakMeter?
     /// Set from the main thread; read once per render cycle.
     var delayFrames = 0
     var isMuted = false
@@ -160,6 +217,13 @@ final class DelayCompensationAudioUnit: AUAudioUnit {
         set { kernel.delayFrames = max(0, newValue) }
     }
 
+    /// Meters the input from now on (a track's dry delay). Set once, before
+    /// the unit renders.
+    var meter: RenderPeakMeter? {
+        get { kernel.meter }
+        set { kernel.meter = newValue }
+    }
+
     /// Silences the output (with a short ramp); the delay keeps running.
     var isMuted: Bool {
         get { kernel.isMuted }
@@ -208,6 +272,9 @@ final class DelayCompensationAudioUnit: AUAudioUnit {
             let outLeft = output[0].mData!.assumingMemoryBound(to: Float.self)
             let outRight = output[1].mData!.assumingMemoryBound(to: Float.self)
 
+            // The input is what the track sends on: after inserts, fader and
+            // pan, before the delay and the dry mute.
+            kernel.meter?.record(left: inLeft, right: inRight, frames: frames)
             kernel.line.process(
                 inputLeft: inLeft,
                 inputRight: inRight,

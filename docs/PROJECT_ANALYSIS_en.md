@@ -77,7 +77,7 @@ MyDAW/
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
 │   │   ├── TrackRenderer.swift Track playback (AVAudioSourceNode + read-ahead thread)
-│   │   ├── DelayCompensationAudioUnit.swift In-app AUv3 delay for FX latency compensation
+│   │   ├── DelayCompensationAudioUnit.swift In-app AUv3 delay for FX latency compensation (also measures track meters)
 │   │   ├── VST3NativeInstance.swift  Swift wrapper around the C++ VST3 instance
 │   │   ├── VST3HostBridge.swift      Swift wrapper around the VST3 enumeration API
 │   │   ├── VST3Host.swift            VST3 host abstraction (protocols)
@@ -163,8 +163,8 @@ Inserts (AU / VST3AudioUnit, in insert order)
 Pan mixer (applies pan)
       │
       ▼
-Splitter mixer (★ meter point: post-insert, post-fader, post-pan)
-      ├──► DelayCompensationAudioUnit (dry: delay D; also mutes the dry sound for an FX solo) ──► mainMixer ──► MASTER
+Splitter mixer
+      ├──► DelayCompensationAudioUnit (★ meter point: its input, post-insert, post-fader, post-pan; dry: delay D; also mutes the dry sound for an FX solo) ──► mainMixer ──► MASTER
       └──► Send gain mixers ──► FX channel inputs
 ```
 
@@ -388,7 +388,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **Plug-in GUIs**: a plug-in without its own editor, or whose editor request does not answer within 3 s, is shown with the Generic UI (`presentGenericPluginView`). There are no per-product exceptions (every `PluginCompatibilityProfile` is currently `.automatic`).
 - **Mono-only plug-ins**: the chain is stereo even on mono tracks, so an AU with only mono input/output (such as Waves "(m)" versions) is unavailable; use the stereo version ("(s)"). There is no mono↔stereo adapter around a plug-in.
 - **AU plug-in windows**: the close button only hides the window, so the window (and the plug-in's view) stays in memory until the plug-in is removed or the project is closed.
-- **Track meter stalls**: the cause of all track meters stopping (while sound, master and FX are fine) is unknown. A 30 Hz watchdog reinstalls the tap of a track whose tap has not been called for 1 s or more (at most 3 times per track per playback) and logs the situation to `~/Library/Logs/MyDAW/MeterRecovery.log`.
+- **Track meter stalls**: in the case where all track meters stopped (while sound, master and FX were fine), the splitter taps were no longer called after a plug-in insert on an FX channel (UADx Pure Plate Reverb), and reinstalling them did not help. The root cause is unknown and a standalone test does not reproduce it. Track meters no longer use taps; they are measured inside the dry path's delay unit as it renders. If such a unit stops rendering, it is logged to `~/Library/Logs/MyDAW/MeterRecovery.log`.
 - **Instruments**: not supported in AU or VST3 (effects only). AU discovery looks only for `kAudioUnitType_Effect`, so music effects (`aumf`) are not listed either.
 - **Input monitoring latency**: depends on buffer size (about 25–30 ms round trip at 48 kHz / 512 frames). Use 128–256 for guitar. Using the interface's direct monitoring at the same time makes the signal sound doubled.
 - **Graph changes while playing**: inserting, removing and reordering plug-ins is only allowed while stopped.

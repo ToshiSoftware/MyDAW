@@ -77,7 +77,7 @@ MyDAW/
 │   │   ├── InputMonitorAudioUnit.swift 入力チャンネル抽出用アプリ内 AUv3
 │   │   ├── MonoDownmixAudioUnit.swift モノラルのトラックを L/R 加算するアプリ内 AUv3
 │   │   ├── TrackRenderer.swift トラックの再生（AVAudioSourceNode ＋ 先読みスレッド）
-│   │   ├── DelayCompensationAudioUnit.swift FX の遅延補正用の遅延アプリ内 AUv3
+│   │   ├── DelayCompensationAudioUnit.swift FX の遅延補正用の遅延アプリ内 AUv3（トラックメーターの計測も）
 │   │   ├── VST3NativeInstance.swift  C++ VST3 インスタンスの Swift ラッパー
 │   │   ├── VST3HostBridge.swift      VST3 列挙 API の Swift ラッパー
 │   │   ├── VST3Host.swift            VST3 ホスト抽象（プロトコル）
@@ -163,8 +163,8 @@ MonoDownmixAudioUnit（モノラルのトラックは (L+R)/2、ステレオは�
 PAN ミキサー（PAN を適用）
       │
       ▼
-分岐ミキサー（★メーター計測点：ポストインサート・ポストフェーダー・ポストパン）
-      ├──► DelayCompensationAudioUnit（ドライ：D だけ遅延。FX ソロ時のドライ消音もここ）──► mainMixer ──► MASTER
+分岐ミキサー
+      ├──► DelayCompensationAudioUnit（★メーター計測点：入力＝ポストインサート・ポストフェーダー・ポストパン。ドライ：D だけ遅延。FX ソロ時のドライ消音もここ）──► mainMixer ──► MASTER
       └──► Send ゲインミキサー ──► 各 FX チャンネル入力
 ```
 
@@ -388,7 +388,7 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 - **プラグイン GUI**: 専用画面がない、または専用画面の要求が 3 秒以内に応答しない場合は Generic UI（`presentGenericPluginView`）で表示する。特定のプラグインを名指しした例外処理はない（`PluginCompatibilityProfile` は現在すべて `.automatic`）。
 - **モノラル専用のプラグイン**: チェーンはモノラルのトラックでもステレオなので、モノラル入出力だけの AU（Waves の「(m)」版など）は使用不可になる。ステレオ版（「(s)」）を使う。モノラル⇔ステレオの変換を挟む仕組みはない。
 - **AU のプラグインウィンドウ**: 閉じるボタンでは隠すだけなので、プラグインを削除するかプロジェクトを閉じるまで、ウィンドウ（とプラグインの画面）はメモリに残る。
-- **トラックメーターの停止**: 全トラックのメーターだけが止まる（音・マスター・FX は正常）事象の原因は不明。30 Hz の監視で、1 秒以上タップが呼ばれないトラックのタップを付け直し（1 回の再生でトラックごとに最大 3 回）、`~/Library/Logs/MyDAW/MeterRecovery.log` に状況を記録する。
+- **トラックメーターの停止**: 全トラックのメーターだけが止まる（音・マスター・FX は正常）事象は、FX へのプラグイン挿入（UADx Pure Plate Reverb）の後に分岐ミキサーのタップが呼ばれなくなっていた（付け直しても戻らない）。根本原因は不明で、単独のテストでは再現しない。トラックメーターはタップをやめ、ドライ経路の遅延ユニットの描画の中で測る。それでもユニットが描画されなくなった場合は `~/Library/Logs/MyDAW/MeterRecovery.log` に記録する。
 - **インストゥルメント**: AU・VST3 とも対象外（エフェクトのみ）。AU は `kAudioUnitType_Effect` だけを検出するため、ミュージックエフェクト（`aumf`）も一覧に出ない。
 - **インプットモニターの遅延**: バッファサイズに依存（48 kHz・512 フレームで往復約 25〜30 ms）。ギター用途では 128〜256 を推奨。オーディオインターフェースのダイレクトモニターとの併用は二重に聞こえる。
 - **ミキサー変更と再生中のグラフ変更**: プラグインの挿入・削除・並べ替えは停止中のみ。

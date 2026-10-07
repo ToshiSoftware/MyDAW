@@ -325,15 +325,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private let peakLock = NSLock()
     private var rawChannelPeaks: [Float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     private var masterOutputPeak: StereoPeak = .zero
-    private var trackOutputPeaks: [UUID: StereoPeak] = [:]
+    /// Track meters, kept by each track's dry delay unit as it renders.
+    /// Taps on the track splitters stopped for good at times (all tracks at
+    /// once, after a plug-in was inserted on one of them) while the tracks
+    /// kept sounding, and reinstalling the tap did not bring them back.
+    private var trackMeters: [UUID: RenderPeakMeter] = [:]
     private var fxOutputPeaks: [UUID: StereoPeak] = [:]
     private var liveWaveformPeaksBuffer: [UUID: [[(min: Float, max: Float)]]] = [:]
-    // Meter tap health (checkTrackMeterTaps). The callback counts are
-    // written by the taps under peakLock; they advance even on silence.
-    private var trackTapCallbackCounts: [UUID: Int] = [:]
+    // Track meter health (checkTrackMeters). The render cycle counts
+    // advance even on silence; the master tap count is written under peakLock.
     private var masterTapCallbackCount = 0
-    private var trackTapWatch: [UUID: (count: Int, since: TimeInterval)] = [:]
-    private var trackTapRecoveries: [UUID: Int] = [:]
+    private var trackMeterWatch: [UUID: (cycles: Int, since: TimeInterval)] = [:]
+    private var trackMeterStallsLogged: Set<UUID> = []
     private var lastMasterTapCount = 0
     private var lastMasterTapAdvance: TimeInterval = 0
     private var wasEngineRunning = false
@@ -1318,10 +1321,12 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 let decayedPeak = max(self.masterPeak * 0.85, outputMasterPeak.maximum)
                 self.masterPeak = decayedPeak < 1e-5 ? 0 : decayedPeak
 
-                let outputPeaks = self.peakLock.withLock {
-                    let values = self.trackOutputPeaks
-                    self.trackOutputPeaks.removeAll(keepingCapacity: true)
-                    return values
+                var outputPeaks: [UUID: StereoPeak] = [:]
+                var meterCycles: [UUID: Int] = [:]
+                for (trackID, meter) in self.trackMeters {
+                    let reading = meter.take()
+                    outputPeaks[trackID] = reading.peak
+                    meterCycles[trackID] = reading.cycles
                 }
 
                 let fxPeaks = self.peakLock.withLock {
@@ -1329,7 +1334,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     self.fxOutputPeaks.removeAll(keepingCapacity: true)
                     return values
                 }
-                self.checkTrackMeterTaps()
+                self.checkTrackMeters(cycles: meterCycles)
 
                 // Notify ProjectState to update track input meters
                 MyDAWNotificationCenter.shared.post(
@@ -1348,70 +1353,47 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     // MARK: - Meter tap watchdog
 
-    /// The track meter's tap on its splitter. `format` nil uses the bus's
-    /// current format (a reinstall, which must match it or AppKit throws).
-    private func installTrackMeterTap(on splitter: AVAudioMixerNode, trackID: UUID, format: AVAudioFormat?) {
-        splitter.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
-            let peak = StereoPeak(buffer: buffer)
-            self?.peakLock.withLock {
-                let previous = self?.trackOutputPeaks[trackID] ?? .zero
-                self?.trackOutputPeaks[trackID] = previous.merged(with: peak)
-                self?.trackTapCallbackCounts[trackID, default: 0] &+= 1
-            }
-        }
-    }
-
-    /// Track meters have stopped at times (all tracks at once, sound still
-    /// playing, master and FX meters fine) for a cause not yet known. While
-    /// the engine renders — the master tap keeps advancing — every track
-    /// tap must be called too, silent or not; one that stays uncalled for a
-    /// second is reinstalled, and the state is logged to find the cause.
-    private func checkTrackMeterTaps() {
+    /// Track meters stopped at times (all tracks at once, sound still
+    /// playing, master and FX meters fine) while they were taps on the track
+    /// splitters. They now come from the dry delay units, which render
+    /// whenever the track sounds. While the engine renders — the master tap
+    /// keeps advancing — every track's unit must render too, silent or not;
+    /// one that stays idle for a second is logged once per playback.
+    private func checkTrackMeters(cycles: [UUID: Int]) {
         let now = ProcessInfo.processInfo.systemUptime
         let running = engine.isRunning
         if running != wasEngineRunning {
             wasEngineRunning = running
             noteGraphEvent(running ? "engine running" : "engine stopped")
         }
-        let (counts, masterCount) = peakLock.withLock { (trackTapCallbackCounts, masterTapCallbackCount) }
+        let masterCount = peakLock.withLock { masterTapCallbackCount }
         if masterCount != lastMasterTapCount {
             lastMasterTapCount = masterCount
             lastMasterTapAdvance = now
         }
         guard isPlaying || isRecording else {
-            trackTapWatch.removeAll()
-            trackTapRecoveries.removeAll()
+            trackMeterWatch.removeAll()
+            trackMeterStallsLogged.removeAll()
             return
         }
         guard running, now - lastMasterTapAdvance < 0.5 else {
             // The engine itself is not rendering: nothing to judge.
-            trackTapWatch.removeAll()
+            trackMeterWatch.removeAll()
             return
         }
         var stalled: [UUID] = []
-        for trackID in trackSplitterNodes.keys {
-            let count = counts[trackID] ?? 0
-            if let watch = trackTapWatch[trackID], watch.count == count {
-                // At most three recoveries per playback, so a splitter that
-                // is really out of the graph does not fill the log.
-                if now - watch.since >= 1.0, trackTapRecoveries[trackID, default: 0] < 3 {
+        for (trackID, count) in cycles {
+            if let watch = trackMeterWatch[trackID], watch.cycles == count {
+                if now - watch.since >= 1.0, !trackMeterStallsLogged.contains(trackID) {
                     stalled.append(trackID)
                 }
             } else {
-                trackTapWatch[trackID] = (count, now)
+                trackMeterWatch[trackID] = (count, now)
             }
         }
         guard !stalled.isEmpty else { return }
-        writeMeterRecoveryLog(stalled: stalled, counts: counts, masterCount: masterCount, now: now)
-        for trackID in stalled {
-            // A tap on a node outside the engine raises an exception.
-            guard let splitter = trackSplitterNodes[trackID], splitter.engine === engine else { continue }
-            splitter.removeTap(onBus: 0)
-            installTrackMeterTap(on: splitter, trackID: trackID, format: nil)
-            trackTapRecoveries[trackID, default: 0] += 1
-            trackTapWatch[trackID] = nil
-        }
-        noteGraphEvent("track meter taps reinstalled: \(stalled.map(trackLabel).joined(separator: ", "))")
+        trackMeterStallsLogged.formUnion(stalled)
+        writeMeterRecoveryLog(stalled: stalled, cycles: cycles, masterCount: masterCount, now: now)
     }
 
     private func trackLabel(_ trackID: UUID) -> String {
@@ -1432,19 +1414,19 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
 
     /// Appends the state at a recovery to ~/Library/Logs/MyDAW/MeterRecovery.log.
-    private func writeMeterRecoveryLog(stalled: [UUID], counts: [UUID: Int], masterCount: Int, now: TimeInterval) {
+    private func writeMeterRecoveryLog(stalled: [UUID], cycles: [UUID: Int], masterCount: Int, now: TimeInterval) {
         func describe(_ format: AVAudioFormat) -> String {
             "\(Int(format.sampleRate)) Hz \(format.channelCount) ch"
         }
         var lines: [String] = []
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         lines.append("=== \(ISO8601DateFormatter().string(from: Date()))  MyDAW \(version)")
-        lines.append("Track meter taps stalled: \(stalled.count) of \(trackSplitterNodes.count) tracks")
+        lines.append("Track meters stalled (dry delay units not rendering): \(stalled.count) of \(trackMeters.count) tracks")
         lines.append("engine running \(engine.isRunning), playing \(isPlaying), recording \(isRecording), hardware \(Int(hardwareSampleRate)) Hz, master tap calls \(masterCount), pending splitter rewires \(pendingSplitterRewires.count)")
         for trackID in trackSplitterNodes.keys.sorted(by: { trackLabel($0) < trackLabel($1) }) {
             guard let splitter = trackSplitterNodes[trackID] else { continue }
-            let since = trackTapWatch[trackID].map { String(format: "%.2f s", now - $0.since) } ?? "-"
-            lines.append("  \(stalled.contains(trackID) ? "STALLED" : "ok     ") \(trackLabel(trackID)): tap calls \(counts[trackID] ?? 0), unchanged for \(since), recoveries \(trackTapRecoveries[trackID] ?? 0), splitter in \(describe(splitter.inputFormat(forBus: 0))) / out \(describe(splitter.outputFormat(forBus: 0))), attached \(splitter.engine != nil)")
+            let since = trackMeterWatch[trackID].map { String(format: "%.2f s", now - $0.since) } ?? "-"
+            lines.append("  \(stalled.contains(trackID) ? "STALLED" : "ok     ") \(trackLabel(trackID)): render cycles \(cycles[trackID] ?? 0), unchanged for \(since), splitter in \(describe(splitter.inputFormat(forBus: 0))) / out \(describe(splitter.outputFormat(forBus: 0))), attached \(splitter.engine != nil)")
         }
         lines.append("Recent events:")
         lines += graphEventHistory.map { "  " + $0 }
@@ -1540,11 +1522,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             trackPluginLatencies.removeValue(forKey: id)
             trackChainTails.removeValue(forKey: id)
             trackSendFXIDs.removeValue(forKey: id)
-            peakLock.withLock { _ = trackTapCallbackCounts.removeValue(forKey: id) }
-            trackTapWatch.removeValue(forKey: id)
-            trackTapRecoveries.removeValue(forKey: id)
+            trackMeters.removeValue(forKey: id)
+            trackMeterWatch.removeValue(forKey: id)
+            trackMeterStallsLogged.remove(id)
             if let splitter = trackSplitterNodes.removeValue(forKey: id) {
-                splitter.removeTap(onBus: 0)
                 engine.disconnectNodeOutput(splitter)
                 engine.detach(splitter)
             }
@@ -2463,9 +2444,6 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             splitter = AVAudioMixerNode()
             engine.attach(splitter)
             trackSplitterNodes[trackID] = splitter
-            // Metered here: after inserts, fader and pan — what the track sends on.
-            installTrackMeterTap(on: splitter, trackID: trackID, format: format)
-            noteGraphEvent("track meter tap installed: \(trackLabel(trackID))")
         }
         let panNode: AVAudioMixerNode
         if let existing = trackPanNodes[trackID] {
@@ -2502,6 +2480,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         } else {
             dryDelay = makeDelayCompensationNode()
             trackDryDelayNodes[trackID] = dryDelay
+            // Metered here: after inserts, fader and pan — what the track sends on.
+            let meter = RenderPeakMeter()
+            (dryDelay.auAudioUnit as? DelayCompensationAudioUnit)?.meter = meter
+            trackMeters[trackID] = meter
             applyTrackDryMute(trackID)
         }
         defer { updateLatencyCompensation() }
