@@ -53,7 +53,20 @@ public final class ProjectState: ObservableObject {
     public let mixerScrollRequests = PassthroughSubject<UUID, Never>()
     @Published public var fxChannels: [FXChannel] = []
     @Published public var masterPlugins: [TrackPluginDescriptor] = []
-    @Published public var selectedTrackId: UUID?
+    @Published public var selectedTrackId: UUID? {
+        didSet {
+            // The extra mixer targets go with the current track they were
+            // added to.
+            if selectedTrackId != oldValue && !mixerGroupTrackIDs.isEmpty {
+                mixerGroupTrackIDs = []
+            }
+        }
+    }
+    /// Mixer channels ⇧/⌘-clicked to be operated together with the current
+    /// track (which is not in the set).
+    @Published public internal(set) var mixerGroupTrackIDs: Set<UUID> = []
+    /// The mixer control being dragged on several channels at once.
+    var mixerGroupEdit: MixerGroupEdit?
     @Published public var clipDragPreview: ClipDragPreview?
     /// Time range selected across one or more adjacent tracks. Exclusive with
     /// clip selection: making one clears the other.
@@ -1927,31 +1940,26 @@ public final class ProjectState: ObservableObject {
                     continue
                 }
                 infos[path] = info
-                let start = min(info.length, max(0, AVAudioFramePosition((clip.sourceStartTime * info.sampleRate).rounded(.down))))
-                let end = min(info.length, AVAudioFramePosition(((clip.sourceStartTime + clip.duration) * info.sampleRate).rounded(.up)))
-                guard end > start else { continue }
-                let channelCount: AVAudioChannelCount = track.channelMode == .mono ? 1 : min(2, info.channelCount)
-                let sampleRate = info.sampleRate - targetSampleRate > 0.5 ? targetSampleRate : info.sampleRate
-                let bitDepth = !info.isFloat && info.bitDepth <= 16 ? 16 : 24
-                // A file that is already exactly what the clip needs stays.
-                if start == 0, end == info.length, channelCount == info.channelCount,
-                   sampleRate == info.sampleRate, bitDepth == info.bitDepth, !info.isFloat {
-                    continue
-                }
+                guard case .extract(let plan) = ClipAudioProcessing.extractDecision(
+                    for: info,
+                    sourceStartTime: clip.sourceStartTime,
+                    duration: clip.duration,
+                    isMonoTrack: track.channelMode == .mono,
+                    targetSampleRate: targetSampleRate
+                ) else { continue }
                 let extract = RecordingExtract(
                     sourcePath: path,
-                    frames: start..<end,
-                    channelCount: channelCount,
-                    sampleRate: sampleRate,
-                    bitDepth: bitDepth
+                    frames: plan.frames,
+                    channelCount: plan.channelCount,
+                    sampleRate: plan.sampleRate,
+                    bitDepth: plan.bitDepth
                 )
                 let index = extractIndex[extract] ?? {
                     extracts.append(extract)
                     extractIndex[extract] = extracts.count - 1
                     return extracts.count - 1
                 }()
-                // The part of a sample the clip started inside of.
-                rewrites.append((clip, index, clip.sourceStartTime - Double(start) / info.sampleRate))
+                rewrites.append((clip, index, plan.sourceStartTime))
             }
         }
 

@@ -24,7 +24,7 @@ public struct FolderHeaderView: View {
                 .frame(width: 6)
                 .contentShape(Rectangle())
                 .onTapGesture { isShowingColorPalette = true }
-                .help("Change folder color")
+                .trackRowHelp("Change folder color")
                 .popover(isPresented: $isShowingColorPalette, arrowEdge: .trailing) {
                     TrackColorPalette(color: $folder.color) {
                         isShowingColorPalette = false
@@ -41,7 +41,7 @@ public struct FolderHeaderView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
-            .help(folder.isOpen ? "Close Folder" : "Open Folder")
+            .trackRowHelp(folder.isOpen ? "Close Folder" : "Open Folder")
 
             HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
@@ -78,7 +78,7 @@ public struct FolderHeaderView: View {
                 .buttonStyle(PlainButtonStyle())
                 .disabled(isEmpty)
                 .opacity(isEmpty ? 0.4 : 1.0)
-                .help("Mute every track in the folder")
+                .trackRowHelp("Mute every track in the folder")
 
                 Button(action: {
                     projectState.toggleSolo(for: folder)
@@ -88,7 +88,7 @@ public struct FolderHeaderView: View {
                 .buttonStyle(PlainButtonStyle())
                 .disabled(isEmpty)
                 .opacity(isEmpty ? 0.4 : 1.0)
-                .help("Solo every track in the folder")
+                .trackRowHelp("Solo every track in the folder")
 
                 Button(action: {
                     projectState.confirmDeleteFolder(id: folder.id)
@@ -99,7 +99,7 @@ public struct FolderHeaderView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .padding(.leading, 2)
-                .help("Delete Folder (its tracks stay)")
+                .trackRowHelp("Delete Folder (its tracks stay)")
             }
             .padding(.trailing, 8)
         }

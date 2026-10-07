@@ -174,6 +174,96 @@ extension ProjectState {
         }
     }
 
+    // MARK: Duplicating
+
+    /// Tracks and folders cannot be duplicated while their plug-ins could
+    /// not be built (like inserting a plug-in).
+    public var canDuplicateRows: Bool {
+        !audioEngine.isPlaying && !audioEngine.isRecording
+    }
+
+    /// From a track header's right-click menu: adds a copy of the track right
+    /// below it, in the same folder, and makes it current. The copy has the
+    /// same settings, clips, plug-ins (with their state) and sends.
+    public func duplicateTrack(id: UUID) {
+        guard canDuplicateRows,
+              let index = rows.firstIndex(where: { $0.id == id }),
+              let track = rows[index].track else { return }
+        var takenNames = Set(tracks.map(\.name))
+        let copy = makeCopy(of: track, takenNames: &takenNames, folderID: track.folderID)
+        rows.insert(.track(copy), at: index + 1)
+        applyFolderStates()
+        selectedTrackId = copy.id
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    /// From a folder header's right-click menu: adds a copy of the folder
+    /// and its tracks right after the folder's last track. Names follow the
+    /// same rule as for a track.
+    public func duplicateFolder(id: UUID) {
+        guard canDuplicateRows, let folder = folder(withID: id) else { return }
+        let folderCopy = TrackFolder(
+            name: Self.duplicateName(of: folder.name, taken: Set(folders.map(\.name))),
+            color: folder.color,
+            isOpen: folder.isOpen,
+            isMuted: folder.isMuted,
+            isSoloed: folder.isSoloed
+        )
+        var takenNames = Set(tracks.map(\.name))
+        let trackCopies = tracks(in: folder).map { makeCopy(of: $0, takenNames: &takenNames, folderID: folderCopy.id) }
+        rows.insert(contentsOf: [.folder(folderCopy)] + trackCopies.map { .track($0) }, at: endOfFolderIndex(folder))
+        applyFolderStates()
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    private func makeCopy(of track: AudioTrack, takenNames: inout Set<String>, folderID: UUID?) -> AudioTrack {
+        let name = Self.duplicateName(of: track.name, taken: takenNames)
+        takenNames.insert(name)
+        var pluginCopies: [UUID: UUID] = [:]
+        let plugins = track.plugins.map { plugin -> TrackPluginDescriptor in
+            let copy = plugin.newInstance()
+            pluginCopies[plugin.id] = copy.id
+            return copy
+        }
+        let copy = AudioTrack(
+            name: name,
+            channelMode: track.channelMode,
+            inputChannelIndex: track.inputChannelIndex,
+            isRecordArmed: track.isRecordArmed,
+            isMuted: track.isMuted,
+            isSoloed: track.isSoloed,
+            isInputMonitoring: track.isInputMonitoring,
+            volume: track.volume,
+            pan: track.pan,
+            trackHeight: track.trackHeight,
+            color: track.color,
+            plugins: plugins,
+            fxSends: track.fxSends.map { FXSend(fxChannelID: $0.fxChannelID, level: $0.level, enabled: $0.enabled) }
+        )
+        copy.folderID = folderID
+        copy.replaceClips(track.clips.map { $0.duplicate(at: $0.startTime) })
+        audioEngine.copyPluginStates(pluginCopies)
+        return copy
+    }
+
+    /// "Guitar" → "Guitar 2", "Guitar 2" → "Guitar 3", going on to the next
+    /// number no other name in `taken` has.
+    static func duplicateName(of name: String, taken: Set<String>) -> String {
+        var base = name
+        var number = 2
+        if let space = name.lastIndex(of: " "),
+           case let digits = name[name.index(after: space)...],
+           !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+           let value = Int(digits), value < 1_000_000 {
+            base = String(name[..<space])
+            number = value + 1
+        }
+        while taken.contains("\(base) \(number)") {
+            number += 1
+        }
+        return "\(base) \(number)"
+    }
+
     /// From a header's right-click menu: adds an empty folder right above the
     /// track or folder `rowID`. Not for a track inside a folder, since
     /// folders do not nest.

@@ -89,6 +89,8 @@
 "Folder Name" = "Folder Name";
 "Change folder color" = "Change folder color";
 "Change FX color" = "Change FX color";
+"Duplicate Track" = "Duplicate Track";
+"Duplicate Folder" = "Duplicate Folder";
 "Show in Mixer" = "Show in Mixer";
 "Show Mixer" = "Show Mixer";
 "Hide Mixer" = "Hide Mixer";
@@ -314,3 +316,5 @@
 "The Undo history and the clipboard were cleared." = "The Undo history and the clipboard were cleared.";
 "Optimizing Recordings" = "Optimizing Recordings";
 "Creating recording files… (%lld / %lld)" = "Creating recording files… (%lld / %lld)";
+"%@-This plug-in cannot be used" = "%@-This plug-in cannot be used";
+"%@-This plug-in was not found" = "%@-This plug-in was not found";

@@ -328,6 +328,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var trackOutputPeaks: [UUID: StereoPeak] = [:]
     private var fxOutputPeaks: [UUID: StereoPeak] = [:]
     private var liveWaveformPeaksBuffer: [UUID: [[(min: Float, max: Float)]]] = [:]
+    // Meter tap health (checkTrackMeterTaps). The callback counts are
+    // written by the taps under peakLock; they advance even on silence.
+    private var trackTapCallbackCounts: [UUID: Int] = [:]
+    private var masterTapCallbackCount = 0
+    private var trackTapWatch: [UUID: (count: Int, since: TimeInterval)] = [:]
+    private var trackTapRecoveries: [UUID: Int] = [:]
+    private var lastMasterTapCount = 0
+    private var lastMasterTapAdvance: TimeInterval = 0
+    private var wasEngineRunning = false
+    private var meterTrackNames: [UUID: String] = [:]
+    /// Recent engine and graph events, written to the log on a recovery.
+    private var graphEventHistory: [String] = []
 
     // Timers
     private var playheadTimer: Timer?
@@ -380,6 +392,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         setupEngine()
         startMeterTimer()
         loadMonitor.start(engine: engine)
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.noteGraphEvent("AVAudioEngineConfigurationChange") }
+        }
         // プラグインウィンドウは .floating レベルを使用するため、
         // メインウィンドウのアクティブ化に応じて orderFront する処理は不要になった。
     }
@@ -458,6 +477,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // MARK: - Engine Initialization
 
     private func setupEngine() {
+        noteGraphEvent("setupEngine")
         let mixer = engine.mainMixerNode
         mixer.outputVolume = 1.0
 
@@ -508,6 +528,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 let peak = StereoPeak(buffer: buffer)
                 self?.peakLock.withLock {
                     self?.masterOutputPeak = (self?.masterOutputPeak ?? .zero).merged(with: peak)
+                    self?.masterTapCallbackCount &+= 1
                 }
             }
         }
@@ -667,6 +688,32 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         return auStates + vst3States
     }
 
+    /// Gives each copied plug-in (the values) the current state of the one it
+    /// was copied from (the keys); it is restored when the copy is built.
+    public func copyPluginStates(_ copies: [UUID: UUID]) {
+        for (sourceID, copyID) in copies {
+            if let data = currentStateData(for: sourceID) {
+                savedPluginStates[copyID] = data
+            }
+        }
+    }
+
+    /// A plug-in's state as `capturePluginStates` stores it, or the saved
+    /// one when it has no live instance.
+    private func currentStateData(for pluginID: UUID) -> Data? {
+        if let instance = vst3Instances[pluginID] {
+            return instance.captureState() ?? savedPluginStates[pluginID]
+        }
+        if let audioUnit = pluginAudioUnits[pluginID],
+           !(audioUnit.auAudioUnit is VST3AudioUnit),
+           let state = audioUnit.auAudioUnit.fullStateForDocument,
+           PropertyListSerialization.propertyList(state, isValidFor: .binary),
+           let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) {
+            return data
+        }
+        return savedPluginStates[pluginID]
+    }
+
     private func syncVST3Instances(for descriptors: [TrackPluginDescriptor]) {
         // Instances are kept alive regardless of `enabled` (matching the AU
         // path, which never tears down an AVAudioUnit on bypass). Destroying
@@ -743,10 +790,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
 
     private func replacePluginAudioUnit(_ audioUnit: AVAudioUnit, for pluginID: UUID) {
-        let hadPluginWindow = pluginWindows[pluginID] != nil
-        let previousFrame = pluginWindows[pluginID]?.frame
+        // A hidden AU window (see windowShouldClose) is dropped with the old
+        // unit's view but not shown again.
+        let existingWindow = pluginWindows[pluginID]
+        let hadPluginWindow = existingWindow?.isVisible == true
+        let previousFrame = existingWindow?.frame
         pluginViewControllers.removeValue(forKey: pluginID)
-        if hadPluginWindow {
+        if existingWindow != nil {
             closePluginWindow(pluginID: pluginID)
         }
         pluginAudioUnits[pluginID] = audioUnit
@@ -1279,6 +1329,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     self.fxOutputPeaks.removeAll(keepingCapacity: true)
                     return values
                 }
+                self.checkTrackMeterTaps()
 
                 // Notify ProjectState to update track input meters
                 MyDAWNotificationCenter.shared.post(
@@ -1295,6 +1346,136 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    // MARK: - Meter tap watchdog
+
+    /// The track meter's tap on its splitter. `format` nil uses the bus's
+    /// current format (a reinstall, which must match it or AppKit throws).
+    private func installTrackMeterTap(on splitter: AVAudioMixerNode, trackID: UUID, format: AVAudioFormat?) {
+        splitter.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
+            let peak = StereoPeak(buffer: buffer)
+            self?.peakLock.withLock {
+                let previous = self?.trackOutputPeaks[trackID] ?? .zero
+                self?.trackOutputPeaks[trackID] = previous.merged(with: peak)
+                self?.trackTapCallbackCounts[trackID, default: 0] &+= 1
+            }
+        }
+    }
+
+    /// Track meters have stopped at times (all tracks at once, sound still
+    /// playing, master and FX meters fine) for a cause not yet known. While
+    /// the engine renders — the master tap keeps advancing — every track
+    /// tap must be called too, silent or not; one that stays uncalled for a
+    /// second is reinstalled, and the state is logged to find the cause.
+    private func checkTrackMeterTaps() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let running = engine.isRunning
+        if running != wasEngineRunning {
+            wasEngineRunning = running
+            noteGraphEvent(running ? "engine running" : "engine stopped")
+        }
+        let (counts, masterCount) = peakLock.withLock { (trackTapCallbackCounts, masterTapCallbackCount) }
+        if masterCount != lastMasterTapCount {
+            lastMasterTapCount = masterCount
+            lastMasterTapAdvance = now
+        }
+        guard isPlaying || isRecording else {
+            trackTapWatch.removeAll()
+            trackTapRecoveries.removeAll()
+            return
+        }
+        guard running, now - lastMasterTapAdvance < 0.5 else {
+            // The engine itself is not rendering: nothing to judge.
+            trackTapWatch.removeAll()
+            return
+        }
+        var stalled: [UUID] = []
+        for trackID in trackSplitterNodes.keys {
+            let count = counts[trackID] ?? 0
+            if let watch = trackTapWatch[trackID], watch.count == count {
+                // At most three recoveries per playback, so a splitter that
+                // is really out of the graph does not fill the log.
+                if now - watch.since >= 1.0, trackTapRecoveries[trackID, default: 0] < 3 {
+                    stalled.append(trackID)
+                }
+            } else {
+                trackTapWatch[trackID] = (count, now)
+            }
+        }
+        guard !stalled.isEmpty else { return }
+        writeMeterRecoveryLog(stalled: stalled, counts: counts, masterCount: masterCount, now: now)
+        for trackID in stalled {
+            // A tap on a node outside the engine raises an exception.
+            guard let splitter = trackSplitterNodes[trackID], splitter.engine === engine else { continue }
+            splitter.removeTap(onBus: 0)
+            installTrackMeterTap(on: splitter, trackID: trackID, format: nil)
+            trackTapRecoveries[trackID, default: 0] += 1
+            trackTapWatch[trackID] = nil
+        }
+        noteGraphEvent("track meter taps reinstalled: \(stalled.map(trackLabel).joined(separator: ", "))")
+    }
+
+    private func trackLabel(_ trackID: UUID) -> String {
+        "\(meterTrackNames[trackID] ?? "?") [\(trackID.uuidString.prefix(8))]"
+    }
+
+    private static let graphEventTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    private func noteGraphEvent(_ text: String) {
+        graphEventHistory.append("\(Self.graphEventTimeFormatter.string(from: Date()))  \(text)")
+        if graphEventHistory.count > 60 {
+            graphEventHistory.removeFirst(graphEventHistory.count - 60)
+        }
+    }
+
+    /// Appends the state at a recovery to ~/Library/Logs/MyDAW/MeterRecovery.log.
+    private func writeMeterRecoveryLog(stalled: [UUID], counts: [UUID: Int], masterCount: Int, now: TimeInterval) {
+        func describe(_ format: AVAudioFormat) -> String {
+            "\(Int(format.sampleRate)) Hz \(format.channelCount) ch"
+        }
+        var lines: [String] = []
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        lines.append("=== \(ISO8601DateFormatter().string(from: Date()))  MyDAW \(version)")
+        lines.append("Track meter taps stalled: \(stalled.count) of \(trackSplitterNodes.count) tracks")
+        lines.append("engine running \(engine.isRunning), playing \(isPlaying), recording \(isRecording), hardware \(Int(hardwareSampleRate)) Hz, master tap calls \(masterCount), pending splitter rewires \(pendingSplitterRewires.count)")
+        for trackID in trackSplitterNodes.keys.sorted(by: { trackLabel($0) < trackLabel($1) }) {
+            guard let splitter = trackSplitterNodes[trackID] else { continue }
+            let since = trackTapWatch[trackID].map { String(format: "%.2f s", now - $0.since) } ?? "-"
+            lines.append("  \(stalled.contains(trackID) ? "STALLED" : "ok     ") \(trackLabel(trackID)): tap calls \(counts[trackID] ?? 0), unchanged for \(since), recoveries \(trackTapRecoveries[trackID] ?? 0), splitter in \(describe(splitter.inputFormat(forBus: 0))) / out \(describe(splitter.outputFormat(forBus: 0))), attached \(splitter.engine != nil)")
+        }
+        lines.append("Recent events:")
+        lines += graphEventHistory.map { "  " + $0 }
+        lines.append("")
+        let text = lines.joined(separator: "\n") + "\n"
+        print(text)
+
+        let folder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/MyDAW", isDirectory: true)
+        let url = folder.appendingPathComponent("MeterRecovery.log")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard let data = text.data(using: .utf8) else { return }
+        // Kept under about 1 MB: past that, the older half is dropped.
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 1_000_000,
+           let old = try? Data(contentsOf: url) {
+            var kept = old.suffix(500_000)
+            // Start at a whole entry.
+            if let start = kept.range(of: Data("\n=== ".utf8)) {
+                kept = kept[(start.lowerBound + 1)...]
+            }
+            try? Data(kept).write(to: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
     // MARK: - Track Synchronization
 
     public func syncTracks(_ tracks: [AudioTrack]) {
@@ -1305,6 +1486,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     public func syncTracks(_ tracks: [AudioTrack], fxChannels: [FXChannel]) {
         syncedFXChannels = fxChannels
         syncedTracks = tracks
+        meterTrackNames = Dictionary(tracks.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        noteGraphEvent("syncTracks (\(tracks.count) tracks, \(fxChannels.count) FX)")
         let allPlugins = tracks.flatMap(\.plugins) + fxChannels.flatMap(\.plugins) + configuredMasterPlugins
         let activePluginIDs = Set(allPlugins.map(\.id))
         let removedPluginIDs = Set(pluginDescriptors.keys).subtracting(activePluginIDs)
@@ -1357,6 +1540,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             trackPluginLatencies.removeValue(forKey: id)
             trackChainTails.removeValue(forKey: id)
             trackSendFXIDs.removeValue(forKey: id)
+            peakLock.withLock { _ = trackTapCallbackCounts.removeValue(forKey: id) }
+            trackTapWatch.removeValue(forKey: id)
+            trackTapRecoveries.removeValue(forKey: id)
             if let splitter = trackSplitterNodes.removeValue(forKey: id) {
                 splitter.removeTap(onBus: 0)
                 engine.disconnectNodeOutput(splitter)
@@ -1897,6 +2083,30 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         mixer.auAudioUnit.reset()
     }
 
+    // A plug-in that cannot take the chain format (a mono-only "(m)" variant
+    // on the stereo chain) makes connect raise an uncaught exception from
+    // setFormat. Asking the busses first returns that refusal as an error, so
+    // such a plug-in is left out of the chain as unavailable instead.
+    private nonisolated func acceptsChainFormat(_ audioUnit: AVAudioUnit, format: AVAudioFormat, name: String) -> Bool {
+        let unit = audioUnit.auAudioUnit
+        do {
+            for busses in [unit.inputBusses, unit.outputBusses] where busses.count > 0 {
+                // A unit may report the chain format as its default and still
+                // refuse it, so a unit without render resources is always asked.
+                let current = busses[0].format
+                if !unit.renderResourcesAllocated
+                    || current.sampleRate != format.sampleRate
+                    || current.channelCount != format.channelCount {
+                    try busses[0].setFormat(format)
+                }
+            }
+            return true
+        } catch {
+            print("Plug-in \(name) does not support \(format.channelCount) ch at \(format.sampleRate) Hz: \(error)")
+            return false
+        }
+    }
+
     private func connectReformatting(_ source: AVAudioNode, to destination: AVAudioNode, format: AVAudioFormat) {
         let needsRelease: (AVAudioNode) -> AUAudioUnit? = { node in
             guard let unit = (node as? AVAudioUnit)?.auAudioUnit, unit.renderResourcesAllocated else { return nil }
@@ -1910,10 +2120,17 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let units = [needsRelease(source), needsRelease(destination)].compactMap { $0 }
         let restart = !units.isEmpty && engine.isRunning
         if restart {
+            noteGraphEvent("connectReformatting restarts the engine")
             engine.stop()
         }
         units.forEach { $0.deallocateRenderResources() }
-        engine.connect(source, to: destination, format: format)
+        let accepted = [source, destination].allSatisfy { node in
+            guard let audioUnit = node as? AVAudioUnit else { return true }
+            return acceptsChainFormat(audioUnit, format: format, name: audioUnit.name)
+        }
+        if accepted {
+            engine.connect(source, to: destination, format: format)
+        }
         if restart {
             try? engine.start()
         }
@@ -2008,6 +2225,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         } else {
                             audioUnit = nil
                         }
+                    }
+                    audioUnit = audioUnit.flatMap {
+                        self.acceptsChainFormat($0, format: format, name: pluginName) ? $0 : nil
                     }
                     guard let audioUnit else {
                         self.markPluginUnavailable(pluginID)
@@ -2244,13 +2464,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             engine.attach(splitter)
             trackSplitterNodes[trackID] = splitter
             // Metered here: after inserts, fader and pan — what the track sends on.
-            splitter.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
-                let peak = StereoPeak(buffer: buffer)
-                self?.peakLock.withLock {
-                    let previous = self?.trackOutputPeaks[trackID] ?? .zero
-                    self?.trackOutputPeaks[trackID] = previous.merged(with: peak)
-                }
-            }
+            installTrackMeterTap(on: splitter, trackID: trackID, format: format)
+            noteGraphEvent("track meter tap installed: \(trackLabel(trackID))")
         }
         let panNode: AVAudioMixerNode
         if let existing = trackPanNodes[trackID] {
@@ -2324,8 +2539,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // the engine stopped. During transport it waits for stop().
         if isPlaying || isRecording {
             pendingSplitterRewires[trackID] = format
+            noteGraphEvent("splitter rewire deferred: \(trackLabel(trackID))")
             return
         }
+        noteGraphEvent("splitter rewire: \(trackLabel(trackID)), \(Int(format.sampleRate)) Hz \(format.channelCount) ch, engine running \(engine.isRunning)")
         let wasRunning = engine.isRunning
         if wasRunning {
             engine.stop()
@@ -2511,6 +2728,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private func connectFXOutputsToMainMixer(format: AVAudioFormat) {
         let missing = fxOutputsMissingMainMixer()
         guard !missing.isEmpty, !isPlaying, !isRecording else { return }
+        noteGraphEvent("connectFXOutputsToMainMixer (\(missing.count))")
         let wasRunning = engine.isRunning
         if wasRunning {
             engine.stop()
@@ -2628,6 +2846,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     (audioUnit?.auAudioUnit as? VST3AudioUnit)?.attach(vst3Instance)
                 }
                 guard let self else { return }
+                let audioUnit = audioUnit.flatMap {
+                    self.acceptsChainFormat($0, format: format, name: plugin.name) ? $0 : nil
+                }
                 guard let audioUnit else {
                     DispatchQueue.main.async {
                         // The channel may be gone or rebuilt by now; going on
@@ -2828,6 +3049,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         guard self.trackRenderers[trackID] != nil,
                               self.pluginGraphGenerations[trackID] == generation else {
                             return
+                        }
+                        let audioUnit = audioUnit.flatMap {
+                            self.acceptsChainFormat($0, format: format, name: pluginName) ? $0 : nil
                         }
                         guard let audioUnit else {
                             self.markPluginUnavailable(pluginID)
@@ -3042,6 +3266,20 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         window.contentViewController = nil
         window.contentView = nil
         window.close()
+    }
+
+    // An AU's close button only hides its window, and opening the UI again
+    // shows that same window. Closing it moved the cached view controller
+    // into a new window at every open, and some plug-in views (Waves
+    // WaveShell) come up blank after a few such moves. VST3 editors are
+    // detached and attached again instead, so their windows still close.
+    // window.close() from the host (plug-in removed, project closed) does not
+    // ask this and still closes the window.
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let entry = pluginWindows.first(where: { $0.value === sender }),
+              pluginDescriptors[entry.key]?.kind != .vst3 else { return true }
+        sender.orderOut(nil)
+        return false
     }
 
     public func windowWillClose(_ notification: Notification) {
@@ -3303,6 +3541,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         isRetry: Bool = false,
         recordArmedTracks: Bool = true
     ) {
+        noteGraphEvent("startPlayOrRecord\(isRetry ? " (retry)" : "")")
         if isStartingPlayback && !isRetry && !isPlaying && !isRecording {
             startPlaybackTask?.cancel()
             startPlaybackTask = nil
@@ -3619,6 +3858,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                   !self.isPlaying, !self.isRecording, !self.isStartingPlayback else { return }
             let rewires = self.pendingSplitterRewires
             self.pendingSplitterRewires.removeAll()
+            self.noteGraphEvent("applying deferred rewires (\(rewires.count) tracks)")
             for (trackID, format) in rewires {
                 if let tail = self.trackChainTails[trackID] {
                     self.connectTrackChainTail(trackID, from: tail, format: format)
@@ -3857,6 +4097,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     // MARK: - Transport: Stop
 
     public func stop(tracks: [AudioTrack]) {
+        noteGraphEvent("stop")
         startPlaybackTask?.cancel()
         startPlaybackTask = nil
         playbackRetryTask?.cancel()

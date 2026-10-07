@@ -118,7 +118,7 @@ public struct MixerView: View {
                         ForEach(mixerItems) { item in
                             switch item {
                             case .track(let track):
-                                TrackStripView(track: track, projectState: projectState, layout: layout)
+                                TrackStripView(track: track, projectState: projectState, audioEngine: projectState.audioEngine, layout: layout)
                                     .id(item.id)
                             case .folderEdge(let folder):
                                 // The stack's spacing leaves 2 pt either side.
@@ -370,6 +370,13 @@ private struct PluginRow: View {
     let onMove: (UUID) -> Void
     let onRemove: () -> Void
 
+    private var helpText: String {
+        guard isUnavailable else { return plugin.menuDisplayName }
+        return plugin.isInstalled
+            ? String(localized: "\(plugin.menuDisplayName)-This plug-in cannot be used")
+            : String(localized: "\(plugin.menuDisplayName)-This plug-in was not found")
+    }
+
     var body: some View {
         HStack(spacing: 3) {
             Button(action: onToggle) {
@@ -388,7 +395,7 @@ private struct PluginRow: View {
                 onMove: onMove
             )
             .frame(maxWidth: .infinity, alignment: .leading)
-            .help(plugin.menuDisplayName)
+            .help(helpText)
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 7, weight: .bold))
@@ -429,6 +436,7 @@ private struct TrackFaderColumn: View {
     @Binding var gain: Float
     let isRecordArmed: Bool
     let onChange: () -> Void
+    var onEnd: () -> Void = {}
 
     var body: some View {
         FaderColumn(
@@ -437,7 +445,8 @@ private struct TrackFaderColumn: View {
                 ? StereoPeak(left: meter.inputPeak, right: meter.inputPeak)
                 : meter.outputPeak,
             tint: isRecordArmed ? .red : Color(white: 0.85),
-            onChange: onChange
+            onChange: onChange,
+            onEnd: onEnd
         )
     }
 }
@@ -448,6 +457,7 @@ private struct FaderColumn: View {
     let peak: StereoPeak
     let tint: Color
     let onChange: () -> Void
+    var onEnd: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 2) {
@@ -455,12 +465,13 @@ private struct FaderColumn: View {
                 if let value = MixerScale.gain(parsing: text) {
                     gain = min(MixerGain.maximum, value)
                     onChange()
+                    onEnd()
                 }
             }
             .frame(height: 14)
             HStack(spacing: 2) {
                 FaderScale().frame(width: 18)
-                VolumeFader(gain: $gain, tint: tint, onChange: onChange).frame(width: 26)
+                VolumeFader(gain: $gain, tint: tint, onChange: onChange, onEnd: onEnd).frame(width: 26)
                 StereoMeter(peak: peak).frame(width: 11)
             }
             .frame(maxHeight: .infinity)
@@ -472,16 +483,18 @@ private struct PanBlock: View {
     @Binding var pan: Float
     let tint: Color
     let onChange: () -> Void
+    var onEnd: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 2) {
-            PanControl(pan: $pan, tint: tint, onChange: onChange)
+            PanControl(pan: $pan, tint: tint, onChange: onChange, onEnd: onEnd)
             EditableValueText(
                 text: MixerScale.panLabel(pan),
                 onCommit: { text in
                     if let value = MixerScale.pan(parsing: text) {
                         pan = value
                         onChange()
+                        onEnd()
                     }
                 },
                 font: .system(size: 9, weight: .semibold, design: .monospaced)
@@ -531,20 +544,33 @@ private struct StripFooter: View {
 private struct TrackStripView: View {
     @ObservedObject var track: AudioTrack
     @ObservedObject var projectState: ProjectState
+    // Observed so an insert the engine rejects turns red as soon as it is
+    // marked unavailable, not at the next redraw for another reason.
+    @ObservedObject var audioEngine: AudioEngineManager
     let layout: MixerSectionLayout
 
     private var isBusy: Bool {
         projectState.audioEngine.isPlaying || projectState.audioEngine.isRecording
     }
 
-    private func applyLevels() {
-        projectState.audioEngine.updateMixerLevels(tracks: projectState.tracks, fxChannels: projectState.fxChannels)
+    private func endGroupEdit() {
+        projectState.endMixerGroupEdit()
+    }
+
+    /// Fader, pan and sends of the current track and the channels added to
+    /// it move together (see ProjectState+MixerGroup).
+    private var volume: Binding<Float> {
+        Binding(get: { track.volume }, set: { projectState.setMixerVolume($0, for: track) })
+    }
+
+    private var pan: Binding<Float> {
+        Binding(get: { track.pan }, set: { projectState.setMixerPan($0, for: track) })
     }
 
     var body: some View {
         StripSections(
             layout: layout,
-            background: track.id == projectState.selectedTrackId
+            background: projectState.isMixerTarget(track.id)
                 ? Color(red: 0.18, green: 0.20, blue: 0.24)
                 : Color(red: 0.13, green: 0.14, blue: 0.16),
             border: track.color.opacity(0.45)
@@ -560,7 +586,7 @@ private struct TrackStripView: View {
                         ForEach(track.plugins) { plugin in
                             PluginRow(
                                 plugin: plugin,
-                                isUnavailable: projectState.audioEngine.isPluginUnavailable(plugin.id),
+                                isUnavailable: audioEngine.isPluginUnavailable(plugin.id),
                                 canReorder: !isBusy,
                                 onToggle: { projectState.togglePlugin(plugin.id, on: track.id) },
                                 onOpen: { projectState.openPluginUI(plugin.id, on: track.id) },
@@ -589,16 +615,22 @@ private struct TrackStripView: View {
                                         text: MixerScale.label(forGain: level),
                                         onCommit: { text in
                                             if let value = MixerScale.gain(parsing: text) {
-                                                projectState.setSend(trackID: track.id, fxChannelID: fxChannel.id, level: min(MixerGain.maximum, value))
+                                                projectState.setMixerSend(min(MixerGain.maximum, value), for: track, fxChannelID: fxChannel.id)
+                                                endGroupEdit()
                                             }
                                         },
                                         font: .system(size: 8, design: .monospaced)
                                     )
                                     .frame(width: 34)
                                 }
-                                SendLevelBar(gain: level, tint: fxChannel.color) { value in
-                                    projectState.setSend(trackID: track.id, fxChannelID: fxChannel.id, level: value)
-                                }
+                                SendLevelBar(
+                                    gain: level,
+                                    tint: fxChannel.color,
+                                    onSet: { value in
+                                        projectState.setMixerSend(value, for: track, fxChannelID: fxChannel.id)
+                                    },
+                                    onEnd: endGroupEdit
+                                )
                             }
                         }
                     }
@@ -607,32 +639,34 @@ private struct TrackStripView: View {
             }
         } controls: {
             VStack(spacing: 4) {
-                PanBlock(pan: $track.pan, tint: .cyan, onChange: applyLevels)
+                PanBlock(pan: pan, tint: .cyan, onChange: {}, onEnd: endGroupEdit)
                 HStack(spacing: 4) {
-                    Button("M") { projectState.toggleMute(for: track) }
+                    Button("M") { projectState.toggleMixerMute(for: track) }
                         .buttonStyle(MixerButtonStyle(active: track.isMuted, held: track.isMutedByFolder, color: .cyan))
                         .disabled(track.isMutedByFolder)
-                    Button("S") { projectState.toggleSolo(for: track) }
+                    Button("S") { projectState.toggleMixerSolo(for: track) }
                         .buttonStyle(MixerButtonStyle(active: track.isSoloed, held: track.isSoloedByFolder, color: .yellow))
                         .disabled(track.isSoloedByFolder)
                 }
                 .frame(height: 20)
                 TrackFaderColumn(
                     meter: track.meter,
-                    gain: $track.volume,
+                    gain: volume,
                     isRecordArmed: track.isRecordArmed,
-                    onChange: applyLevels
+                    onChange: {},
+                    onEnd: endGroupEdit
                 )
                 StripFooter(
                     name: track.name,
                     color: track.color,
                     isCurrent: track.id == projectState.selectedTrackId
                 )
-                    .contentShape(Rectangle())
-                    .onTapGesture { projectState.selectedTrackId = track.id }
             }
             .padding(.top, 4)
         }
+        // Anywhere on the channel but its controls: they take their clicks.
+        .contentShape(Rectangle())
+        .onTapGesture { projectState.clickMixerChannel(track.id) }
     }
 }
 
@@ -881,12 +915,12 @@ private struct PluginNameButton: View {
                 onOpen()
             }
             .onDrag {
-                guard canReorder else { return NSItemProvider() }
+                guard canReorder && !isUnavailable else { return NSItemProvider() }
                 suppressTapUntil = Date().addingTimeInterval(0.5)
                 return NSItemProvider(object: pluginID.uuidString as NSString)
             }
             .onDrop(of: [.text], isTargeted: nil) { providers in
-                guard canReorder, let provider = providers.first else { return false }
+                guard canReorder && !isUnavailable, let provider = providers.first else { return false }
                 provider.loadObject(ofClass: NSString.self) { object, _ in
                     guard let value = object as? NSString,
                           let sourceID = UUID(uuidString: value as String) else { return }
@@ -897,7 +931,6 @@ private struct PluginNameButton: View {
                 suppressTapUntil = Date().addingTimeInterval(0.5)
                 return true
             }
-            .allowsHitTesting(!isUnavailable)
     }
 }
 

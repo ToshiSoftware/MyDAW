@@ -51,7 +51,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Overlap layering**: the most recently added clip plays on top of older ones, with automatic crossfades (equal power by default) at the boundaries. The fades of the upper clip drive the crossfades.
 - **Track reordering**: drag a track header up or down by any free spot (the name, the meter, …). A white line shows where it will land. The mixer strips follow the same order.
 - **Track folders**: **Add Folder** from the track list's + menu or a header's right-click menu, then drag tracks into it (tracks inside are indented; an indented drop line means the track goes into the folder). ▼ / ▶ opens and closes a folder; the tracks of a closed folder are not drawn (they still play and record). A folder's [M] / [S] mute or solo all its tracks (their own buttons light grey), and turning it off brings back each track's own state. Folders move with their tracks when dragged, take a colour, and are renamed by double-clicking. Folders do not nest.
-- **Header right-click menu**: right-clicking a track makes it current and offers **Add Track** / **Add Folder** above it (only Add Track for a track inside a folder) and **Show in Mixer** (scrolls the mixer so that track or folder is at its left edge).
+- **Header right-click menu**: right-clicking a track makes it current and offers **Add Track** / **Add Folder** above it (only Add Track for a track inside a folder), **Duplicate Track** / **Duplicate Folder** (not during playback or recording), and **Show in Mixer** (scrolls the mixer so that track or folder is at its left edge). A duplicate gets the same clips (the recordings are shared, not copied), mixer settings, sends and plug-ins with their settings; its name gets the next free number ("Guitar" → "Guitar 2").
 - WAV import by drag and drop from Finder. Files at another sample rate or bit depth are converted to 24-bit WAV at the current rate.
 - Detailed waveforms: one min–max bar per point, from the samples themselves when zoomed in far, so single cycles are visible.
 - The timeline is as long as the song (clips and end flag, at least 60 s); the part past it is darkened. Ruler clicks and playing on do not lengthen it.
@@ -61,6 +61,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Mixing
 - Studio One-style mixer with three resizable sections per strip: **INSERT**, **SEND**, **controls**. Drag the top edge to resize the mixer; at least 220 pt is kept between the SEND/fader divider and the bottom edge. Shrinking the window shrinks only the track area; the transport bar and the mixer are never cut off. The ▼ button on the mixer bar folds the mixer down to its bar; ▲ brings it back.
 - The current track's name is shown black on white in the mixer. A coloured vertical line marks where each folder and the FX channels start; click it to change the colour (the FX line's colour goes to every FX channel, and new FX channels take it).
+- **Operate several channels together**: ⇧- or ⌘-click mixer channels to add them to the current track (click again to remove). Their faders move together keeping their dB differences, pan and sends keep their differences, and M / S follow the channel you click. Inserts are not included. Selecting another track clears the added channels.
 - dB-scaled faders up to **+6 dB**, stereo L/R meters with peak hold, horizontal pan, mute/solo, double-click to type exact values.
 - Tracks, FX channels (renamable, with mute/solo) and a master channel. Sends are post-insert and post-pan. Soloing an FX channel plays only its return. A new FX channel is numbered one past the highest existing "FX n".
 - Track colours selectable from a palette.
@@ -72,6 +73,8 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - **Plug-in latency compensation** for track inserts and FX channels: dry and effect sounds stay in time, even with a high-latency plug-in (such as a mastering suite) on an FX channel. Bypassing a plug-in keeps its compensation, and a plug-in that changes its latency is followed.
 - The sound right at the play position is heard from the first sample; the metronome's first click too.
 - Plug-in state saved with the project.
+- A plug-in that cannot be used is shown in red in the insert list; its tooltip says whether it cannot be used on this Mac or was not found (not installed).
+- Closing an AU plug-in's window only hides it; opening it again shows the same window.
 
 ### Project
 - A project is a `.mydaw` file plus the `Recordings/` folder next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). File and folder names are free, and the folder is fully portable. Several `.mydaw` files in one folder share its `Recordings/`. **Save Project As** (⇧⌘S) saves only into the same folder. Double-clicking a `.mydaw` file in the Finder opens it (the file shows a MyDAW document icon).
@@ -160,6 +163,7 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 - Switching input monitoring (I) during playback takes effect after you stop: when turned on, the input is heard once effect tails have faded; when turned off, the input stays audible until you stop (monitoring cannot be rewired while playing).
 - While MyDAW runs, the chosen devices are the macOS defaults, so other apps use them too. If MyDAW crashes the defaults are not restored; reset them in System Settings → Sound.
 - Plug-ins can be inserted, removed and reordered only while stopped.
+- Mono-only plug-ins (such as Waves "(m)" versions) cannot be used, because the insert chain is stereo even on mono tracks. Use the stereo version ("(s)").
 - If a plug-in's own editor does not respond within 3 seconds, MyDAW shows a generic parameter view (Generic UI) instead.
 
 ---

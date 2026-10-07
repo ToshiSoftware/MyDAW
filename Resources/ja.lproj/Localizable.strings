@@ -89,6 +89,8 @@
 "Folder Name" = "フォルダ名";
 "Change folder color" = "フォルダの色を変更";
 "Change FX color" = "FXの色を変更";
+"Duplicate Track" = "トラックを複製";
+"Duplicate Folder" = "フォルダを複製";
 "Show in Mixer" = "ミキサーに表示";
 "Show Mixer" = "ミキサーを表示";
 "Hide Mixer" = "ミキサーをたたむ";
@@ -314,3 +316,5 @@
 "The Undo history and the clipboard were cleared." = "取り消しの履歴とクリップボードを消去しました。";
 "Optimizing Recordings" = "録音ファイルを最適化中";
 "Creating recording files… (%lld / %lld)" = "録音ファイルを生成しています…（%lld / %lld）";
+"%@-This plug-in cannot be used" = "%@-このプラグインは使用できません";
+"%@-This plug-in was not found" = "%@-このプラグインは見つかりません";

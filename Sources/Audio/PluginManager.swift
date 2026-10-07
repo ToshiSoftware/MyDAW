@@ -58,6 +58,20 @@ public struct TrackPluginDescriptor: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    /// Whether the plug-in is still on this Mac: the AU is registered, or the
+    /// VST3 bundle is at its saved path. An unavailable insert that is
+    /// installed failed to load or to take the chain format.
+    public var isInstalled: Bool {
+        switch kind {
+        case .au:
+            var description = audioComponentDescription
+            return componentType != 0 && AudioComponentFindNext(nil, &description) != nil
+        case .vst3:
+            guard let bundleURL else { return false }
+            return FileManager.default.fileExists(atPath: bundleURL)
+        }
+    }
+
     public var audioComponentDescription: AudioComponentDescription {
         AudioComponentDescription(
             componentType: componentType,

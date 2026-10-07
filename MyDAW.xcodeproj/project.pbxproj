@@ -11,6 +11,7 @@
 		DAWB00A10000000000000001 /* TrackFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A10000000000000001 /* TrackFolder.swift */; };
 		DAWB00A20000000000000001 /* ProjectState+Editing.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A20000000000000001 /* ProjectState+Editing.swift */; };
 		DAWB00A30000000000000001 /* ProjectState+Folders.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A30000000000000001 /* ProjectState+Folders.swift */; };
+		DAWB00A90000000000000001 /* ProjectState+MixerGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A90000000000000001 /* ProjectState+MixerGroup.swift */; };
 		DAWB00A40000000000000001 /* ClipAudioProcessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A40000000000000001 /* ClipAudioProcessing.swift */; };
 		DAWB00A50000000000000001 /* TrackRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A50000000000000001 /* TrackRenderer.swift */; };
 		DAWB00A60000000000000001 /* FolderHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00A60000000000000001 /* FolderHeaderView.swift */; };
@@ -60,6 +61,7 @@
 		DAWF00A10000000000000001 /* TrackFolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackFolder.swift; sourceTree = "<group>"; };
 		DAWF00A20000000000000001 /* ProjectState+Editing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProjectState+Editing.swift"; sourceTree = "<group>"; };
 		DAWF00A30000000000000001 /* ProjectState+Folders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProjectState+Folders.swift"; sourceTree = "<group>"; };
+		DAWF00A90000000000000001 /* ProjectState+MixerGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProjectState+MixerGroup.swift"; sourceTree = "<group>"; };
 		DAWF00A40000000000000001 /* ClipAudioProcessing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipAudioProcessing.swift; sourceTree = "<group>"; };
 		DAWF00A50000000000000001 /* TrackRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackRenderer.swift; sourceTree = "<group>"; };
 		DAWF00A60000000000000001 /* FolderHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderHeaderView.swift; sourceTree = "<group>"; };
@@ -145,6 +147,7 @@
 			isa = PBXGroup;
 			children = (
 				DAWF00A30000000000000001 /* ProjectState+Folders.swift */,
+				DAWF00A90000000000000001 /* ProjectState+MixerGroup.swift */,
 				DAWF00A20000000000000001 /* ProjectState+Editing.swift */,
 				DAWF00A10000000000000001 /* TrackFolder.swift */,
 				DAWF00A00000000000000001 /* AppLanguage.swift */,
@@ -324,6 +327,7 @@
 				DAWB00A10000000000000001 /* TrackFolder.swift in Sources */,
 				DAWB00A20000000000000001 /* ProjectState+Editing.swift in Sources */,
 				DAWB00A30000000000000001 /* ProjectState+Folders.swift in Sources */,
+				DAWB00A90000000000000001 /* ProjectState+MixerGroup.swift in Sources */,
 				DAWB00A40000000000000001 /* ClipAudioProcessing.swift in Sources */,
 				DAWB00A50000000000000001 /* TrackRenderer.swift in Sources */,
 				DAWB00A60000000000000001 /* FolderHeaderView.swift in Sources */,

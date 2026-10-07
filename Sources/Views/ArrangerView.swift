@@ -17,6 +17,7 @@ public struct ArrangerView: View {
     /// The vertical scroll view holding the tracks, scrolled to keep a point
     /// in place when the track height changes.
     @State private var trackRowsScrollView = WeakScrollView()
+    @State private var trackRowsPointer = TrackRowsPointer()
     /// Track or folder being dragged by its header to a new place in the
     /// order, how far it has been dragged, and where the pointer is (in the
     /// header column, which lines up with the rows).
@@ -482,6 +483,17 @@ public struct ArrangerView: View {
             })
         }
         menu.addItem(.separator())
+        switch row {
+        case .track(let track):
+            menu.addItem(ClosureMenuItem(String(localized: "Duplicate Track"), symbol: "plus.square.on.square", enabled: projectState.canDuplicateRows) {
+                projectState.duplicateTrack(id: track.id)
+            })
+        case .folder(let folder):
+            menu.addItem(ClosureMenuItem(String(localized: "Duplicate Folder"), symbol: "plus.square.on.square", enabled: projectState.canDuplicateRows) {
+                projectState.duplicateFolder(id: folder.id)
+            })
+        }
+        menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(String(localized: "Show in Mixer"), symbol: "slider.vertical.3", enabled: true) {
             projectState.mixerScrollRequests.send(row.id)
         })
@@ -871,6 +883,8 @@ public struct ArrangerView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .onHover { trackRowsPointer.isInside = $0 }
+                .environment(\.trackRowsPointer, trackRowsPointer)
                 .background(VerticalScrollObserver(scrollView: trackRowsScrollView) {
                     if let requested = scrollFollow.requestedVerticalOffset {
                         setVerticalScrollOffset(requested)
@@ -1532,6 +1546,56 @@ private struct KnobOnlySlider: View {
 /// not reach the scroll views.
 private final class WeakScrollView {
     weak var scrollView: NSScrollView?
+}
+
+/// Whether the pointer is over the visible track rows. SwiftUI shows a
+/// `.help` tooltip of a header scrolled out under the mixer when the pointer
+/// is over the mixer, so the headers' tooltips are given only while the
+/// pointer is inside the rows. An object, so that entering and leaving
+/// updates just the tooltips, not the whole arranger.
+final class TrackRowsPointer: ObservableObject {
+    @Published var isInside = false
+}
+
+private struct TrackRowsPointerKey: EnvironmentKey {
+    static let defaultValue: TrackRowsPointer? = nil
+}
+
+extension EnvironmentValues {
+    var trackRowsPointer: TrackRowsPointer? {
+        get { self[TrackRowsPointerKey.self] }
+        set { self[TrackRowsPointerKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// `.help` for a view inside the track rows (see `TrackRowsPointer`).
+    func trackRowHelp(_ key: LocalizedStringKey) -> some View {
+        modifier(TrackRowHelp(key: key))
+    }
+}
+
+private struct TrackRowHelp: ViewModifier {
+    @Environment(\.trackRowsPointer) private var pointer
+    let key: LocalizedStringKey
+
+    func body(content: Content) -> some View {
+        if let pointer {
+            PointerGatedHelp(content: content, key: key, pointer: pointer)
+        } else {
+            content.help(key)
+        }
+    }
+}
+
+private struct PointerGatedHelp<Content: View>: View {
+    let content: Content
+    let key: LocalizedStringKey
+    @ObservedObject var pointer: TrackRowsPointer
+
+    var body: some View {
+        content.help(pointer.isInside ? Text(key) : Text(verbatim: ""))
+    }
 }
 
 /// What the arranger keeps while following `timelineScrollTime`. A plain

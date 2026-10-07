@@ -50,7 +50,7 @@ public struct TrackHeaderView: View {
                 .padding(.trailing, 6)
                 .contentShape(Rectangle())
                 .onTapGesture { isShowingColorPalette = true }
-                .help("Change track color")
+                .trackRowHelp("Change track color")
                 .popover(isPresented: $isShowingColorPalette, arrowEdge: .trailing) {
                     TrackColorPalette(color: $track.color) {
                         isShowingColorPalette = false
@@ -72,10 +72,15 @@ public struct TrackHeaderView: View {
                         .background(Color.black.opacity(0.3))
                         .cornerRadius(3)
                     } else {
+                        // The current track's name is shown reversed, as in the mixer.
                         Text(track.name)
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.white)
+                            .foregroundColor(isSelected ? .black : .white)
                             .lineLimit(1)
+                            .padding(.horizontal, 4)
+                            .background(isSelected ? Color.white : Color.clear)
+                            .cornerRadius(3)
+                            .padding(.horizontal, -4)
                             .onTapGesture(count: 2) {
                                 isEditingName = true
                             }
@@ -139,7 +144,7 @@ public struct TrackHeaderView: View {
                     .buttonStyle(PlainButtonStyle())
                     .disabled(isRecordLocked)
                     .opacity(isRecordLocked ? 0.5 : 1.0)
-                    .help(track.isRecordArmed ? "Recording Mode (Armed)" : "Playback Mode (Click to Arm Record)")
+                    .trackRowHelp(track.isRecordArmed ? "Recording Mode (Armed)" : "Playback Mode (Click to Arm Record)")
 
                     // Mute [M]
                     Button(action: {
@@ -154,7 +159,7 @@ public struct TrackHeaderView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                     .disabled(track.isMutedByFolder)
-                    .help(track.isMutedByFolder ? "Muted by the folder" : "Mute Track")
+                    .trackRowHelp(track.isMutedByFolder ? "Muted by the folder" : "Mute Track")
 
                     // Solo [S]
                     Button(action: {
@@ -169,7 +174,7 @@ public struct TrackHeaderView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                     .disabled(track.isSoloedByFolder)
-                    .help(track.isSoloedByFolder ? "Soloed by the folder" : "Solo Track")
+                    .trackRowHelp(track.isSoloedByFolder ? "Soloed by the folder" : "Solo Track")
 
                     // Input Monitor [I]: live input through this track's mixer while armed
                     Button(action: {
@@ -192,7 +197,7 @@ public struct TrackHeaderView: View {
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .help(track.isInputMonitoring
+                    .trackRowHelp(track.isInputMonitoring
                         ? (track.isRecordArmed ? "Input Monitoring (On)" : "Input Monitoring (active when Record is armed)")
                         : "Input Monitoring (Off)")
 
@@ -274,7 +279,7 @@ public struct TrackHeaderView: View {
                         }
                     )
                 )
-                .help("Resize track height")
+                .trackRowHelp("Resize track height")
         }
     }
 }

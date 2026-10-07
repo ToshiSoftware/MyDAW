@@ -115,6 +115,9 @@ struct EditableValueText: View {
                         isEditing = true
                         DispatchQueue.main.async { focused = true }
                     }
+                    // A single click stays here too, so it does not reach
+                    // the mixer channel behind (and change its selection).
+                    .onTapGesture {}
             }
         }
         .foregroundColor(.white.opacity(0.9))
@@ -128,11 +131,14 @@ struct EditableValueText: View {
 }
 
 /// Vertical volume fader on the dB taper. Drag is relative (clicking does
-/// not jump), ⌘-drag is fine, ⌥-click resets to 0 dB.
+/// not jump), ⌘-drag is fine, ⌥-click resets to 0 dB. A click is taken
+/// here too, so it never reaches the channel behind (which would select it).
 struct VolumeFader: View {
     @Binding var gain: Float
     var tint: Color = .cyan
     var onChange: () -> Void = {}
+    /// After a drag or a ⌥-click.
+    var onEnd: () -> Void = {}
     @State private var dragStartFraction: Double?
 
     var body: some View {
@@ -152,8 +158,9 @@ struct VolumeFader: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard dragStartFraction != nil || value.translation.height != 0 else { return }
                         let start = dragStartFraction ?? MixerScale.fraction(forGain: gain)
                         if dragStartFraction == nil { dragStartFraction = start }
                         let fine = NSEvent.modifierFlags.contains(.command) ? 0.15 : 1.0
@@ -161,12 +168,16 @@ struct VolumeFader: View {
                         gain = MixerScale.gain(forFraction: next)
                         onChange()
                     }
-                    .onEnded { _ in dragStartFraction = nil }
+                    .onEnded { _ in
+                        dragStartFraction = nil
+                        onEnd()
+                    }
             )
             .simultaneousGesture(
                 TapGesture().modifiers(.option).onEnded {
                     gain = MixerGain.unity
                     onChange()
+                    onEnd()
                 }
             )
         }
@@ -283,6 +294,8 @@ struct PanControl: View {
     @Binding var pan: Float
     var tint: Color = .cyan
     var onChange: () -> Void = {}
+    /// After a drag or a ⌥-click.
+    var onEnd: () -> Void = {}
     @State private var dragStartPan: Float?
 
     var body: some View {
@@ -303,20 +316,25 @@ struct PanControl: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard dragStartPan != nil || value.translation.width != 0 else { return }
                         let start = dragStartPan ?? pan
                         if dragStartPan == nil { dragStartPan = start }
                         let fine: Float = NSEvent.modifierFlags.contains(.command) ? 0.15 : 1.0
                         pan = max(-1, min(1, start + Float(value.translation.width / center) * fine))
                         onChange()
                     }
-                    .onEnded { _ in dragStartPan = nil }
+                    .onEnded { _ in
+                        dragStartPan = nil
+                        onEnd()
+                    }
             )
             .simultaneousGesture(
                 TapGesture().modifiers(.option).onEnded {
                     pan = 0
                     onChange()
+                    onEnd()
                 }
             )
         }
@@ -329,6 +347,8 @@ struct SendLevelBar: View {
     let gain: Float
     var tint: Color = .purple
     let onSet: (Float) -> Void
+    /// After a drag or a ⌥-click.
+    var onEnd: () -> Void = {}
     @State private var dragStartFraction: Double?
 
     var body: some View {
@@ -347,18 +367,25 @@ struct SendLevelBar: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard dragStartFraction != nil || value.translation.width != 0 else { return }
                         let start = dragStartFraction ?? fraction
                         if dragStartFraction == nil { dragStartFraction = start }
                         let fine = NSEvent.modifierFlags.contains(.command) ? 0.15 : 1.0
                         let next = min(1, max(0, start + Double(value.translation.width / width) * fine))
                         onSet(MixerScale.gain(forFraction: next))
                     }
-                    .onEnded { _ in dragStartFraction = nil }
+                    .onEnded { _ in
+                        dragStartFraction = nil
+                        onEnd()
+                    }
             )
             .simultaneousGesture(
-                TapGesture().modifiers(.option).onEnded { onSet(MixerGain.unity) }
+                TapGesture().modifiers(.option).onEnded {
+                    onSet(MixerGain.unity)
+                    onEnd()
+                }
             )
         }
         .frame(height: 6)
