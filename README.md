@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 2.2** · [日本語版 README](README_jp.md)
+**Version 2.3** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -40,7 +40,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 ### Editing
 - Move clips (also between tracks), trim both edges, clip gain, fade in/out, split, duplicate, delete, mute.
 - **Multiple selection**: shift/cmd-click, marquee (shift to add), cmd+A. Selected clips move and delete together.
-- **Right-click menu**: right-clicking an unselected clip selects it; right-clicking a selected clip applies the command to every selected clip (Normalize, Reverse, Mute, Duplicate, Split, Delete; with several clips the items show the count). Duplicate places the selection, as one block, at the playhead. Inside a selected range the range menu opens.
+- **Right-click menu**: right-clicking an unselected clip selects it; right-clicking a selected clip applies the command to every selected clip (the top line shows the file name, format and size, e.g. `Guitar_001.wav, mono 24bit 7.8MB`; Normalize, Reverse, Mute, Duplicate, Split, Delete; with several clips the items show the count). Duplicate places the selection, as one block, at the playhead. Inside a selected range the range menu opens.
 - **Range selection** (cmd-drag) across tracks: delete (leave silence), crop, split at both edges.
 - **Cut / copy / paste** (cmd+X / C / V, pasted at the playhead) and option-drag to duplicate.
 - **Handle pointers**: the pointer changes shape over a clip's edges (→ at the start, ← at the end), the fade dots and curve diamonds (pointing hand) and the gain bar (up-down arrow), so you can see what you are about to grab.
@@ -77,6 +77,7 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - A project is a `.mydaw` file plus the `Recordings/` folder next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). File and folder names are free, and the folder is fully portable. Several `.mydaw` files in one folder share its `Recordings/`. **Save Project As** (⇧⌘S) saves only into the same folder. Double-clicking a `.mydaw` file in the Finder opens it (the file shows a MyDAW document icon).
 - **Recent Projects** on the start screen: up to 50 projects with their last-saved date; click a name to open it.
 - Master mix export from a dialog (file name, folder, format) to WAV (16 / 24-bit) or MP3 (constant bitrate or VBR) at 44.1 / 48 / 96 kHz (MP3: up to 48 kHz), cut to the sample at the start and end positions (plug-in latency included). The master is rendered in real time, then converted.
+- **Optimize recordings**: for sharing a project, rewrites the recordings so that each clip plays its own WAV holding only the part it plays (clips playing the same part share one file), named `Optimized_NNN.wav`. Mono-track clips become mono; mono files stay mono; higher sample rates are lowered to the current rate (never raised); 32-bit and float files become 24-bit, 16/24-bit keep their depth. Originals no longer used go to `Recordings/Unused/`. It cannot be undone, and it is not done while other `.mydaw` files share the folder.
 - **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`. Files used by other `.mydaw` files in the same folder are kept.
 
 ### Audio devices
@@ -165,4 +166,4 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 
 ## Version
 
-The About dialog shows version **2.2**. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.
+The About dialog shows version **2.3**. Version 2.3 adds **Optimize Recordings to Minimum Size** (File menu) for sharing a project, and shows the file's format and size next to its name in the clip right-click menu. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.

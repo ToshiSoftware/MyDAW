@@ -295,3 +295,22 @@
 "Replace" = "置き換える";
 "Stop playback and recording before opening another project." = "別のプロジェクトを開く前に、再生と録音を停止してください。";
 "Save the current project before opening %@?" = "「%@」を開く前に、今のプロジェクトを保存しますか？";
+
+/* Optimize recordings */
+"Optimize Recordings to Minimum Size" = "録音ファイルを最小サイズに最適化する";
+"Recordings cannot be optimized" = "録音ファイルを最適化できません";
+"Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@" = "同じフォルダにある他のプロジェクトが Recordings フォルダを共有しているため、最適化するとそれらのプロジェクトのクリップが再生できなくなります。\n\n%@";
+"Optimize recordings to minimum size?" = "録音ファイルを最小サイズに最適化しますか？";
+"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Recordingsフォルダ内の録音ファイルを最適化します。\nトリミングされて再生されない部分を削除し、クリップごとに録音ファイルを生成します。音質を維持したまま、最小サイズのフォーマットに変換します。\n使用されなくなった録音ファイルは、Unusedフォルダへ移動します。";
+"This cannot be undone. Do you want to continue?" = "この処理は取り消せません。実行しますか？";
+"Optimize" = "実行";
+"Recordings are already optimized" = "録音ファイルはすでに最適化されています";
+"Every clip already plays a file of the minimum size." = "すべてのクリップが、すでに最小サイズの録音ファイルを使っています。";
+"Could not be read:" = "読み込めなかったファイル:";
+"Could not optimize the recordings. No files were changed.\n\n%@" = "録音ファイルを最適化できませんでした。ファイルは変更していません。\n\n%@";
+"Recordings optimized" = "録音ファイルを最適化しました";
+"Created %lld recording files.\nTotal size: %@ → %@" = "録音ファイルを %lld 個生成しました。\n合計サイズ: %@ → %@";
+"Moved to the Unused folder:" = "Unused フォルダへ移動したファイル:";
+"The Undo history and the clipboard were cleared." = "取り消しの履歴とクリップボードを消去しました。";
+"Optimizing Recordings" = "録音ファイルを最適化中";
+"Creating recording files… (%lld / %lld)" = "録音ファイルを生成しています…（%lld / %lld）";

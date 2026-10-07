@@ -1,6 +1,6 @@
 # MyDAW Project Analysis (v2.1)
 
-> Version covered: **2.2** (source as of 2026-10-06)
+> Version covered: **2.3** (source as of 2026-10-07)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -39,7 +39,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
-- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (dialog with file name / folder / format; WAV 16/24-bit or MP3 CBR/VBR at 44.1/48/96 kHz, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (dialog with file name / folder / format; WAV 16/24-bit or MP3 CBR/VBR at 44.1/48/96 kHz, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), optimizing recordings for sharing (one minimum-format WAV per clip holding only the part it plays), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
 
 ---
 
@@ -221,7 +221,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 ### 3.5 Persistence
 
 - A project is a **`.mydaw` file**; recordings go to `Recordings/*.wav` next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). The project folder is the `.mydaw` file's parent and its name need not match (since v2.0; v1.9 projects named after their folder open unchanged).
-- Several `.mydaw` files in one folder share its `Recordings/`. Recording names take the next free number, so nothing is overwritten, and moving unused recordings treats clips of every `.mydaw` in the folder as in use. Save Project As saves only into the same folder, so no recordings need copying and the relative paths stay valid.
+- Several `.mydaw` files in one folder share its `Recordings/`. Recording names take the next free number, so nothing is overwritten, and moving unused recordings treats clips of every `.mydaw` in the folder as in use. Optimizing recordings is refused while other `.mydaw` files are there. Save Project As saves only into the same folder, so no recordings need copying and the relative paths stay valid.
 - `.mydaw` is JSON (`ProjectDocument` version 5). Audio is referenced by relative WAV paths, never embedded.
 - Folders (v2.1, version 5) are saved as `folders` (name, colour, open state, M/S and `position`, the index among all rows of tracks and folders) plus each track's `folderID`. Loading inserts the folders into the track list in increasing position to rebuild the rows. Version 4 and older files open without folders. Opened in v2.0, a v2.1 file loses its folders (the tracks stay).
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.

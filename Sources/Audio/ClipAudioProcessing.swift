@@ -227,6 +227,137 @@ extension ClipAudioProcessing {
     }
 }
 
+extension ClipAudioProcessing {
+    /// The stored format of an audio file.
+    struct FileInfo {
+        let channelCount: AVAudioChannelCount
+        let sampleRate: Double
+        let length: AVAudioFramePosition
+        let bitDepth: Int
+        let isFloat: Bool
+    }
+
+    static func fileInfo(_ url: URL) throws -> FileInfo {
+        let file = try AVAudioFile(forReading: url)
+        let settings = file.fileFormat.settings
+        return FileInfo(
+            channelCount: file.fileFormat.channelCount,
+            sampleRate: file.fileFormat.sampleRate,
+            length: file.length,
+            bitDepth: (settings[AVLinearPCMBitDepthKey] as? NSNumber)?.intValue ?? 0,
+            isFloat: (settings[AVLinearPCMIsFloatKey] as? NSNumber)?.boolValue ?? false
+        )
+    }
+
+    /// Writes `frames` of `url` to `destination` as an integer WAV of
+    /// `bitDepth` bits at `sampleRate`. With one channel, a stereo source is
+    /// mixed as (L + R) / 2, as a mono track plays it; with two, a mono
+    /// source is doubled. Only the first two source channels are used.
+    static func writeExtract(
+        from url: URL,
+        frames range: Range<AVAudioFramePosition>,
+        channelCount: AVAudioChannelCount,
+        sampleRate: Double,
+        bitDepth: Int,
+        to destination: URL
+    ) throws {
+        let source = try AVAudioFile(forReading: url)
+        let inputFormat = source.processingFormat
+        let inputChannels = Int(inputFormat.channelCount)
+        guard inputChannels > 0,
+              let mixedFormat = AVAudioFormat(standardFormatWithSampleRate: inputFormat.sampleRate, channels: channelCount),
+              let outputFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channelCount),
+              let readBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: chunkFrames),
+              let mixedBuffer = AVAudioPCMBuffer(pcmFormat: mixedFormat, frameCapacity: chunkFrames) else {
+            throw NSError(domain: "MyDAW.Optimize", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: String(localized: "Unsupported audio format: \(inputFormat.description)")
+            ])
+        }
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channelCount,
+            AVLinearPCMBitDepthKey: bitDepth,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        let output = try AVAudioFile(
+            forWriting: destination,
+            settings: settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+
+        source.framePosition = range.lowerBound
+        /// Reads the next chunk of the range into `mixedBuffer` with the
+        /// output's channels; false at the end of the range.
+        func readNext() throws -> Bool {
+            try Task.checkCancellation()
+            let remaining = range.upperBound - source.framePosition
+            guard remaining > 0 else { return false }
+            try source.read(into: readBuffer, frameCount: AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), remaining)))
+            let frames = Int(readBuffer.frameLength)
+            guard frames > 0,
+                  let input = readBuffer.floatChannelData,
+                  let mixed = mixedBuffer.floatChannelData else { return false }
+            if channelCount == 1 && inputChannels > 1 {
+                for frame in 0..<frames {
+                    mixed[0][frame] = (input[0][frame] + input[1][frame]) * 0.5
+                }
+            } else {
+                for channel in 0..<Int(channelCount) {
+                    mixed[channel].update(from: input[min(channel, inputChannels - 1)], count: frames)
+                }
+            }
+            mixedBuffer.frameLength = AVAudioFrameCount(frames)
+            return true
+        }
+
+        if abs(inputFormat.sampleRate - sampleRate) <= 0.5 {
+            while try readNext() {
+                try output.write(from: mixedBuffer)
+            }
+            return
+        }
+
+        guard let converter = AVAudioConverter(from: mixedFormat, to: outputFormat),
+              let outputBuffer = AVAudioPCMBuffer(
+                  pcmFormat: outputFormat,
+                  frameCapacity: AVAudioFrameCount(Double(chunkFrames) * sampleRate / inputFormat.sampleRate) + 1024
+              ) else {
+            throw NSError(domain: "MyDAW.Optimize", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: String(localized: "Unsupported audio format: \(inputFormat.description)")
+            ])
+        }
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        var readError: Error?
+        var reachedEnd = false
+        while true {
+            outputBuffer.frameLength = 0
+            var conversionError: NSError?
+            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, inputStatus in
+                do {
+                    if !reachedEnd, try readNext() {
+                        inputStatus.pointee = .haveData
+                        return mixedBuffer
+                    }
+                } catch {
+                    readError = error
+                }
+                reachedEnd = true
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            if let error = readError ?? conversionError { throw error }
+            if outputBuffer.frameLength > 0 {
+                try output.write(from: outputBuffer)
+            }
+            if status == .endOfStream || status == .error { break }
+        }
+    }
+}
+
 private extension UnsafeMutablePointer where Pointee == Float {
     func swapAt(_ i: Int, _ j: Int) {
         let value = self[i]

@@ -295,3 +295,22 @@
 "Replace" = "Replace";
 "Stop playback and recording before opening another project." = "Stop playback and recording before opening another project.";
 "Save the current project before opening %@?" = "Save the current project before opening %@?";
+
+/* Optimize recordings */
+"Optimize Recordings to Minimum Size" = "Optimize Recordings to Minimum Size";
+"Recordings cannot be optimized" = "Recordings cannot be optimized";
+"Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@" = "Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@";
+"Optimize recordings to minimum size?" = "Optimize recordings to minimum size?";
+"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.";
+"This cannot be undone. Do you want to continue?" = "This cannot be undone. Do you want to continue?";
+"Optimize" = "Optimize";
+"Recordings are already optimized" = "Recordings are already optimized";
+"Every clip already plays a file of the minimum size." = "Every clip already plays a file of the minimum size.";
+"Could not be read:" = "Could not be read:";
+"Could not optimize the recordings. No files were changed.\n\n%@" = "Could not optimize the recordings. No files were changed.\n\n%@";
+"Recordings optimized" = "Recordings optimized";
+"Created %lld recording files.\nTotal size: %@ → %@" = "Created %lld recording files.\nTotal size: %@ → %@";
+"Moved to the Unused folder:" = "Moved to the Unused folder:";
+"The Undo history and the clipboard were cleared." = "The Undo history and the clipboard were cleared.";
+"Optimizing Recordings" = "Optimizing Recordings";
+"Creating recording files… (%lld / %lld)" = "Creating recording files… (%lld / %lld)";

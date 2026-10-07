@@ -1801,34 +1801,9 @@ public final class ProjectState: ObservableObject {
             return
         }
 
-        var moved: [String] = []
-        var failed: [String] = []
-        var movedPaths = Set<String>()
-        if !candidates.isEmpty {
-            do {
-                try fileManager.createDirectory(at: unusedURL, withIntermediateDirectories: true)
-            } catch {
-                presentProjectError(String(localized: "Could not create the Unused folder.\n\n\(error.localizedDescription)"))
-                return
-            }
-        }
-        for url in candidates {
-            // Never overwrite an earlier file of the same name in Unused.
-            var destination = unusedURL.appendingPathComponent(url.lastPathComponent)
-            var suffix = 2
-            while fileManager.fileExists(atPath: destination.path) {
-                let base = url.deletingPathExtension().lastPathComponent
-                destination = unusedURL.appendingPathComponent("\(base)_\(suffix).\(url.pathExtension)")
-                suffix += 1
-            }
-            do {
-                try fileManager.moveItem(at: url, to: destination)
-                moved.append(destination.lastPathComponent)
-                movedPaths.insert(key(url))
-            } catch {
-                failed.append(url.lastPathComponent)
-            }
-        }
+        guard let result = moveToUnusedFolder(candidates, unusedURL: unusedURL) else { return }
+        let (moved, failed) = (result.moved, result.failed)
+        let movedPaths = Set(result.movedSources.map { key($0) })
         let clearsHistory = !movedPaths.isDisjoint(with: historyPaths)
         if clearsHistory {
             undoStack.removeAll()
@@ -1842,6 +1817,267 @@ public final class ProjectState: ObservableObject {
             clearedHistory: clearsHistory,
             otherProjectCount: otherProjectCount
         )
+    }
+
+    /// Moves `urls` into `unusedURL`, never overwriting a file of the same
+    /// name there. Nil (after reporting) when the folder cannot be made.
+    private func moveToUnusedFolder(
+        _ urls: [URL],
+        unusedURL: URL
+    ) -> (moved: [String], failed: [String], movedSources: [URL])? {
+        guard !urls.isEmpty else { return ([], [], []) }
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(at: unusedURL, withIntermediateDirectories: true)
+        } catch {
+            presentProjectError(String(localized: "Could not create the Unused folder.\n\n\(error.localizedDescription)"))
+            return nil
+        }
+        var moved: [String] = []
+        var failed: [String] = []
+        var movedSources: [URL] = []
+        for url in urls {
+            var destination = unusedURL.appendingPathComponent(url.lastPathComponent)
+            var suffix = 2
+            while fileManager.fileExists(atPath: destination.path) {
+                let base = url.deletingPathExtension().lastPathComponent
+                destination = unusedURL.appendingPathComponent("\(base)_\(suffix).\(url.pathExtension)")
+                suffix += 1
+            }
+            do {
+                try fileManager.moveItem(at: url, to: destination)
+                moved.append(destination.lastPathComponent)
+                movedSources.append(url)
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        return (moved, failed, movedSources)
+    }
+
+    // MARK: Optimize recordings
+
+    public var canOptimizeRecordings: Bool { canMoveUnusedRecordings }
+
+    /// One file "Optimize Recordings" writes: the frames of a source file
+    /// that one or more clips play, in the format they need.
+    private struct RecordingExtract: Hashable {
+        let sourcePath: String
+        let frames: Range<AVAudioFramePosition>
+        let channelCount: AVAudioChannelCount
+        let sampleRate: Double
+        let bitDepth: Int
+    }
+
+    /// Rewrites the project's clips to play files holding only the part they
+    /// play: one file per clip, shared by clips that play the same part of
+    /// the same file. Each file is converted down to the current sample rate
+    /// (never up) and to 16-bit or 24-bit integer; a clip on a mono track
+    /// gets a mono file. Source files no clip uses any more are moved to
+    /// Recordings/Unused. Not done when other projects share the folder,
+    /// since their clips would lose their files.
+    public func optimizeRecordings() {
+        guard canOptimizeRecordings else { return }
+        let otherProjects = otherProjectFileNames()
+        guard otherProjects.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Recordings cannot be optimized")
+            alert.informativeText = String(localized: "Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n\(otherProjects.joined(separator: "\n"))")
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: String(localized: "OK"))
+            alert.runModal()
+            return
+        }
+
+        let confirmation = NSAlert()
+        confirmation.messageText = String(localized: "Optimize recordings to minimum size?")
+        confirmation.informativeText = String(localized: "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.")
+        let warning = NSTextField(labelWithString: String(localized: "This cannot be undone. Do you want to continue?"))
+        warning.font = NSFont.boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+        warning.sizeToFit()
+        confirmation.accessoryView = warning
+        confirmation.alertStyle = .warning
+        confirmation.addButton(withTitle: String(localized: "Optimize"))
+        let cancelButton = confirmation.addButton(withTitle: String(localized: "Cancel"))
+        cancelButton.keyEquivalent = "\u{1b}"
+        guard confirmation.runModal() == .alertFirstButtonReturn, saveProject() else { return }
+
+        let fileManager = FileManager.default
+        let recordingsURL = audioEngine.recordingsDirectory.standardizedFileURL
+        let targetSampleRate = audioEngine.hardwareSampleRate
+        func key(_ url: URL) -> String {
+            url.standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        func fileSize(_ path: String) -> Int64 {
+            ((try? fileManager.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
+        }
+        let sizeBefore = Set(tracks.flatMap { $0.clips.map { key($0.fileURL) } }).reduce(0) { $0 + fileSize($1) }
+
+        var infos: [String: ClipAudioProcessing.FileInfo] = [:]
+        var extracts: [RecordingExtract] = []
+        var extractIndex: [RecordingExtract: Int] = [:]
+        var rewrites: [(clip: AudioClip, extract: Int, sourceStartTime: Double)] = []
+        var unreadable: [String] = []
+        for track in tracks {
+            for clip in track.clips {
+                let path = key(clip.fileURL)
+                guard let info = infos[path] ?? (try? ClipAudioProcessing.fileInfo(clip.fileURL)),
+                      info.sampleRate > 0 else {
+                    unreadable.append(clip.fileURL.lastPathComponent)
+                    continue
+                }
+                infos[path] = info
+                let start = min(info.length, max(0, AVAudioFramePosition((clip.sourceStartTime * info.sampleRate).rounded(.down))))
+                let end = min(info.length, AVAudioFramePosition(((clip.sourceStartTime + clip.duration) * info.sampleRate).rounded(.up)))
+                guard end > start else { continue }
+                let channelCount: AVAudioChannelCount = track.channelMode == .mono ? 1 : min(2, info.channelCount)
+                let sampleRate = info.sampleRate - targetSampleRate > 0.5 ? targetSampleRate : info.sampleRate
+                let bitDepth = !info.isFloat && info.bitDepth <= 16 ? 16 : 24
+                // A file that is already exactly what the clip needs stays.
+                if start == 0, end == info.length, channelCount == info.channelCount,
+                   sampleRate == info.sampleRate, bitDepth == info.bitDepth, !info.isFloat {
+                    continue
+                }
+                let extract = RecordingExtract(
+                    sourcePath: path,
+                    frames: start..<end,
+                    channelCount: channelCount,
+                    sampleRate: sampleRate,
+                    bitDepth: bitDepth
+                )
+                let index = extractIndex[extract] ?? {
+                    extracts.append(extract)
+                    extractIndex[extract] = extracts.count - 1
+                    return extracts.count - 1
+                }()
+                // The part of a sample the clip started inside of.
+                rewrites.append((clip, index, clip.sourceStartTime - Double(start) / info.sampleRate))
+            }
+        }
+
+        guard !extracts.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Recordings are already optimized")
+            alert.informativeText = String(localized: "Every clip already plays a file of the minimum size.")
+            if !unreadable.isEmpty {
+                alert.accessoryView = listAccessoryView([String(localized: "Could not be read:")] + unreadable)
+            }
+            alert.addButton(withTitle: String(localized: "OK"))
+            alert.runModal()
+            return
+        }
+
+        // "Optimized_001.wav", "Optimized_002.wav", … An empty file holds
+        // each name, so the next name skips it; the writer then replaces it.
+        var destinations: [URL] = []
+        for _ in extracts {
+            let url = RecordingFileName.nextURL(in: recordingsURL, stem: "Optimized")
+            guard fileManager.createFile(atPath: url.path, contents: nil) else {
+                destinations.forEach { try? fileManager.removeItem(at: $0) }
+                presentProjectError(String(localized: "Could not optimize the recordings. No files were changed.\n\n\(url.lastPathComponent)"))
+                return
+            }
+            destinations.append(url)
+        }
+
+        let progress = RecordingOptimizeProgress(total: extracts.count)
+        let jobs = Array(zip(extracts, destinations))
+        let work = Task.detached(priority: .userInitiated) {
+            for (index, (extract, destination)) in jobs.enumerated() {
+                try ClipAudioProcessing.writeExtract(
+                    from: URL(fileURLWithPath: extract.sourcePath),
+                    frames: extract.frames,
+                    channelCount: extract.channelCount,
+                    sampleRate: extract.sampleRate,
+                    bitDepth: extract.bitDepth,
+                    to: destination
+                )
+                await progress.update(done: index + 1)
+            }
+        }
+        progress.onCancel = { work.cancel() }
+        Task { @MainActor in
+            do {
+                try await work.value
+            } catch {
+                progress.error = error
+            }
+            NSApp.stopModal()
+        }
+        NSApp.runModal(for: progress.panel)
+        progress.panel.orderOut(nil)
+
+        if let error = progress.error {
+            destinations.forEach { try? fileManager.removeItem(at: $0) }
+            if !(error is CancellationError) {
+                presentProjectError(String(localized: "Could not optimize the recordings. No files were changed.\n\n\(error.localizedDescription)"))
+            }
+            return
+        }
+
+        for rewrite in rewrites {
+            let clip = rewrite.clip
+            let fadeIn = clip.fadeInDuration
+            let fadeOut = clip.fadeOutDuration
+            // Trimmed first: loading the new file clamps the duration to
+            // what follows the source start.
+            clip.setTrim(startTime: clip.startTime, sourceStartTime: rewrite.sourceStartTime, duration: clip.duration)
+            clip.replaceFile(with: destinations[rewrite.extract])
+            clip.setFadeInDuration(fadeIn)
+            clip.setFadeOutDuration(fadeOut)
+        }
+        // Both still point at the replaced files.
+        undoStack.removeAll()
+        redoStack.removeAll()
+        updateHistoryAvailability()
+        clipboard.removeAll()
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
+        _ = saveProject()
+
+        let usedPaths = Set(tracks.flatMap { $0.clips.map { key($0.fileURL) } })
+        let recordingsPath = key(recordingsURL)
+        let replaced = Set(extracts.map(\.sourcePath))
+            .filter { !usedPaths.contains($0) && URL(fileURLWithPath: $0).deletingLastPathComponent().path == recordingsPath }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { URL(fileURLWithPath: $0) }
+        let unusedURL = recordingsURL.appendingPathComponent("Unused", isDirectory: true)
+        let moveResult = moveToUnusedFolder(replaced, unusedURL: unusedURL)
+        let sizeAfter = usedPaths.reduce(0) { $0 + fileSize($1) }
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Recordings optimized")
+        alert.informativeText = String(localized: "Created \(extracts.count) recording files.\nTotal size: \(formatter.string(fromByteCount: sizeBefore)) → \(formatter.string(fromByteCount: sizeAfter))")
+        var lines: [String] = []
+        if let moveResult, !moveResult.moved.isEmpty {
+            lines += [String(localized: "Moved to the Unused folder:")] + moveResult.moved + [""]
+        }
+        if let moveResult, !moveResult.failed.isEmpty {
+            lines += [String(localized: "Could not be moved:")] + moveResult.failed + [""]
+        }
+        if !unreadable.isEmpty {
+            lines += [String(localized: "Could not be read:")] + unreadable + [""]
+        }
+        lines.append(String(localized: "The Undo history and the clipboard were cleared."))
+        alert.accessoryView = listAccessoryView(lines)
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.runModal()
+    }
+
+    /// The other .mydaw files in this project's folder.
+    private func otherProjectFileNames() -> [String] {
+        guard let projectFolderURL else { return [] }
+        let currentPath = currentProjectURL?.standardizedFileURL.path
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: projectFolderURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return files
+            .filter { $0.pathExtension.lowercased() == "mydaw" && $0.standardizedFileURL.path != currentPath }
+            .map(\.lastPathComponent)
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     private struct OtherProjectReadError: Error {
@@ -1901,19 +2137,24 @@ public final class ProjectState: ObservableObject {
             if !failed.isEmpty {
                 lines += ["", String(localized: "Could not be moved:")] + failed
             }
-            let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
-            textView.string = lines.joined(separator: "\n")
-            textView.isEditable = false
-            textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-            textView.textContainerInset = NSSize(width: 4, height: 4)
-            let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
-            scrollView.documentView = textView
-            scrollView.hasVerticalScroller = true
-            scrollView.borderType = .bezelBorder
-            alert.accessoryView = scrollView
+            alert.accessoryView = listAccessoryView(lines)
         }
         alert.addButton(withTitle: String(localized: "OK"))
         alert.runModal()
+    }
+
+    /// A scrolling list of file names for an alert.
+    private func listAccessoryView(_ lines: [String]) -> NSView {
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+        textView.string = lines.joined(separator: "\n")
+        textView.isEditable = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .bezelBorder
+        return scrollView
     }
 
     private func presentProjectError(_ message: String) {
@@ -2068,5 +2309,54 @@ public final class DrawWindowState: ObservableObject {
 
     func set(_ window: ClosedRange<Double>) {
         if window != range { range = window }
+    }
+}
+
+/// The modal panel shown while "Optimize Recordings" writes its files.
+@MainActor
+private final class RecordingOptimizeProgress: NSObject {
+    let panel: NSPanel
+    var onCancel: (() -> Void)?
+    var error: Error?
+    private let bar = NSProgressIndicator()
+    private let label: NSTextField
+    private let total: Int
+
+    init(total: Int) {
+        self.total = total
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 110),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        label = NSTextField(labelWithString: "")
+        super.init()
+        panel.title = String(localized: "Optimizing Recordings")
+        bar.isIndeterminate = false
+        bar.minValue = 0
+        bar.maxValue = Double(max(1, total))
+        let cancelButton = NSButton(title: String(localized: "Cancel"), target: self, action: #selector(cancel))
+        cancelButton.keyEquivalent = "\u{1b}"
+        let stack = NSStackView(views: [label, bar, cancelButton])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView = stack
+        bar.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        cancelButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor).isActive = true
+        update(done: 0)
+        panel.center()
+    }
+
+    func update(done: Int) {
+        bar.doubleValue = Double(done)
+        label.stringValue = String(localized: "Creating recording files… (\(done) / \(total))")
+    }
+
+    @objc private func cancel() {
+        onCancel?()
     }
 }

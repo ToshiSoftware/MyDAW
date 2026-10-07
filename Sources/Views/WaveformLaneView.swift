@@ -252,6 +252,26 @@ private enum LaneMenu {
         })
     }
 
+    /// "Guitar_001.wav, mono 24bit 7.8MB": the name, then the format and
+    /// size when the file can be read.
+    private static func fileDescription(_ url: URL) -> String {
+        guard let info = try? ClipAudioProcessing.fileInfo(url) else { return url.lastPathComponent }
+        let channels: String
+        switch info.channelCount {
+        case 1: channels = "mono"
+        case 2: channels = "stereo"
+        default: channels = "\(info.channelCount)ch"
+        }
+        let bits = info.isFloat ? "\(info.bitDepth)bit float" : "\(info.bitDepth)bit"
+        var parts = [channels, bits]
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            parts.append(String(formatter.string(fromByteCount: Int64(size)).filter { !$0.isWhitespace }))
+        }
+        return "\(url.lastPathComponent), \(parts.joined(separator: " "))"
+    }
+
     /// Commands on the clicked clip, or on every selected clip when the
     /// clicked one is part of the selection.
     static func clipMenu(_ projectState: ProjectState, track: AudioTrack, clip: AudioClip) -> NSMenu {
@@ -275,7 +295,7 @@ private enum LaneMenu {
             menu.addItem(ClosureMenuItem(clip.fileURL.lastPathComponent, symbol: "doc", enabled: false) {})
         } else {
             let fileURL = clip.fileURL
-            let item = ClosureMenuItem(fileURL.lastPathComponent, symbol: "doc", enabled: true) {
+            let item = ClosureMenuItem(fileDescription(fileURL), symbol: "doc", enabled: true) {
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL])
             }
             item.toolTip = String(localized: "Show in Finder")

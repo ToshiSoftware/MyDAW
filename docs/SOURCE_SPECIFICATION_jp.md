@@ -1,6 +1,6 @@
 # MyDAW ソースコード仕様書（v2.1）
 
-> 対象バージョン: **2.2** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **2.3** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -26,8 +26,8 @@
 - **`init()`**: 最初に `raiseOpenFileLimit()` で同時に開けるファイル数の上限（RLIMIT_NOFILE の soft 値、既定 256）を `kern.maxfilesperproc` と hard 値の範囲で最大 65,536 まで上げる（再生用にクリップごとに WAV を開いたままにするため、クリップが数百になると上限を超え、AppKit がメニューの部品を読めずにクラッシュした）。次に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。`.handlesExternalEvents(matching: [])` で、Finder から開いたファイルごとに SwiftUI が新しいウィンドウを作るのを防ぐ。
 - **Finder から開く**: Info.plist の `CFBundleDocumentTypes`／`UTExportedTypeDeclarations` で `.mydaw`（`com.tokada.mydaw.project`、`public.data`／`public.content` に準拠。`public.json` にすると Finder が中身のテキストをサムネイルにしてアイコンが出ない）を宣言し、`MyDAWApplicationDelegate.application(_:open:)` が受け取る（複数なら最後の 1 つ）。ウィンドウの `onAppear` で `openProjectFile` が設定されるまでは `pendingProjectURL` に保持し、設定後に `ProjectState.openProjectFile(_:)` を呼ぶ。`build.sh` は署名後に `lsregister -f` でビルドを LaunchServices に登録する。書類のアイコンは `DocumentIcon.icns`（`scripts/make-document-icon.swift` が `AppIcon.iconset` から、折り返し付きの白い書類の中央にアプリアイコンを角丸で描いて作る。アプリアイコンを変えたら再実行する）。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `2.2`）
-  - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Save Project As…（⇧⌘S）、区切り線、Export Master Mix…、区切り線、Move Unused Recordings to Unused Folder
+  - About（バージョン表示。Info.plist が無い場合の既定値は `2.3`）
+  - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Save Project As…（⇧⌘S）、区切り線、Export Master Mix…、区切り線、Optimize Recordings to Minimum Size、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
   - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
 - **`requestAudioPermissions()`**: OS バージョンに応じてマイク権限 API を呼ぶ。
@@ -159,6 +159,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 - **パンチ**: `setPunchRange`、`setPunchStartBeat`、`setPunchEndBeat`、`setPunchEnabled`。
 - **録音時のロールバック**: `recordRollbackEnabled`（UserDefaults `MyDAW.recordRollback`）と `recordRollbackBars`（`MyDAW.recordRollbackBars`、初期値 2、`recordRollbackBarsRange` 1...16）。`toggleTransport` が「小節数 × 4 × 1 拍の秒数」（OFF なら 0）をエンジンの `recordRollbackDuration` に渡す。
 - **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。同じフォルダーのほかの `.mydaw`（`clipPathsOfOtherProjects()` で `ProjectDocument` をデコード）のクリップも使用中として扱い、読めないファイルがあれば何も移動せずにエラーを表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
+- **録音ファイルの最適化**: `optimizeRecordings()`（ファイルメニュー。`canOptimizeRecordings` は `canMoveUnusedRecordings` と同じ）。同じフォルダーにほかの `.mydaw` があれば（`otherProjectFileNames()`）、Recordings を共有しているため何もせずに警告します。確認（実行／キャンセル）のあと保存し、全トラックのクリップについて、元ファイルの再生範囲（`sourceStartTime` の切り捨て〜終端の切り上げのフレーム）、チャンネル数（モノラルトラックは 1、ステレオトラックは元ファイルの数で最大 2）、サンプルレート（`hardwareSampleRate` より高いときだけ下げる）、ビット数（16-bit 以下の整数は 16、それ以外は 24）を決めます。これらが元ファイルと同じでファイル全体を使うクリップはそのまま残し、ほかは `RecordingExtract`（元ファイル・範囲・チャンネル数が同じなら共有）ごとに `ClipAudioProcessing.writeExtract()` で `Optimized_NNN.wav` を書きます。モノラル化は再生と同じ (L+R)/2、SRC は `AVAudioConverter`（品質 max）。書き込みはバックグラウンドで行い、キャンセルできる進捗パネル（`RecordingOptimizeProgress`、`NSApp.runModal`）を表示します。失敗・キャンセル時は書いたファイルをすべて消して何も変えません。成功したら各クリップの `sourceStartTime` を 1 サンプル未満の端数にしてファイルを差し替え、Undo／Redo とクリップボードを消去し、`syncTracks` して保存します。そのあと、使われなくなった元ファイル（Recordings 直下のもの）を `moveToUnusedFolder()` で `Recordings/Unused` へ移動し、生成数と処理前後の合計サイズを表示します。
 - **開始・終了フラグ**: `songRange`（変更時にエンジンの `songEndTime` を更新）、`songStartTime`／`songEndTime`（秒）、`setSongStart(time:)`／`setSongEnd(time:)`（nil で削除。`minimumSongLengthBeats` 以上離す）、`canPlaceSongStart(at:)`／`canPlaceSongEnd(at:)`。`toggleTransport(recordArmedTracks:)` はパンチ範囲・ロールバック・終了位置をエンジンに渡して再生／録音を開始・一時停止します（再生・録音ボタン、Space、R から）。`rewindToSongStart()` は開始フラグへ、フラグ上かそれより前なら 0 へ戻ります。エンジンの `onReachSongEnd` から `stop(tracks:)` を呼びます。
 - **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`movePlugin(_:before:on:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`moveMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
 - **FX**: `addFXChannel()`（名前は既存の "FX 数字" の最大値 + 1、色は最初の FX と同じ）、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
@@ -410,7 +411,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 1 トラック分のレーン。
 - **レーン**: 空き領域のドラッグで枠選択（⌘ で範囲選択）、クリックで選択解除、Finder からの WAV ドロップで取り込み。
 - **`AudioClipView`**: クリック（⇧／⌘ で追加・解除）、ドラッグで選択クリップをまとめて移動（⌥ で複製、⌘ で範囲選択）、左右トリム（左端はファイルの先頭で止まる。開始位置は「元の開始位置＋制限後の移動量」なので、クリップ自体は動かない）、ゲイン（上辺中央）、フェードイン／アウト（左上・右上）、フェードカーブ（フェード線中央のひし形。上下ドラッグで `FadeCurve.withMidpoint`、ダブルクリックで `.auto`）。ゲイン・フェード・カーブのハンドルは押した時点からドラッグとして扱い、値を `EditValueTooltip` で表示。トリムのハンドルは描かず、クリップ左右の幅 10 pt の透明な帯で受け、ポインタを矢印にする（開始側は右向き、終了側は左向きのみ）。フェードの点はその点を中心とした 16 pt 四方だけで受け、ポインタを指の形にする（カーブのひし形も同じ。ゲインの線は 24×13 pt で受け、上下矢印。ファイル末尾の `hoverCursor`。macOS 15 以降は `pointerStyle`（`.columnResize(directions: .trailing／.leading)`／`.link`／`.rowResize`）、それより前は `onContinuousHover` で移動のたびに `NSCursor.set()`（`resizeRight`／`resizeLeft`／`pointingHand`／`resizeUpDown`）。`onHover` で push した形はホストビューにすぐ矢印へ戻される）。
-- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター。`ClosureMenuItem` とともにトラックヘッダーのメニューでも使う）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名（複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、Strip Silence、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
+- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター。`ClosureMenuItem` とともにトラックヘッダーのメニューでも使う）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名と形式・サイズ（`fileDescription()`。例 `Guitar_001.wav, mono 24bit 7.8MB`。ファイルが無い・読めないときは名前のみ。複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、Strip Silence、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
 - **表示**: 波形は `ClipLayering.envelope` の音量で描画し、上位クリップに完全に隠れた区間だけを暗くする。覆われた端のフェードハンドルは非表示。
 
 ### `PreviewStretch.swift`（v2.0 新規）
