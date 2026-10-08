@@ -2107,7 +2107,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         units.forEach { $0.deallocateRenderResources() }
         let accepted = [source, destination].allSatisfy { node in
             guard let audioUnit = node as? AVAudioUnit else { return true }
-            return acceptsChainFormat(audioUnit, format: format, name: audioUnit.name)
+            // Not AVAudioUnit.name: it splits the component name at ": " and
+            // raises an uncaught exception for a name without a vendor part.
+            let name = audioUnit.auAudioUnit.audioUnitName ?? "Audio Unit"
+            return acceptsChainFormat(audioUnit, format: format, name: name)
         }
         if accepted {
             engine.connect(source, to: destination, format: format)

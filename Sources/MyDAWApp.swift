@@ -58,6 +58,7 @@ struct MyDAWApp: App {
     init() {
         Self.raiseOpenFileLimit()
         PluginManager.runVST3ScanChildIfRequested()
+        _ = BuiltInPlugins.registration
         // Request microphone permission on app launch if needed
         requestAudioPermissions()
     }
