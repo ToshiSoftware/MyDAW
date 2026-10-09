@@ -331,6 +331,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private let peakLock = NSLock()
     private var rawChannelPeaks: [Float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     private var masterOutputPeak: StereoPeak = .zero
+    /// Fed by the master meter tap while a master export runs (under
+    /// peakLock). A node takes only one tap, and tapping a master plug-in
+    /// directly raises an exception when its bus refuses the tap format.
+    private var masterExportSink: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
     /// Track meters, kept by each track's dry delay unit as it renders.
     /// Taps on the track splitters stopped for good at times (all tracks at
     /// once, after a plug-in was inserted on one of them) while the tracks
@@ -533,12 +537,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             masterNode.outputVolume = masterVolume
 
             mixer.removeTap(onBus: 0)
-            meterNode.installTap(onBus: 0, bufferSize: 512, format: masterFormat) { [weak self] buffer, _ in
+            meterNode.installTap(onBus: 0, bufferSize: 512, format: masterFormat) { [weak self] buffer, when in
                 let peak = StereoPeak(buffer: buffer)
-                self?.peakLock.withLock {
+                let exportSink = self?.peakLock.withLock { () -> ((AVAudioPCMBuffer, AVAudioTime) -> Void)? in
                     self?.masterOutputPeak = (self?.masterOutputPeak ?? .zero).merged(with: peak)
                     self?.masterTapCallbackCount &+= 1
+                    return self?.masterExportSink
                 }
+                exportSink?(buffer, when)
             }
         }
 
@@ -775,6 +781,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 try? self.engine.start()
             }
             if !audioUnit.auAudioUnit.renderResourcesAllocated {
+                // A unit not wired yet still has its default bus format
+                // (44.1 kHz for v2 units, 48 kHz for MyFX). Allocated with
+                // it, the unit then refuses the real format: a tap or
+                // connect at the hardware rate raises an exception.
+                if let format = AVAudioFormat(standardFormatWithSampleRate: self.hardwareSampleRate, channels: 2) {
+                    let unit = audioUnit.auAudioUnit
+                    for busses in [unit.inputBusses, unit.outputBusses] where busses.count > 0 {
+                        try? busses[0].setFormat(format)
+                    }
+                }
                 try? audioUnit.auAudioUnit.allocateRenderResources()
             }
 
@@ -3965,6 +3981,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 isStereo: config.isStereo
             )
             safeDisconnectNodeOutput(node)
+            if node.auAudioUnit.renderResourcesAllocated
+                && (node.outputFormat(forBus: 0) != stereoFormat || node.inputFormat(forBus: 0) != inputFormat) {
+                // An AU with allocated resources refuses a format change.
+                node.auAudioUnit.deallocateRenderResources()
+            }
             engine.connect(
                 node,
                 to: trackOutput,
@@ -4302,11 +4323,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
             throw NSError(domain: "MyDAW.Export", code: 2, userInfo: [NSLocalizedDescriptionKey: String(localized: "Audio plug-ins are still loading. Try again in a moment.")])
         }
-        guard let captureNode = masterPluginNodes.last ?? masterOutputNode,
-              let format = AVAudioFormat(
-                  standardFormatWithSampleRate: hardwareSampleRate,
-                  channels: 2
-              ) else {
+        // The master meter mixer follows the master plug-ins: its tap gets
+        // what is heard, at the hardware rate.
+        guard let captureNode = masterMeterNode else {
             throw NSError(domain: "MyDAW.Export", code: 3, userInfo: [NSLocalizedDescriptionKey: String(localized: "Could not prepare the master output.")])
         }
 
@@ -4350,13 +4369,15 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             frameCount: AVAudioFramePosition(((end - start) * hardwareSampleRate).rounded()),
             sampleRate: hardwareSampleRate
         )
-        captureNode.installTap(onBus: 0, bufferSize: 512, format: format) { buffer, when in
-            guard writeError == nil, let slice = window.slice(buffer, at: when) else { return }
-            writeQueue.async {
-                do {
-                    try file.write(from: slice)
-                } catch {
-                    writeError = error
+        peakLock.withLock {
+            masterExportSink = { buffer, when in
+                guard writeError == nil, let slice = window.slice(buffer, at: when) else { return }
+                writeQueue.async {
+                    do {
+                        try file.write(from: slice)
+                    } catch {
+                        writeError = error
+                    }
                 }
             }
         }
@@ -4369,7 +4390,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         window.open(at: transportStartTime.hostTime + Self.hostTicks(masterPluginLatency))
 
         func finish() {
-            captureNode.removeTap(onBus: 0)
+            peakLock.withLock { masterExportSink = nil }
             stopRenderers()
             writeQueue.sync { }
             isPlaying = false
