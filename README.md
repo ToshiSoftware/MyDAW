@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 2.3** · [日本語版 README](README_jp.md)
+**Version 3.0** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -68,6 +68,9 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 
 ### Plug-ins
 - Audio Unit and VST3 effects on tracks, FX channels and master; mixed in any order.
+- **Built-in effects** (listed as "MyDAW: …"): **MyReverb** (plate reverb), **MyDelay**, **MyChannelStrip** (4-band EQ + compressor) and **MyMaximizer** (loudness maximizer with 10 ms look-ahead). They come from the separate MyPlugIn project and are compiled into MyDAW as in-process Audio Units; each editor shows the name of the channel it is on.
+- Drag a plug-in name onto another channel's INSERT list to insert a copy with the same settings (the original stays); dropping on an empty part of the list adds it at the bottom.
+- Clicks in a plug-in window or the main window act on the first click, even when another window was in front, and Space / R / ← keep working while a plug-in window is in front.
 - VST3 runs in real time inside the audio graph; GUI parameter changes are heard immediately.
 - VST3 discovery runs in a separate process with a cache; VST3s that also exist as an AU are hidden to avoid conflicts between the two builds.
 - **Plug-in latency compensation** for track inserts and FX channels: dry and effect sounds stay in time, even with a high-latency plug-in (such as a mastering suite) on an FX channel. Bypassing a plug-in keeps its compensation, and a plug-in that changes its latency is followed.
@@ -137,12 +140,13 @@ See the [Operation Manual](OperationManual_en.pdf) for step-by-step instructions
 
 ```
 MyDAW/
-├── Sources/            Swift sources (Models / Audio / Views)
+├── Sources/            Swift sources (Models / Audio / Views; BuiltIn/MyPlugIn = built-in effects, synced from ../MyPlugIn)
 ├── VST3Host/           C++ VST3 host bridge
 ├── ThirdParty/vst3sdk/ Steinberg VST3 SDK
 ├── Resources/          Translations (en.lproj, ja.lproj)
 ├── scripts/            build.sh, run.sh, build-lame.sh (MP3 encoder), extract-strings.sh (translation check),
-│                       make-document-icon.swift (draws the .mydaw icon)
+│                       make-document-icon.swift (draws the .mydaw icon), sync-myplugin.sh (copies MyPlugIn sources),
+│                       make-zip.sh / pre-commit.sh (build/MyDAW.zip is made only when committing on main)
 ├── docs/               Analysis, specification, manual sources (docs/manual)
 ├── OperationManual_*.pdf
 ├── AppIcon.icns        App icon
@@ -162,7 +166,7 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 - Device, sample-rate and language changes take effect after MyDAW restarts (it offers to restart when you change them).
 - Switching input monitoring (I) during playback takes effect after you stop: when turned on, the input is heard once effect tails have faded; when turned off, the input stays audible until you stop (monitoring cannot be rewired while playing).
 - While MyDAW runs, the chosen devices are the macOS defaults, so other apps use them too. If MyDAW crashes the defaults are not restored; reset them in System Settings → Sound.
-- Plug-ins can be inserted, removed and reordered only while stopped.
+- Plug-ins can be inserted, removed, reordered and copied only while stopped.
 - Mono-only plug-ins (such as Waves "(m)" versions) cannot be used, because the insert chain is stereo even on mono tracks. Use the stereo version ("(s)").
 - If a plug-in's own editor does not respond within 3 seconds, MyDAW shows a generic parameter view (Generic UI) instead.
 
@@ -170,4 +174,4 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 
 ## Version
 
-The About dialog shows version **2.3**. Version 2.3 adds **Optimize Recordings to Minimum Size** (File menu) for sharing a project, and shows the file's format and size next to its name in the clip right-click menu. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.
+The About dialog shows version **3.0**. Version 3.0 adds four built-in effects (MyReverb, MyDelay, MyChannelStrip, MyMaximizer), copying a plug-in to another channel by dragging it, first-click response in all windows, and transport shortcuts (Space / R / ←) while a plug-in window is in front. Version 2.3 adds **Optimize Recordings to Minimum Size** (File menu) for sharing a project, and shows the file's format and size next to its name in the clip right-click menu. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.

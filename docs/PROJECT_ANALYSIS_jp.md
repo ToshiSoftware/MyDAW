@@ -1,6 +1,6 @@
-# MyDAW プロジェクト解析（v2.1）
+# MyDAW プロジェクト解析（v3.0）
 
-> 対象バージョン: **2.3**（2026-10-07 時点のソース）
+> 対象バージョン: **3.0**（2026-10-09 時点のソース）
 > 英語版: [PROJECT_ANALYSIS_en.md](PROJECT_ANALYSIS_en.md)
 > 型・関数単位の詳細: [SOURCE_SPECIFICATION_jp.md](SOURCE_SPECIFICATION_jp.md)
 
@@ -18,8 +18,8 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 | 言語 | Swift（UI・エンジン）、C++17 / Objective-C++（VST3 ブリッジ） |
 | 音声基盤 | AVAudioEngine、Core Audio HAL、AUAudioUnit（v3 サブクラス） |
 | 録音形式 | 24-bit Linear PCM WAV、44.1 / 48 / 88.2 / 96 kHz、モノラル／ステレオ |
-| プラグイン | Audio Unit エフェクト、VST3 エフェクト（同名の AU がある VST3 は一覧から除外） |
-| ソース規模 | Swift 約 20,100 行 / C++ 約 900 行（`Sources/` と `VST3Host/`） |
+| プラグイン | Audio Unit エフェクト、VST3 エフェクト（同名の AU がある VST3 は一覧から除外）、MyPlugIn の内蔵エフェクト 4 種（v3.0） |
+| ソース規模 | アプリの Swift 約 21,500 行、内蔵エフェクトの Swift 約 6,800 行（`Sources/BuiltIn`）／ C++ 約 900 行（`VST3Host/`） |
 | ビルド | `./scripts/build.sh`（CMake で VST3 ブリッジを構築し `swiftc` でリンク） |
 
 ### 1.1 主な機能
@@ -35,8 +35,9 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 - **表示**: 波形はフェード・クロスフェード・上位クリップによる隠れを反映した音量で、512／64 サンプル単位のピーク（強く拡大したときはサンプルそのもの）から 1pt ごとの最小〜最大の棒で描画。ホイール／ピンチで拡大縮小（5〜3200 px/秒）。再生中の自動スクロールは ON／OFF 可能。タイムラインは曲の長さ（クリップと終了フラグ、最低 60 秒）で、それより先は暗く表示。ルーラーは常に画面の右端まで描く。
 - **重なり処理（レイヤー）**: クリップが重なると後から追加したクリップが優先。境界はクロスフェード（既定は等パワー、形は上位クリップのフェードカーブ）。
 - **ミキサー**: Studio One 風の 3 区画ストリップ（INSERT／SEND／コントロール）、dB フェーダー（最大 +6 dB）、ステレオ・ピークメーター、PAN、M／S（FX チャンネルにも。FX のソロはそのリターンだけを再生）、数値直接入力。フォルダと FX チャンネルの始まりに色の縦線（クリックで色変更。FX は全チャンネル共通の色）、カレントトラックの名前欄の反転表示、たたむボタン（v2.1）。⇧／⌘クリックで追加したチャンネルを、カレントトラックと一緒に操作（フェーダーは dB の差、パン・センドは値の差を保って動かし、M／S は同じ状態にする）。使用不可のプラグインは赤く表示し、ツールチップで「使用できません」「見つかりません」を区別。
-- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。
+- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。内蔵エフェクト MyReverb・MyDelay・MyChannelStrip・MyMaximizer（v3.0、3.6）。プラグインをほかのチャンネルのインサートへドラッグすると、同じ設定のコピーを挿入（v3.0）。
 - **デバイス**: 入力と出力に別々のデバイスを選択可能。起動中は macOS の既定入出力を切り替え、終了時に復元。デバイス・サンプルレート変更時は保存と再起動を確認。
+- **ウインドウとキー操作**（v3.0）: メインウインドウとプラグインのウインドウは、別のウインドウ（別のアプリ）が前にあっても 1 回目のクリックで操作できる。プラグインのウインドウがキーのときも Space・R・← が効く（4.12）。
 - **表示言語**: GUI は日本語・英語に対応（初期値は macOS の言語）。設定画面で切り替え、再起動後に反映。
 - **曲の開始・終了フラグ**: ルーラー上に任意で設定。先頭へ戻るで開始フラグへ（もう一度で 0 へ）、終了フラグで再生・録音を停止、書き出し範囲の初期値にも使用。
 - **その他**: BPM・小節表示ルーラー（拍ごとに跳ねる再生位置の ●）、メトロノーム（再生・録音中も ON／OFF 可）、マスター書き出し（ダイアログでファイル名・保存先・形式を指定。WAV 16／24-bit または MP3 固定／VBR、44.1／48／96 kHz、サンプル単位で正確な範囲）、プロジェクト保存／読込、WAV 取り込み（サンプルレート・ビット数を変換）、配布用に録音ファイルを最適化（クリップごとに再生範囲だけの最小フォーマットの WAV を生成）、未使用の録音ファイルを `Recordings/Unused` へ移動、トラック色変更、ヘルプメニューから操作マニュアル（Web の PDF）を表示。
@@ -73,6 +74,7 @@ MyDAW/
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL（デバイス・チャンネル・バッファ）
 │   │   ├── AudioLoadMonitor.swift    オーディオ処理負荷の計測と音飛びの検出
 │   │   ├── PluginManager.swift       AU／VST3 検出（VST3 は子プロセス＋キャッシュ）
+│   │   ├── BuiltInPlugins.swift      起動時に内蔵エフェクト（MyPlugInCatalog）を登録
 │   │   ├── VST3AudioUnit.swift       VST3 を包むアプリ内 AUv3
 │   │   ├── InputMonitorAudioUnit.swift 入力チャンネル抽出用アプリ内 AUv3
 │   │   ├── MonoDownmixAudioUnit.swift モノラルのトラックを L/R 加算するアプリ内 AUv3
@@ -83,7 +85,7 @@ MyDAW/
 │   │   ├── VST3Host.swift            VST3 ホスト抽象（プロトコル）
 │   │   └── GenericAUParameterView.swift  AU の汎用パラメータ UI
 │   └── Views/                  SwiftUI 画面
-│       ├── MainDAWView.swift         画面ルート、起動ログ、書き出しダイアログ、キー処理
+│       ├── MainDAWView.swift         画面ルート、起動ログ、書き出しダイアログ、キー処理、最初のクリックの処理
 │       ├── ProjectSelectionView.swift 起動時のプロジェクト選択
 │       ├── AudioLoadIndicator.swift  ステータスバーの CPU 表示と音飛びマーク
 │       ├── TransportBarView.swift    トランスポート、表示倍率、オーディオ設定
@@ -95,15 +97,19 @@ MyDAW/
 │       ├── MixerView.swift           ミキサー（3 区画ストリップ）
 │       ├── MixerControls.swift       フェーダー、PAN、メーター、dB スケール
 │       └── WindowCloseHandler.swift  ウィンドウを閉じたらアプリを終了（保存確認は終了処理側）、タイトルバーのダブルクリックでズーム
+│   └── BuiltIn/MyPlugIn/       内蔵エフェクト。../MyPlugIn/Sources のコピー（MyPlugInCore、MyReverb、MyDelay、
+│                               MyChannelStrip、MyMaximizer、MyPlugInCatalog）。修正は MyPlugIn 側で行う
 ├── VST3Host/                   C++ VST3 ホストブリッジ（CMake で静的ライブラリ化）
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  翻訳（en.lproj・ja.lproj の Localizable.strings、InfoPlist.strings）
-├── scripts/                    build.sh・run.sh（正式なビルド手順）、build-lame.sh（MP3 エンコーダ）、extract-strings.sh（翻訳漏れの確認）
+├── scripts/                    build.sh・run.sh（正式なビルド手順）、build-lame.sh（MP3 エンコーダ）、extract-strings.sh（翻訳漏れの確認）、
+│                               sync-myplugin.sh（MyPlugIn のソースを Sources/BuiltIn/MyPlugIn にコピー）、
+│                               make-zip.sh・pre-commit.sh（8 章）
 ├── docs/                       本書、ソース仕様書、マニュアル原稿
 └── snapshots/                  作業ごとのソーススナップショット（手動バックアップ）
 ```
 
-> **注意**: `./scripts/build.sh` でも `MyDAW.xcodeproj` でも同じアプリができます。Xcode ターゲットは「Build VST3 Bridge」スクリプトフェーズ（CMake）を実行し、`OTHER_LDFLAGS` でブリッジと SDK の静的ライブラリをリンクし、署名の前に「Strip Extended Attributes」（翻訳のコピー、`build-lame.sh` による LAME の dylib の組み込み、`xattr -cr`）を実行します。どちらも arm64 のみ、アドホック署名、Hardened Runtime なしです。`Package.swift` は現行ソースに追従していません。
+> **注意**: `./scripts/build.sh` でも `MyDAW.xcodeproj` でも同じアプリができます。Xcode ターゲットは「Build VST3 Bridge」スクリプトフェーズ（CMake）を実行し、`OTHER_LDFLAGS` でブリッジと SDK の静的ライブラリをリンクし、署名の前に「Strip Extended Attributes」（翻訳のコピー、`build-lame.sh` による LAME の dylib の組み込み、`xattr -cr`）を実行します。どちらも arm64 のみ、アドホック署名、Hardened Runtime なしです。`Package.swift` は現行ソースに追従していません。v3.0 時点の Xcode プロジェクトには `Sources/BuiltIn` と `BuiltInPlugins.swift` が未登録のため、v3.0 をビルドできるのは `build.sh` だけです（6 章）。
 
 ---
 
@@ -231,6 +237,13 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - ミキサーの区画の高さ、ミキサーをたたんだ状態（`mixer.collapsed`）、スナップ（`MyDAW.snapToGrid`）、自動スクロール（`MyDAW.autoScroll`）、録音時のロールバック（`MyDAW.recordRollback`、`MyDAW.recordRollbackBars`）など画面設定は `UserDefaults`（アプリ共通）に保存します。
 - 起動画面の「最近使ったプロジェクト」（最大 50 件、`.mydaw` のパスと最終保存日時）も `UserDefaults`（キー `MyDAW.recentProjects`）に保存します。
 
+### 3.6 内蔵エフェクト（v3.0）
+
+- **ソースの置き場所**: エフェクトは別プロジェクト MyPlugIn（`../MyPlugIn`。独自のテストとホストアプリを持つ Swift パッケージ）で開発します。`scripts/sync-myplugin.sh` がその Swift ソースを `Sources/BuiltIn/MyPlugIn` に一方向でコピーし（古いコピーは先に削除）、`build.sh` がほかのソースと一緒に MyDAW の実行ファイルへコンパイルします。MyDAW 側のコピーだけを直しても、次の同期で消えます。
+- **登録**: 起動時に `BuiltInPlugins.registration` が `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")` を呼び、カタログの全エフェクトを `AUAudioUnit.registerSubclass` で登録します。プラグイン一覧には「MyDAW: MyReverb」などとして表示され、ほかのプロセス内 AU と同じように挿入・保存（`fullStateForDocument`）・遅延補正されます。MyPlugIn のカタログに追加したエフェクトは、MyDAW を変更しなくても次の同期とビルドで入ります。コンポーネントのコードはプロジェクトに保存されるため変更不可です。メーカーコード 'MyDW' は MyDAW の内部ユニット用で、`PluginManager` が一覧から隠します。
+- **チャンネル名**: `AudioEngineManager` は各 AU の `contextName` に、挿さっているトラック・FX チャンネルの名前か「MASTER」を設定し、名前の変更とインサートの変更に Combine で追従します（`observeChannelNames`）。内蔵エフェクトの画面は、これをエフェクト名の下に表示します。
+- **エフェクト**: MyReverb（プレートリバーブ）、MyDelay、MyChannelStrip（4 バンド EQ とコンプレッサー。順番は切り替え可）、MyMaximizer（10 ms 先読みのマキシマイザー。先読みは遅延として報告）。画面とパラメーターは操作マニュアル第 11 章で説明しています。
+
 ---
 
 ## 4. 主要処理フロー
@@ -308,6 +321,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - ストリップの並びは `rows` から作り（閉じたフォルダも隠さない）、フォルダの始まりに `FolderEdgeLine`、最初の FX の前に `FXEdgeLine` を置く。線のクリックで色パレットを開き、FX の線の色は全 FX チャンネルに設定する（新しい FX もその色で作る）。ヘッダの「ミキサーに表示」は `ProjectState.mixerScrollRequests` で ID を送り、ミキサーが `ScrollViewReader` でその位置へスクロールする（たたんでいるときは開いてから）。
 - **まとめて操作**: `mixerGroupTrackIDs`（カレント以外の追加分。カレントが変わると空になる）。フェーダー・パン・センドの最初の変更で `MixerGroupEdit` に全対象の開始値を記録し、操作したチャンネルの開始値からの変化を、ほかの対象の開始値に加える（上下限で止まっても、戻せば相対差が戻る）。ドラッグの終わりで `endMixerGroupEdit`。インサートは対象外。
 - **使用不可のプラグイン**: 生成に失敗した、またはチェーンのフォーマット（ステレオ）を受け付けない AU は `unavailablePluginIDs` に入れてチェーンから外し、インサートの名前を赤く表示する。ツールチップは `TrackPluginDescriptor.isInstalled` で「使用できません」と「見つかりません」を分ける。
+- **プラグインの移動とコピー**（v3.0）: プラグイン名はその ID（テキスト）としてドラッグする。`ProjectState.dropPlugin(_:before:on:)` は、落とした先のチェーン（`PluginChain`: `.track`、`.fx`、`.master`）と、その前に入れるプラグイン（nil は一覧の空いているところ＝末尾）を受け取る。同じチェーン内なら移動、別のチェーンなら `newInstance()` のコピーを挿入して元は残す。コピーには、インスタンス生成の前に `AudioEngineManager.copyPluginStates` で元の現在の状態を渡す。停止中のみ。
 - ミキサー全体の高さの最小値は「上部の固定部分 + INSERT + SEND + 220pt」（SEND とフェーダー部の境目から下端まで 220pt を保つ）。最大値は、アレンジャーが 180pt 残る高さ（1000pt 以下）。ウィンドウの最小の高さは、ミキサーの高さに合わせて変わる。区画の境目と全体の境界は `VerticalResizeHandle`。
 
 ### 4.10 トラックフォルダ（`ProjectState+Folders`、v2.1）
@@ -327,6 +341,11 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 5. 一時ファイルは常に削除。キャンセル・失敗が変換中なら書きかけの出力も削除する。
 
 ---
+
+### 4.12 ウインドウをまたぐ最初のクリックとショートカット（v3.0）
+
+- **最初のクリック**: キーでないウインドウ（または MyDAW が非アクティブなとき）へのクリックは、クリックされたビューの `acceptsFirstMouse` が true のときだけ届く。SwiftUI のホスティングビューや多くのプラグインのビューは false を返すため、最初のクリックはウインドウを前に出すだけだった。`MainDAWView`（`SpacebarHandler`）の `leftMouseDown` ローカルモニターは、ウインドウがクリックを配る前に動く。メインウインドウとプラグインのウインドウでは、クリック位置のビューを hitTest し、そのビューが最初のクリックを断る場合は、そのクラスの `acceptsFirstMouse` を true を返す実装に置き換える（`FirstMouse`、クラスごとに 1 回）。
+- **プラグインのウインドウでのショートカット**: プラグインのウインドウには識別子 `AudioEngineManager.pluginWindowIdentifier` を付ける。`keyDown` モニターは以前から全ウインドウで R と ← を処理していたが、Space は再生ボタンの SwiftUI `keyboardShortcut` だけで、メインウインドウがキーのときしか効かなかった。プラグインのウインドウでは、モニターが Space を処理する。編集可能なテキストフィールド・テキストビューがファーストレスポンダーのときだけ、キーを文字入力に回す（`isEditingText`）。
 
 ## 5. 設計判断と得られた知見
 
@@ -371,6 +390,8 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 | 使用不可にしたプラグインが、再生するまで赤くならない | ミキサーの `TrackStripView` が `AudioEngineManager` を監視しておらず、`unavailablePluginIDs` の変化で描き直されなかった（FX・マスターのストリップは監視していた） | `TrackStripView` も `audioEngine` を `@ObservedObject` で受け取る |
 | Waves の AU の GUI を 5、6 回開け閉めすると中身が空白になる | 閉じるたびにウィンドウを破棄し、キャッシュしたビューコントローラーを次の新しいウィンドウへ移していた。WaveShell のビューは、何度か移されると描画しなくなる | AU のウィンドウは閉じるボタンで隠すだけにし（`windowShouldClose`）、次は同じウィンドウを表示する。VST3 は開くたびにエディタを作り直すので従来どおり |
 | ミキサーの上で、下に隠れたトラックの R／M などのツールチップが出る | SwiftUI の `.help` が、縦スクロールで見えなくなったヘッダの領域でも有効なまま（クリックは届かない） | ヘッダのツールチップは `trackRowHelp` で付け、ポインタがトラック行の中にある間だけ出す（`TrackRowsPointer`） |
+| 別のウインドウが前にあると、メインウインドウやプラグインのウインドウのフェーダー・ボタンが 2 回目のクリックでしか効かない | SwiftUI のホスティングビュー（と多くのプラグインのビュー）が最初のクリックを受け取らず、1 回目はウインドウをキーにするだけだった | クリックの配送前に、クリックされたビューのクラスの `acceptsFirstMouse` を置き換える（`FirstMouse`、4.12） |
+| プラグインのウインドウが前にあると Space で再生できない | 再生ボタンの `keyboardShortcut(.space)` はキーウインドウの中でしか効かない | ローカルの `keyDown` モニターが、プラグインのウインドウでの Space を処理する |
 | macOS だけでは MP3 を書き出せない | AVFoundation／Audio Toolbox の MP3 は読み込み（デコード）のみ | LAME 3.100 を dylib としてアプリに同梱し、`dlopen` で読み込む（LGPL のため差し替え可能な別ファイルにする）。MPEG-1 Layer III は 48 kHz までなので、MP3 では 96 kHz を選べなくした |
 
 ---
@@ -378,6 +399,8 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 ## 6. 既知の制約
 
 - **ビルド**: `Package.swift` は現行ソースに追従していない。`./scripts/build.sh` か `MyDAW.xcodeproj` を使用すること。`MyDAW.xcodeproj` はソースファイルを個別に登録しているため、Swift ファイルを追加したら `project.pbxproj` にも登録すること（v1.6〜2.1 の間に 8 ファイルの登録が漏れ、Xcode ビルドが失敗していた）。
+- **Xcode プロジェクトと内蔵エフェクト**: `project.pbxproj` に `Sources/BuiltIn/MyPlugIn` と `BuiltInPlugins.swift` が未登録のため、Xcode ではビルドに失敗する。v3.0 は `./scripts/build.sh` でビルドすること。MyPlugIn がファイルを追加するたびに、同期後に Xcode プロジェクトへの登録も必要になる。
+- **最初のクリックの処理**: `FirstMouse` は、クリックされたビュー 1 つではなく、そのクラス全体の `acceptsFirstMouse` を（アプリ全体で、終了まで）変更する。
 - **デバイス・サンプルレートの変更**: エンジンと VST3 インスタンスは起動時のデバイスとサンプルレートで構築されるため、変更は再起動後に反映される（変更時に再起動を確認する）。
 - **macOS の既定デバイス**: MyDAW の起動中は選択デバイスが macOS の既定入出力になり、ほかのアプリにも影響する。異常終了時は元に戻らない。
 - **異なるレートの素材の整形区間**: 取り込み時は変換されるが、サンプルレート変更前に録音したクリップなどデバイスと異なるレートの素材では、整形区間とそれ以外で変換処理が分かれるため継ぎ目にごく小さな段差が出る可能性がある。
@@ -391,7 +414,7 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 - **トラックメーターの停止**: 全トラックのメーターだけが止まる（音・マスター・FX は正常）事象は、FX へのプラグイン挿入（UADx Pure Plate Reverb）の後に分岐ミキサーのタップが呼ばれなくなっていた（付け直しても戻らない）。根本原因は不明で、単独のテストでは再現しない。トラックメーターはタップをやめ、ドライ経路の遅延ユニットの描画の中で測る。それでもユニットが描画されなくなった場合は `~/Library/Logs/MyDAW/MeterRecovery.log` に記録する。
 - **インストゥルメント**: AU・VST3 とも対象外（エフェクトのみ）。AU は `kAudioUnitType_Effect` だけを検出するため、ミュージックエフェクト（`aumf`）も一覧に出ない。
 - **インプットモニターの遅延**: バッファサイズに依存（48 kHz・512 フレームで往復約 25〜30 ms）。ギター用途では 128〜256 を推奨。オーディオインターフェースのダイレクトモニターとの併用は二重に聞こえる。
-- **ミキサー変更と再生中のグラフ変更**: プラグインの挿入・削除・並べ替えは停止中のみ。
+- **ミキサー変更と再生中のグラフ変更**: プラグインの挿入・削除・並べ替え・コピーは停止中のみ。
 - **トラックの並べ替え・フォルダ操作**: UNDO の対象外（UNDO はクリップ編集のみ）。ドラッグ中に画面の端へ寄せても縦にはスクロールしない。
 - **フォルダとファイルの互換**: フォルダを含むプロジェクトを v2.0 で開いて保存すると、フォルダの情報は失われる（トラックはそのまま）。
 - **FX の遅延とモニター**: ドライ経路を D（FX チャンネルの遅延の最大値）だけ遅らせるため、録音待機中の入力モニターも D だけ遅れ、再生の開始もその分遅くなる。
@@ -405,7 +428,7 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 ## 7. 改善候補
 
 ### 優先度高
-1. `Package.swift` の更新または削除（Xcode プロジェクトは v2.2 で全ソースを登録済み）。
+1. `Package.swift` の更新または削除。内蔵エフェクト（`Sources/BuiltIn`、`BuiltInPlugins.swift`）の Xcode プロジェクトへの登録（同期したファイルを手で登録しなくて済むよう、フォルダ参照が望ましい）。
 2. 再起動なしでのデバイス・サンプルレート・言語の変更（エンジンと VST3 インスタンスの作り直し、表示言語の即時切り替え）。
 3. 自動テストの整備（`ClipLayering`、`FadeCurve`、範囲編集、dB 変換、録音トリミングなど純粋ロジックから）。
 4. 取り込み時の変換と逆再生のバックグラウンド実行（進捗表示付き）。
@@ -426,7 +449,8 @@ v1.4〜1.9 の開発で判明した AVAudioEngine／プラグインの落とし�
 
 ## 8. 開発・検証の進め方
 
-- 変更前後で `snapshots/<名前>-<日時>/` にソースを保存する運用（Git は未使用）。
-- ビルドは `./scripts/build.sh`。Google Drive 上でビルドする場合、署名前に拡張属性を除去する処理を含む。
+- 変更前後で `snapshots/<名前>-<日時>/` にソースを保存する運用。2026-10-06 からは Git リポジトリでもある（VS Code からコミット。git ディレクトリは Google Drive の外）。
+- 内蔵エフェクトは `../MyPlugIn` で並行して開発している。修正はそちらで行い、MyDAW をビルドする前に `scripts/sync-myplugin.sh` を実行する。
+- ビルドは `./scripts/build.sh`。`build/MyDAW.zip` は作らない。git の pre-commit フック（`scripts/pre-commit.sh`、main のみ）が、ステージしたソースが `build/MyDAW.app` より新しいコミットを止め、`scripts/make-zip.sh` で ZIP を作り直してコミットに加える。post-commit フックは ZIP とマニュアルを Web 用フォルダへコピーする（`copy-to-note.sh`）。git ディレクトリ側のフックはこれらのスクリプトを呼ぶだけなので、新しいクローンでは作り直すこと。Google Drive 上でビルドする場合、署名前に拡張属性を除去する処理を含む。
 - 実行時ログの取得: 標準出力はバッファされ、異常終了時に末尾が失われる。診断は標準エラー（`FileHandle.standardError`）かファイル出力が確実。`NSLog` はシステムログで読めない場合がある。
 - 音声タイミングの問題は、推測で直さず、共通時計でのタイムスタンプ計測やグラフ構成のダンプで事実を確認してから修正する。

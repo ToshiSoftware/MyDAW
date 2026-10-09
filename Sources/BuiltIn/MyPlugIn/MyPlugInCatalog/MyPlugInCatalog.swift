@@ -8,6 +8,12 @@ import MyReverb
 #if canImport(MyDelay)
 import MyDelay
 #endif
+#if canImport(MyChannelStrip)
+import MyChannelStrip
+#endif
+#if canImport(MyMaximizer)
+import MyMaximizer
+#endif
 // new-plugin.sh: imports
 
 /// Every MyPlugIn effect, in menu order. A host registers them all with
@@ -17,6 +23,8 @@ public enum MyPlugInCatalog {
     public static let plugIns: [MyFXAudioUnit.Type] = [
         MyReverbAudioUnit.self,
         MyDelayAudioUnit.self,
+        MyChannelStripAudioUnit.self,
+        MyMaximizerAudioUnit.self,
         // new-plugin.sh: catalog
     ]
 

@@ -1,9 +1,9 @@
-# MyDAW ソースコード仕様書（v2.1）
+# MyDAW ソースコード仕様書（v3.0）
 
-> 対象バージョン: **2.3** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **3.0** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
-本書は `Sources/` と `VST3Host/` の各ファイルについて、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
+本書は `Sources/` と `VST3Host/` の各ファイル（MyPlugIn からコピーした `Sources/BuiltIn` の内蔵エフェクトは 3 章で概要のみ）について、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
 
 ---
 
@@ -26,10 +26,11 @@
 - **`init()`**: 最初に `raiseOpenFileLimit()` で同時に開けるファイル数の上限（RLIMIT_NOFILE の soft 値、既定 256）を `kern.maxfilesperproc` と hard 値の範囲で最大 65,536 まで上げる（再生用にクリップごとに WAV を開いたままにするため、クリップが数百になると上限を超え、AppKit がメニューの部品を読めずにクラッシュした）。次に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。`.handlesExternalEvents(matching: [])` で、Finder から開いたファイルごとに SwiftUI が新しいウィンドウを作るのを防ぐ。
 - **Finder から開く**: Info.plist の `CFBundleDocumentTypes`／`UTExportedTypeDeclarations` で `.mydaw`（`com.tokada.mydaw.project`、`public.data`／`public.content` に準拠。`public.json` にすると Finder が中身のテキストをサムネイルにしてアイコンが出ない）を宣言し、`MyDAWApplicationDelegate.application(_:open:)` が受け取る（複数なら最後の 1 つ）。ウィンドウの `onAppear` で `openProjectFile` が設定されるまでは `pendingProjectURL` に保持し、設定後に `ProjectState.openProjectFile(_:)` を呼ぶ。`build.sh` は署名後に `lsregister -f` でビルドを LaunchServices に登録する。書類のアイコンは `DocumentIcon.icns`（`scripts/make-document-icon.swift` が `AppIcon.iconset` から、折り返し付きの白い書類の中央にアプリアイコンを角丸で描いて作る。アプリアイコンを変えたら再実行する）。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `2.3`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `3.0`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Save Project As…（⇧⌘S）、区切り線、Export Master Mix…、区切り線、Optimize Recordings to Minimum Size、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
   - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
+- **内蔵エフェクト**: `init()` は（VST3 スキャン子プロセスの判定の後、プラグインの検出やプロジェクトの読み込みより前に）`BuiltInPlugins.registration` を評価し、内蔵エフェクトを AU として先に登録する。
 - **`requestAudioPermissions()`**: OS バージョンに応じてマイク権限 API を呼ぶ。
 
 #### `MyDAWApplicationDelegate: NSApplicationDelegate`
@@ -161,7 +162,8 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 - **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。同じフォルダーのほかの `.mydaw`（`clipPathsOfOtherProjects()` で `ProjectDocument` をデコード）のクリップも使用中として扱い、読めないファイルがあれば何も移動せずにエラーを表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
 - **録音ファイルの最適化**: `optimizeRecordings()`（ファイルメニュー。`canOptimizeRecordings` は `canMoveUnusedRecordings` と同じ）。同じフォルダーにほかの `.mydaw` があれば（`otherProjectFileNames()`）、Recordings を共有しているため何もせずに警告します。確認（実行／キャンセル）のあと保存し、全トラックのクリップについて、`ClipAudioProcessing.extractDecision()`（`.nothing`／`.keep`／`.extract(ExtractPlan)`）で、元ファイルの再生範囲（`sourceStartTime` の切り捨て〜終端の切り上げのフレーム）、チャンネル数（モノラルトラックは 1、ステレオトラックは元ファイルの数で最大 2）、サンプルレート（`hardwareSampleRate` より高いときだけ下げる）、ビット数（16-bit 以下の整数は 16、それ以外は 24）を決めます。これらが元ファイルと同じでファイル全体を使うクリップはそのまま残し、ほかは `RecordingExtract`（元ファイル・範囲・チャンネル数が同じなら共有）ごとに `ClipAudioProcessing.writeExtract()` で `Optimized_NNN.wav` を書きます。モノラル化は再生と同じ (L+R)/2、SRC は `AVAudioConverter`（品質 max）。書き込みはバックグラウンドで行い、キャンセルできる進捗パネル（`RecordingOptimizeProgress`、`NSApp.runModal`）を表示します。失敗・キャンセル時は書いたファイルをすべて消して何も変えません。成功したら各クリップの `sourceStartTime` を 1 サンプル未満の端数にしてファイルを差し替え、Undo／Redo とクリップボードを消去し、`syncTracks` して保存します。そのあと、使われなくなった元ファイル（Recordings 直下のもの）を `moveToUnusedFolder()` で `Recordings/Unused` へ移動し、生成数と処理前後の合計サイズを表示します。
 - **開始・終了フラグ**: `songRange`（変更時にエンジンの `songEndTime` を更新）、`songStartTime`／`songEndTime`（秒）、`setSongStart(time:)`／`setSongEnd(time:)`（nil で削除。`minimumSongLengthBeats` 以上離す）、`canPlaceSongStart(at:)`／`canPlaceSongEnd(at:)`。`toggleTransport(recordArmedTracks:)` はパンチ範囲・ロールバック・終了位置をエンジンに渡して再生／録音を開始・一時停止します（再生・録音ボタン、Space、R から）。`rewindToSongStart()` は開始フラグへ、フラグ上かそれより前なら 0 へ戻ります。エンジンの `onReachSongEnd` から `stop(tracks:)` を呼びます。
-- **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`movePlugin(_:before:on:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`moveMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
+- **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
+- **プラグインの移動とコピー**（v3.0。`movePlugin`／`moveMasterPlugin` を置き換え）: `dropPlugin(_:before:on:)` は、ドラッグされたプラグインの ID、その前に入れるプラグイン（nil は末尾）、落とした先の `PluginChain`（`.track(UUID)`、`.fx(UUID)`、`.master`）を受け取る。`pluginChain(containing:)` で元のチェーンを探し、同じチェーンなら移動、別のチェーンなら `audioEngine.copyPluginStates([元: コピー])` の後に `newInstance()` のコピーを挿入して元は残す。最後に `setPlugins(_:on:)` と `syncTracks`。再生中・録音中は何もしない。
 - **FX**: `addFXChannel()`（名前は既存の "FX 数字" の最大値 + 1、色は最初の FX と同じ）、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
 - **ファイル**: `createNewProject`（NSSavePanel で保存先と名前を指定。`canCreateDirectories`、展開表示、拡張子 `.mydaw`。選んだフォルダーに `.mydaw` と `Recordings/` を作成）、`loadProject`（NSOpenPanel で `.mydaw` ファイルを選び、その親フォルダーをプロジェクトフォルダーとする）。両パネルの初期位置は直前のプロジェクトのフォルダーの 1 つ上（`projectPanelStartDirectory`）。`openRecentProject(_:)`（ファイルの存在を確認し、そのフォルダーで `loadProject(from:projectFolderURL:)`）、`saveProject`（書き込みに成功すると `RecentProjects.noteSaved`。`loadProject(from:)` は成功時に `noteOpened`）、`saveProjectAndShowConfirmation`、`openProjectFile(_:)`（Finder から開く。アプリを前面に出し、同じファイルが開いていれば何もしない。再生・録音中はエラー。プロジェクトが開いていれば保存／保存しない／キャンセルを確認してから `loadProject(from:projectFolderURL:)`）、`saveProjectAs()`（NSAlert のテキスト欄で名前だけを入力し、同じフォルダーの `<名前>.mydaw` へ保存して `currentProjectURL` を切り替える。空・「.」始まり・「/」「:」を含む名前は拒否、既存ファイルは置き換えを確認、失敗時は元の URL に戻す）、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
 - **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
@@ -261,7 +263,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 - **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中は `rescheduleEditedClips` で、`ClipScheduleSignature` が変わったクリップと、それに重なるクリップだけを、再開時刻の再生位置から予約し直します。先に全トラックで「なくなったクリップ」のプレイヤーを止めてから予約するため、上のトラックへ移したクリップも止められません。ほかのクリップは鳴り続けます）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
 - **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind(tracks:to:)`、`seek(to:)`、`setPunchRange`（ロールバックの回の間は無視）。`recordRollbackDuration`（秒。`toggleTransport` が設定）: armed トラックがありパンチ範囲がない録音のとき、`beginPlayOrRecord` がその回を「再生位置でパンチイン、パンチアウト +∞」の録音にし（`isRollbackPass`）、再生位置をその分戻す。`stop` で一時的な範囲を消す。`recordingTakePunchIn`／`recordingTakePunchOut`: 録音中のテイクのパンチ範囲（`recordingTakePunchTrim`）。ファイル確定まで保持し、波形レーンはその範囲内だけを描く。`songEndTime`: 再生位置タイマーがこれをまたぐと `onReachSongEnd` を呼びます（それより前から再生を始めた場合のみ）。この停止では、録音したクリップを終了位置で切り揃え、再生位置を終了位置に置きます。
 - **デバイス**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（デバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
-- **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`。
+- **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`、`copyPluginStates(_:)`（元の現在の状態（動いているインスタンスを優先、無ければ保存済みのもの）を、コピーの ID で `savedPluginStates` に入れる。コピーのインスタンスは生成時にこれを読み込む）。
+- **`pluginWindowIdentifier`**（static、v3.0）: すべてのプラグインのウインドウに付ける `NSUserInterfaceItemIdentifier`。`MainDAWView` のモニターが見分けるのに使う。
 - **その他**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:progress:)`（マスター経路を実時間でハードウェアのレートの 32-bit float ファイルへ。取り込んだ割合を通知し、レートを返す）、`shutdown()`（エンジン停止、VST3 解放、macOS 既定入出力デバイスの復元）、録音フォルダ関連。
 
 #### 主な内部処理
@@ -288,6 +291,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `applyInputMonitoringIfNeeded`／`connectInputMonitors` | I ボタン状態に合わせて inputNode → `InputMonitorAudioUnit` → トラック出力を接続（エンジン停止中に実施） |
 | `raiseMaximumFramesPerSlice` | 入出力ユニットのスライス上限を 4096 に上げる（全ノードに反映される） |
 | `releaseVST3Instances` | 終了時にエディタを閉じ、ラッパーから参照を外し、VST3 インスタンスを破棄 |
+| `observeChannelNames`／`setChannelName`（v3.0） | `syncTracks` のたびに、各トラック・FX チャンネルの `$name` と `$plugins` を Combine で購読し、そのプラグインの `auAudioUnit.contextName` にチャンネル名を設定する。`syncMasterPlugins` は「MASTER」を設定する。名前は `pluginChannelNames` に保持し、`replacePluginAudioUnit` でも設定し直す |
+| `configurePluginWindow` | すべてのプラグインのウインドウに、デリゲート、`pluginWindowIdentifier`、`.floating` レベル、`hidesOnDeactivate`、`.moveToActiveSpace` を設定 |
 | プラグイン GUI 群 | `requestOriginalPluginUI`、`presentPluginViewController`（ウィンドウをビューの実寸に合わせ、以後のサイズ変更に追従）、`presentGenericPluginView`、`openVST3PluginUI` |
 | `windowShouldClose` | AU のプラグインウィンドウの閉じるボタン（⌘W も）はウィンドウを `orderOut` で隠すだけにし、`pluginWindows` に残す。次の `openPluginUI` はそのウィンドウを表示し直す（閉じるたびにキャッシュしたビューコントローラーを新しいウィンドウへ移すと、Waves の WaveShell などは数回で中身が空白になった）。VST3 は従来どおり閉じ、`windowWillClose` でエディタを外す。ホストからの `window.close()`（プラグインの削除、プロジェクトを閉じる）はこれを通らない。`replacePluginAudioUnit` は、表示中のウィンドウだけを新しい AU で開き直す |
 
@@ -353,9 +358,19 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID、名前、種類（AU／VST3）、bundle パス、VST3 UID、AU コンポーネント記述、有効状態、UI 互換性。`isInstalled` はプラグインがこの Mac にあるか（AU は `AudioComponentFindNext` で登録を確認、VST3 は保存した bundle パスの存在）。使用不可のインサートのツールチップで「見つかりません」と「使用できません」を分けるのに使う。
-- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。MyDAW 自身が登録する内部 AU（メーカーコード `MyDW`：Mono Downmix、VST3 Host、Delay Compensation、Input Monitor）は一覧に出さない。
+- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。MyDAW 自身が登録する内部 AU（メーカーコード `MyDW`：Mono Downmix、VST3 Host、Delay Compensation、Input Monitor）は一覧に出さない。内蔵エフェクト（メーカーコード `MyDA`）は通常の AU と同じく一覧に出す。
 - **VST3 検出**: `scanVST3Bundle` → キャッシュ（パスと更新日時）を確認 → なければ `runScanChild`（`MyDAW --scan-vst3 <path>`、60 秒でタイムアウト、クラッシュ時は空結果をキャッシュ）。
 - **`runVST3ScanChildIfRequested()`**: 子プロセス側の処理（列挙して `MYDAW_VST3_SCAN_RESULT:` 付き JSON を出力）。
+
+### `BuiltInPlugins.swift`（v3.0 で追加）
+- **`BuiltInPlugins.manufacturer`**: 内蔵エフェクト（「MyDAW: MyReverb」など）のメーカーコード `'MyDA'`。プロジェクトに保存されるため変更不可。`PluginManager` が隠す `'MyDW'` にしてはいけない。
+- **`BuiltInPlugins.registration`**: 最初に参照されたときに一度だけ `MyPlugInCatalog.registerAll(manufacturer:vendorName: "MyDAW")` を呼ぶ static。`MyPlugInCatalog.plugIns` の全エフェクトを `AUAudioUnit.registerSubclass` でプロセス内に登録する。
+
+### `Sources/BuiltIn/MyPlugIn/`（v3.0 で追加）
+`scripts/sync-myplugin.sh` が作る `../MyPlugIn/Sources` のコピー（Swift ファイルのみ。同期のたびにフォルダを削除して作り直す）。ここでは編集しないこと。詳しい仕様は MyPlugIn 側（`Docs/My*.md`）にある。
+- **`MyPlugInCore`**: `MyFXAudioUnit`（共通の `AUAudioUnit` 基底クラス。パラメーター、状態、遅延、エディタ）、`MyFXParameter`、`MyFXExtensionViewController`（MyPlugIn の AUv3 アプリ拡張の principal class。MyDAW のプロセス内では使わない）、共通エディタ（`MyFXEditor`。`MyFXEditorViewController` が SwiftUI のエディタを `NSHostingView` で表示。`contextName` から取ったチャンネル名のヘッダー、IN／OUT メーター、フェーダー、つまみ、`MyFXEditableValue`）、描画まわりの補助。
+- **エフェクト**: `MyReverb`、`MyDelay`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。
+- **`MyPlugInCatalog`**: `plugIns`（メニュー順のエフェクト一覧）と `registerAll(manufacturer:vendorName:)`。エフェクトは `#if canImport(…)` で import するので、同じファイルが MyPlugIn のパッケージでも MyDAW の単一モジュールでもビルドできる。
 
 ### `VST3HostBridge.swift` / `VST3Host.swift`
 `VST3HostBridge.enumerate(bundleURL:)` は C++ の `MyDAWVST3EnumerateAudioEffects` を呼び、UID・名前・ベンダー・バージョンを返す（子プロセスでのみ使用）。`VST3Host.swift` はホスト抽象のプロトコルと未対応実装。
@@ -379,6 +394,8 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 - **最小サイズ**: 外枠は `.frame(minWidth: 800)` だけで、高さの下限は付けない（付けると内容の最小の高さが隠れ、ウィンドウが内容より小さくなってトランスポートとミキサーが切れる）。ウィンドウの最小の高さ＝トランスポート＋アレンジャーの最小（`minimumArrangerHeight` = 180pt）＋ミキサー＋ステータスバー。
 - **アレンジャーの高さ**: `arrangerHeight` を読み取り、`MixerView` へ `growthLimit`（アレンジャーが最小になるまでの余り）として渡す。
 - **`TitleBarZoomHandler`** を背景に置く（`WindowCloseHandler.swift`）。
+- **`SpacebarHandler`**（背景の `NSViewRepresentable`）がアプリ全体のローカルモニターを置く。`keyDown`: ⌘Z／⇧⌘Z／⌘Y、⌘X／⌘C／⌘V／⌘A、R（録音）、←（巻き戻し）、Esc（選択解除。イベントは先へ渡す）、プラグインのウインドウ（`pluginWindowIdentifier`）での Space（メインウインドウでは再生ボタンの `keyboardShortcut`）。編集可能な `NSTextView`／`NSTextField` がファーストレスポンダーの間はキーをそのまま通す（`isEditingText`）。`leftMouseDown`: メインウインドウ（この representable のウインドウ）とプラグインのウインドウでは、まず `FirstMouse.enable(for:in:)` を呼び、その後、ファーストレスポンダーの外をクリックしたときはファーストレスポンダーを外す。
+- **`FirstMouse`**（v3.0）: ウインドウがキーでないかアプリが非アクティブのとき、コンテンツビュー内のクリック位置のビューを hitTest し、そのビューが `acceptsFirstMouse` を断る場合は、そのクラス（`object_getClass`）のメソッドを true を返す実装に置き換える（`class_replaceMethod`、クラスごとに 1 回）。AppKit がクリックを配る前に行う。
 - **`refreshToolTips()`**: プロジェクトを開いたとき・起動ログが消えたときに、メインウィンドウの幅を 1pt 変えて戻し、ツールチップ領域を再登録させる（オーバーレイが消えただけでは SwiftUI が再登録しないため）。
 
 ### `ProjectSelectionView.swift`
@@ -433,8 +450,8 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 Studio One 風ミキサー。
 - **全体**: タイトルバーの ▼／▲ でたたむ・開く（`isCollapsed`、UserDefaults `mixer.collapsed`。たたむとタイトルバーだけの 23pt）。「ミキサーに表示」（`mixerScrollRequests`）は `ScrollViewReader` でその行の ID を左端へスクロールする（たたんでいれば開いてから、`pendingScrollID` で表示後に）。ストリップの並びは `mixerItems`（`rows` から。閉じたフォルダも隠さない）で、フォルダの始まりに `FolderEdgeLine`、最初の FX の前に `FXEdgeLine`（どちらも `MixerEdgeLine`：幅 6pt の色の線。クリックで `TrackColorPalette`。FX の線の色は全 FX チャンネルに設定）。上端ドラッグで高さ変更（SEND とフェーダー部の境目からミキサー下端までが 220pt 以上残る高さ〜1000pt。さらに、ドラッグ開始時の `growthLimit` を超えては広げない＝アレンジャーを 180pt 未満にしない。境界は AppKit の `VerticalResizeHandle` でカーソル形状とドラッグ範囲が一致）、横スクロールするトラック／FX ストリップ、右端固定の MASTER、右クリックで Add FX。
 - **`StripSections`**: INSERT／SEND／コントロールの 3 区画（見出しは `SectionHeader`。`LocalizedStringKey` で翻訳される）と、区画の高さを変える境界（全ストリップ共通・UserDefaults 保存）。
-- **`PluginRow`／`PluginNameButton`**: インサートの 1 行。`isPluginUnavailable` のプラグインは名前を赤で表示し、ツールチップを「（`menuDisplayName`）-このプラグインは使用できません」（`isInstalled` のとき）または「…-このプラグインは見つかりません」にする。赤い行はクリックで GUI を開かず、ドラッグでの並べ替えも受けない（ツールチップを出すため `allowsHitTesting` は切らず、各ハンドラで止める）。
-- **`TrackStripView`**: `audioEngine` も監視し、インサートが使用不可になった時点で赤く表示する。INSERT（＋メニュー、緑丸で ON/OFF、名前クリックで GUI、ドラッグで並べ替え、× で削除）、SEND（FX ごとのレベルバーと dB 値）、PAN、M／S（フォルダで有効な間はグレーで点灯し無効）、フェーダー値、目盛り・フェーダー・ステレオメーター、名前（クリックで選択。カレントトラックは `StripFooter` の `isCurrent` で白地に黒文字）。
+- **`PluginRow`／`PluginNameButton`**: インサートの 1 行。`isPluginUnavailable` のプラグインは名前を赤で表示し、ツールチップを「（`menuDisplayName`）-このプラグインは使用できません」（`isInstalled` のとき）または「…-このプラグインは見つかりません」にする。赤い行はクリックで GUI を開かず、ドロップも受けない（ツールチップを出すため `allowsHitTesting` は切らず、各ハンドラで止める）。名前はプラグイン ID（テキスト）としてドラッグする。名前の上へのドロップは `onDropPlugin`（→ `dropPlugin(_:before:on:)`）を呼び、各ストリップの INSERT 一覧の領域も末尾に追加する `pluginDropTarget`（`before: nil`）になっている。再生中・録音中のドロップは受けない。
+- **`TrackStripView`**: `audioEngine` も監視し、インサートが使用不可になった時点で赤く表示する。INSERT（＋メニュー、緑丸で ON/OFF、名前クリックで GUI、ドラッグで並べ替え（別のストリップへドラッグでコピー）、× で削除）、SEND（FX ごとのレベルバーと dB 値）、PAN、M／S（フォルダで有効な間はグレーで点灯し無効）、フェーダー値、目盛り・フェーダー・ステレオメーター、名前（クリックで選択。カレントトラックは `StripFooter` の `isCurrent` で白地に黒文字）。
 - **まとめて操作（`ProjectState+MixerGroup.swift`）**: チャンネルの操作部以外のクリックは `clickMixerChannel`（修飾キーなしでカレントにして `mixerGroupTrackIDs` を空に、⇧／⌘ で追加・解除）。`selectedTrackId` が変わると `mixerGroupTrackIDs` は空になる。対象（`isMixerTarget`: カレント＋追加分）は背景が明るく、名前の反転はカレントのみ。フェーダー・パン・センドは `setMixerVolume`／`setMixerPan`／`setMixerSend` を通り、最初の変更で `MixerGroupEdit` に全対象の開始値を記録し、操作したチャンネルの開始値からの変化（dB。-∞ は -96 dB として扱う。パンは値の差）をほかの対象の開始値に加える（上下限で止まっても、戻せば相対差が戻る）。-∞ のほかの対象は、操作したチャンネルも -∞ から始めたときだけ動かす。ドラッグ終了・⌥クリック・数値入力の後に `endMixerGroupEdit`。M／S は `toggleMixerMute`／`toggleMixerSolo` で、ほかの対象を同じ状態にする（フォルダで保持中のものを除く）。インサートは対象外。フェーダー・パン・センドバーは `DragGesture(minimumDistance: 0)`、数値ラベルは空のシングルタップを持ち、クリックがチャンネルの選択に届かないようにしている。
 - **`FXStripView`**: INSERT、（SEND 区画は空欄。位置合わせのためだけに残す）、PAN、「FX」表示、フェーダー、名前（ダブルクリックで改名）。右クリックメニューは「FX を追加」「（FX 名）を削除」（削除は `confirmRemoveFXChannel` で確認ダイアログを経由）（ストリップ上ではミキサー全体のメニューより優先されるため、FX を追加も併記）。
 - **`MasterStripView`**: POST プラグイン、フェーダー、ステレオメーター。

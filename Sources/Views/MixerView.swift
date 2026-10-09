@@ -367,7 +367,7 @@ private struct PluginRow: View {
     let canReorder: Bool
     let onToggle: () -> Void
     let onOpen: () -> Void
-    let onMove: (UUID) -> Void
+    let onDropPlugin: (UUID) -> Void
     let onRemove: () -> Void
 
     private var helpText: String {
@@ -392,7 +392,7 @@ private struct PluginRow: View {
                 isUnavailable: isUnavailable,
                 canReorder: canReorder,
                 onOpen: onOpen,
-                onMove: onMove
+                onDropPlugin: onDropPlugin
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             .help(helpText)
@@ -590,12 +590,16 @@ private struct TrackStripView: View {
                                 canReorder: !isBusy,
                                 onToggle: { projectState.togglePlugin(plugin.id, on: track.id) },
                                 onOpen: { projectState.openPluginUI(plugin.id, on: track.id) },
-                                onMove: { sourceID in projectState.movePlugin(sourceID, before: plugin.id, on: track.id) },
+                                onDropPlugin: { sourceID in projectState.dropPlugin(sourceID, before: plugin.id, on: .track(track.id)) },
                                 onRemove: { projectState.removePlugin(plugin.id, from: track.id) }
                             )
                         }
                     }
                     .padding(.horizontal, 3)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .pluginDropTarget(enabled: !isBusy) { sourceID in
+                    projectState.dropPlugin(sourceID, before: nil, on: .track(track.id))
                 }
             }
         } sends: {
@@ -703,12 +707,16 @@ private struct FXStripView: View {
                                 canReorder: !isBusy,
                                 onToggle: { projectState.togglePlugin(plugin.id, onFX: channel.id) },
                                 onOpen: { audioEngine.openPluginUI(pluginID: plugin.id) },
-                                onMove: { sourceID in projectState.movePlugin(sourceID, before: plugin.id, onFX: channel.id) },
+                                onDropPlugin: { sourceID in projectState.dropPlugin(sourceID, before: plugin.id, on: .fx(channel.id)) },
                                 onRemove: { projectState.removePlugin(plugin.id, fromFX: channel.id) }
                             )
                         }
                     }
                     .padding(.horizontal, 3)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .pluginDropTarget(enabled: !isBusy) { sourceID in
+                    projectState.dropPlugin(sourceID, before: nil, on: .fx(channel.id))
                 }
             }
         } sends: {
@@ -778,7 +786,7 @@ private struct MasterStripView: View {
                                 canReorder: !isBusy,
                                 onToggle: { projectState.toggleMasterPlugin(plugin.id) },
                                 onOpen: { audioEngine.openPluginUI(pluginID: plugin.id) },
-                                onMove: { sourceID in projectState.moveMasterPlugin(sourceID, before: plugin.id) },
+                                onDropPlugin: { sourceID in projectState.dropPlugin(sourceID, before: plugin.id, on: .master) },
                                 onRemove: {
                                     DispatchQueue.main.async { projectState.removeMasterPlugin(plugin.id) }
                                 }
@@ -786,6 +794,10 @@ private struct MasterStripView: View {
                         }
                     }
                     .padding(.horizontal, 3)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .pluginDropTarget(enabled: !isBusy) { sourceID in
+                    projectState.dropPlugin(sourceID, before: nil, on: .master)
                 }
             }
         } sends: {
@@ -897,7 +909,7 @@ private struct PluginNameButton: View {
     let isUnavailable: Bool
     let canReorder: Bool
     let onOpen: () -> Void
-    let onMove: (UUID) -> Void
+    let onDropPlugin: (UUID) -> Void
 
     var body: some View {
         Text(name)
@@ -919,18 +931,27 @@ private struct PluginNameButton: View {
                 suppressTapUntil = Date().addingTimeInterval(0.5)
                 return NSItemProvider(object: pluginID.uuidString as NSString)
             }
-            .onDrop(of: [.text], isTargeted: nil) { providers in
-                guard canReorder && !isUnavailable, let provider = providers.first else { return false }
-                provider.loadObject(ofClass: NSString.self) { object, _ in
-                    guard let value = object as? NSString,
-                          let sourceID = UUID(uuidString: value as String) else { return }
-                    Task { @MainActor in
-                        onMove(sourceID)
-                    }
-                }
+            .pluginDropTarget(enabled: canReorder && !isUnavailable) { sourceID in
                 suppressTapUntil = Date().addingTimeInterval(0.5)
-                return true
+                onDropPlugin(sourceID)
             }
+    }
+}
+
+private extension View {
+    /// Accepts a plug-in dragged from an insert list (its ID as text).
+    func pluginDropTarget(enabled: Bool, onDrop: @escaping (UUID) -> Void) -> some View {
+        self.onDrop(of: [.text], isTargeted: nil) { providers in
+            guard enabled, let provider = providers.first else { return false }
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let value = object as? NSString,
+                      let sourceID = UUID(uuidString: value as String) else { return }
+                Task { @MainActor in
+                    onDrop(sourceID)
+                }
+            }
+            return true
+        }
     }
 }
 

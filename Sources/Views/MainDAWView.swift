@@ -551,6 +551,7 @@ private struct SpacebarHandler: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
+        context.coordinator.view = view
         context.coordinator.startMonitoring()
         return view
     }
@@ -575,6 +576,7 @@ private struct SpacebarHandler: NSViewRepresentable {
         var undo: () -> Void
         var redo: () -> Void
         var edit: (EditCommand) -> Void
+        weak var view: NSView?
         private var monitor: Any?
         private var mouseMonitor: Any?
 
@@ -603,8 +605,7 @@ private struct SpacebarHandler: NSViewRepresentable {
                 let hasShift = modifiers.contains(.shift)
                 let hasOtherModifier = modifiers.intersection([.control, .option]).isEmpty == false
 
-                if let firstResponder = event.window?.firstResponder,
-                   firstResponder is NSTextView || firstResponder is NSTextField {
+                if Self.isEditingText(in: event.window) {
                     return event
                 }
 
@@ -634,6 +635,15 @@ private struct SpacebarHandler: NSViewRepresentable {
                     return event
                 }
                 switch event.keyCode {
+                case 49 where event.window?.identifier == AudioEngineManager.pluginWindowIdentifier:
+                    // The main window's play button takes Space through its
+                    // keyboard shortcut, which only works while that window
+                    // is key. A plug-in window starts and stops the transport
+                    // here instead.
+                    if !event.isARepeat {
+                        self.action()
+                    }
+                    return nil
                 case 123:
                     self.rewind()
                     return nil
@@ -652,7 +662,11 @@ private struct SpacebarHandler: NSViewRepresentable {
                     return event
                 }
             }
-            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                if let window = event.window,
+                   window === self?.view?.window || window.identifier == AudioEngineManager.pluginWindowIdentifier {
+                    FirstMouse.enable(for: event, in: window)
+                }
                 guard let window = event.window,
                       let firstResponder = window.firstResponder as? NSView,
                                             let contentView = window.contentView else {
@@ -669,6 +683,18 @@ private struct SpacebarHandler: NSViewRepresentable {
             }
         }
 
+        /// Typing goes to a text field being edited, not to the shortcuts.
+        private static func isEditingText(in window: NSWindow?) -> Bool {
+            switch window?.firstResponder {
+            case let textView as NSTextView:
+                return textView.isEditable
+            case let textField as NSTextField:
+                return textField.isEditable
+            default:
+                return false
+            }
+        }
+
         func stopMonitoring() {
             if let monitor {
                 NSEvent.removeMonitor(monitor)
@@ -682,3 +708,31 @@ private struct SpacebarHandler: NSViewRepresentable {
     }
 }
 
+/// A click on a window that is not key (or while MyDAW is in the background)
+/// only brings the window forward unless the clicked view accepts the first
+/// mouse. SwiftUI's hosting views and most plug-in views decline it, so a
+/// fader or button needed a second click. The clicked view's class is made to
+/// accept it before AppKit dispatches the click, so the first click acts.
+private enum FirstMouse {
+    private static var enabledClasses = Set<ObjectIdentifier>()
+
+    static func enable(for event: NSEvent, in window: NSWindow) {
+        guard !window.isKeyWindow || !NSApp.isActive,
+              let contentView = window.contentView,
+              let frameView = contentView.superview,
+              let hitView = frameView.hitTest(event.locationInWindow),
+              hitView.isDescendant(of: contentView),
+              !hitView.acceptsFirstMouse(for: event),
+              let viewClass = object_getClass(hitView),
+              enabledClasses.insert(ObjectIdentifier(viewClass)).inserted else { return }
+        let selector = #selector(NSView.acceptsFirstMouse(for:))
+        guard let method = class_getInstanceMethod(viewClass, selector) else { return }
+        let acceptsFirstMouse: @convention(block) (NSView, NSEvent?) -> Bool = { _, _ in true }
+        class_replaceMethod(
+            viewClass,
+            selector,
+            imp_implementationWithBlock(acceptsFirstMouse),
+            method_getTypeEncoding(method)
+        )
+    }
+}

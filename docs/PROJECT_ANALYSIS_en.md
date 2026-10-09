@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v2.1)
+# MyDAW Project Analysis (v3.0)
 
-> Version covered: **2.3** (source as of 2026-10-07)
+> Version covered: **3.0** (source as of 2026-10-09)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -18,8 +18,8 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 | Languages | Swift (UI, engine), C++17 / Objective-C++ (VST3 bridge) |
 | Audio stack | AVAudioEngine, Core Audio HAL, AUAudioUnit (v3 subclasses) |
 | Recording format | 24-bit Linear PCM WAV, 44.1 / 48 / 88.2 / 96 kHz, mono / stereo |
-| Plug-ins | Audio Unit effects, VST3 effects (VST3s that also exist as an AU are hidden) |
-| Code size | ~20,100 lines of Swift / ~900 lines of C++ (`Sources/` and `VST3Host/`) |
+| Plug-ins | Audio Unit effects, VST3 effects (VST3s that also exist as an AU are hidden), four built-in effects from MyPlugIn (v3.0) |
+| Code size | ~21,500 lines of Swift for the app, ~6,800 lines of Swift for the built-in effects (`Sources/BuiltIn`) / ~900 lines of C++ (`VST3Host/`) |
 | Build | `./scripts/build.sh` (builds the VST3 bridge with CMake and links it with `swiftc`) |
 
 ### 1.1 Main features
@@ -35,7 +35,8 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips, one min–max bar per point from 512- and 64-sample peaks and, zoomed in far, the samples themselves. Wheel / pinch zoom (5–3200 px/s). Auto-scroll during playback can be turned on/off. The timeline is the song's length (clips and end flag, at least 60 s) and is darkened past it; the ruler always fills the view.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
 - **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry. Coloured vertical lines where folders and the FX channels start (click to change the colour; one colour for all FX channels), the current track's name shown reversed, and a fold button (v2.1). Channels ⇧/⌘-clicked are operated together with the current track (faders keep their dB differences, pan and sends their value differences; M/S take the same state). Unavailable plug-ins are shown in red, with a tooltip telling "cannot be used" from "not found".
-- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1).
+- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChannelStrip and MyMaximizer (v3.0, 3.6). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0).
+- **Windows and keys** (v3.0): the main window and plug-in windows act on the first click even when another window (or another app) is in front; Space / R / ← work while a plug-in window is key (4.12).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
@@ -73,6 +74,7 @@ MyDAW/
 │   │   ├── AudioDeviceManager.swift  Core Audio HAL (devices, channels, buffer size)
 │   │   ├── AudioLoadMonitor.swift    Audio processing load and dropout detection
 │   │   ├── PluginManager.swift       AU / VST3 discovery (VST3 via child process + cache)
+│   │   ├── BuiltInPlugins.swift      Registers the built-in effects (MyPlugInCatalog) at launch
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
@@ -83,7 +85,7 @@ MyDAW/
 │   │   ├── VST3Host.swift            VST3 host abstraction (protocols)
 │   │   └── GenericAUParameterView.swift  Generic AU parameter UI
 │   └── Views/                  SwiftUI screens
-│       ├── MainDAWView.swift         Root view, startup log, export dialog, key handling
+│       ├── MainDAWView.swift         Root view, startup log, export dialog, key handling, first-click handling
 │       ├── ProjectSelectionView.swift Project chooser at launch
 │       ├── AudioLoadIndicator.swift  Status bar CPU meter and dropout mark
 │       ├── TransportBarView.swift    Transport, view scaling, audio settings
@@ -95,15 +97,19 @@ MyDAW/
 │       ├── MixerView.swift           Mixer (three-section strips)
 │       ├── MixerControls.swift       Fader, pan, meter, dB scale
 │       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler); title-bar double-click zooms
+│   └── BuiltIn/MyPlugIn/       Built-in effects: a copy of ../MyPlugIn/Sources (MyPlugInCore, MyReverb, MyDelay,
+│                               MyChannelStrip, MyMaximizer, MyPlugInCatalog); edit them in MyPlugIn, not here
 ├── VST3Host/                   C++ VST3 host bridge (static library via CMake)
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  Translations (Localizable.strings and InfoPlist.strings in en.lproj / ja.lproj)
-├── scripts/                    build.sh, run.sh (the supported build path), build-lame.sh (MP3 encoder), extract-strings.sh (translation check)
+├── scripts/                    build.sh, run.sh (the supported build path), build-lame.sh (MP3 encoder), extract-strings.sh (translation check),
+│                               sync-myplugin.sh (copies MyPlugIn's sources into Sources/BuiltIn/MyPlugIn),
+│                               make-zip.sh and pre-commit.sh (see 8)
 ├── docs/                       This document, source specification, manual sources
 └── snapshots/                  Manual source snapshots taken around each change
 ```
 
-> **Note**: `./scripts/build.sh` and `MyDAW.xcodeproj` both produce the same app. The Xcode target runs the "Build VST3 Bridge" script phase (CMake), links the bridge and SDK static libraries through `OTHER_LDFLAGS`, then runs "Strip Extended Attributes" (copies the translations, installs the LAME dylib with `build-lame.sh`, `xattr -cr`) before signing. Both use arm64 only, ad-hoc signing and no hardened runtime. `Package.swift` is not kept in sync.
+> **Note**: `./scripts/build.sh` and `MyDAW.xcodeproj` both produce the same app. The Xcode target runs the "Build VST3 Bridge" script phase (CMake), links the bridge and SDK static libraries through `OTHER_LDFLAGS`, then runs "Strip Extended Attributes" (copies the translations, installs the LAME dylib with `build-lame.sh`, `xattr -cr`) before signing. Both use arm64 only, ad-hoc signing and no hardened runtime. `Package.swift` is not kept in sync. As of v3.0 the Xcode project does not list `Sources/BuiltIn` and `BuiltInPlugins.swift` yet, so only `build.sh` builds v3.0 (6).
 
 ---
 
@@ -231,6 +237,13 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - UI preferences such as mixer section heights, the folded mixer (`mixer.collapsed`), snap (`MyDAW.snapToGrid`), auto-scroll (`MyDAW.autoScroll`) and rollback recording (`MyDAW.recordRollback`, `MyDAW.recordRollbackBars`) live in `UserDefaults` (app-wide).
 - The start screen's Recent Projects (up to 50 `.mydaw` paths with their last-saved dates) are also kept in `UserDefaults` (key `MyDAW.recentProjects`).
 
+### 3.6 Built-in effects (v3.0)
+
+- **Where the code lives**: the effects are developed in the separate MyPlugIn project (`../MyPlugIn`, a Swift package with its own tests and host apps). `scripts/sync-myplugin.sh` copies its Swift sources one way into `Sources/BuiltIn/MyPlugIn` (deleting the old copy first), and `build.sh` compiles them into the MyDAW executable with the rest of the sources. Changes made only in MyDAW's copy are lost at the next sync.
+- **Registration**: at launch `BuiltInPlugins.registration` calls `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")`, which registers every effect of the catalog with `AUAudioUnit.registerSubclass`. They then appear in the plug-in list as "MyDAW: MyReverb" etc. and are inserted, saved (`fullStateForDocument`) and latency-compensated like any in-process AU. An effect added to MyPlugIn's catalog comes along with the next sync and build, with no change in MyDAW. The component codes are stored in projects, so they must not change; vendor 'MyDW' is reserved for MyDAW's internal units, which `PluginManager` hides.
+- **Channel name**: `AudioEngineManager` sets each AU's `contextName` to the name of its track or FX channel, or "MASTER", and follows renames and insert changes through Combine (`observeChannelNames`); the built-in editors show it under the effect name.
+- **Effects**: MyReverb (plate reverb), MyDelay, MyChannelStrip (4-band EQ and compressor, either order) and MyMaximizer (maximizer with a 10 ms look-ahead, reported as latency). Their screens and parameters are described in chapter 11 of the operation manual.
+
 ---
 
 ## 4. Key flows
@@ -308,6 +321,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - The strips are laid out from `rows` (closed folders hide nothing), with a `FolderEdgeLine` where each folder starts and an `FXEdgeLine` before the first FX channel. Clicking a line opens the colour palette; the FX line's colour is set on every FX channel (and new FX channels take it). A header's "Show in Mixer" sends the row ID through `ProjectState.mixerScrollRequests`, and the mixer scrolls there with a `ScrollViewReader` (unfolding first if folded).
 - **Operating channels together**: `mixerGroupTrackIDs` (the channels added besides the current track; emptied when the current track changes). The first change of a fader, pan or send records every target's start value in `MixerGroupEdit` and adds the operated channel's change from its start to the others' start values (a target stopped at a limit gets its relative offset back when moved back). `endMixerGroupEdit` at the end of a drag. Inserts are not included.
 - **Unavailable plug-ins**: an AU that fails to instantiate or refuses the chain format (stereo) goes into `unavailablePluginIDs` and is left out of the chain; its insert name is drawn in red. The tooltip uses `TrackPluginDescriptor.isInstalled` to tell "cannot be used" from "not found".
+- **Moving and copying plug-ins** (v3.0): a plug-in name is dragged as its ID (text). `ProjectState.dropPlugin(_:before:on:)` takes the target chain (`PluginChain`: `.track`, `.fx`, `.master`) and the plug-in to insert before (nil: dropped on an empty part of the list, so at the end). Within the plug-in's own chain it moves; on another chain a `newInstance()` copy is inserted and the original stays, with the source's current state handed over through `AudioEngineManager.copyPluginStates` before the copy is instantiated. Only while stopped.
 - The lowest mixer height is "fixed top parts + INSERT + SEND + 220 pt" (220 pt kept between the SEND/fader divider and the bottom edge). The highest is where the arranger keeps 180 pt (at most 1000 pt), and the window's minimum height follows the mixer's height. Section dividers and the mixer edge use `VerticalResizeHandle`.
 
 ### 4.10 Track folders (`ProjectState+Folders`, v2.1)
@@ -327,6 +341,11 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 5. The temporary file is always deleted; a cancel or failure during conversion also deletes the partial output.
 
 ---
+
+### 4.12 First click and shortcuts across windows (v3.0)
+
+- **First click**: AppKit delivers a click on a window that is not key (or while MyDAW is inactive) only when the clicked view's `acceptsFirstMouse` returns true; SwiftUI's hosting views and many plug-in views return false, so the first click only brought the window forward. The `leftMouseDown` local monitor in `MainDAWView` (`SpacebarHandler`) runs before the window dispatches the click: for the main window and plug-in windows it hit-tests the clicked view and, when that view declines the first mouse, replaces `acceptsFirstMouse` on its class with one returning true (`FirstMouse`, once per class).
+- **Shortcuts in plug-in windows**: plug-in windows carry the identifier `AudioEngineManager.pluginWindowIdentifier`. The `keyDown` monitor already handled R and ← for every window; Space was only the play button's SwiftUI `keyboardShortcut`, which needs the main window to be key, so the monitor now handles Space itself in plug-in windows. Keys go to text instead only while an editable text field or text view is first responder (`isEditingText`).
 
 ## 5. Design decisions and lessons learned
 
@@ -371,6 +390,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | A plug-in marked unavailable does not turn red until playback starts | The mixer's `TrackStripView` did not observe `AudioEngineManager`, so a change of `unavailablePluginIDs` did not redraw it (the FX and master strips did observe it) | `TrackStripView` also takes `audioEngine` as an `@ObservedObject` |
 | A Waves AU's GUI comes up blank after being opened and closed 5–6 times | Each close disposed of the window, and the cached view controller was moved into a new window at the next open; WaveShell's view stops drawing after a few such moves | An AU window's close button only hides it (`windowShouldClose`) and the same window is shown next time. VST3 editors are created anew at each open, so they are unchanged |
 | Over the mixer, tooltips of the R / M buttons of tracks hidden below appear | SwiftUI's `.help` stays active over headers scrolled out of view (clicks do not reach them) | Header tooltips are attached with `trackRowHelp` and given only while the pointer is inside the track rows (`TrackRowsPointer`) |
+| A fader or button in the main window or a plug-in window needed two clicks when another window was in front | SwiftUI's hosting views (and many plug-in views) do not accept the first mouse, so the first click only made the window key | Before dispatch, replace `acceptsFirstMouse` on the clicked view's class (`FirstMouse`, 4.12) |
+| Space did not start playback while a plug-in window was in front | The play button's `keyboardShortcut(.space)` works only in the key window | The local `keyDown` monitor handles Space for plug-in windows |
 | macOS alone cannot write MP3 | AVFoundation / Audio Toolbox only decode MP3 | Ship LAME 3.100 as a dylib inside the app, loaded with `dlopen` (a separate, replaceable file because of the LGPL). MPEG-1 Layer III stops at 48 kHz, so 96 kHz is not offered for MP3 |
 
 ---
@@ -378,6 +399,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 ## 6. Known limitations
 
 - **Build**: `Package.swift` is out of date; use `./scripts/build.sh` or `MyDAW.xcodeproj`. `MyDAW.xcodeproj` lists each source file, so a new Swift file must also be added to `project.pbxproj` (eight files were missing between v1.6 and v2.1, which broke the Xcode build).
+- **Xcode project and built-in effects**: `project.pbxproj` does not list `Sources/BuiltIn/MyPlugIn` or `BuiltInPlugins.swift` yet, so an Xcode build fails; build v3.0 with `./scripts/build.sh`. Files that MyPlugIn adds would have to be added to the Xcode project after every sync.
+- **First-click handling**: `FirstMouse` changes `acceptsFirstMouse` for the whole class of a clicked view (app-wide, until quit), not for that view alone.
 - **Device and sample-rate changes**: the engine and VST3 instances are built for the device and rate at launch, so changes apply after a restart (MyDAW offers one when you change them).
 - **macOS default devices**: while MyDAW runs, the chosen devices are the macOS default input/output and affect other apps too. They are not restored after a crash.
 - **Shaped pieces of mismatched-rate audio**: imports are converted, but audio at a rate different from the device (for example clips recorded before a sample-rate change) has shaped and plain pieces converted separately, which can leave a tiny step at the join.
@@ -391,7 +414,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **Track meter stalls**: in the case where all track meters stopped (while sound, master and FX were fine), the splitter taps were no longer called after a plug-in insert on an FX channel (UADx Pure Plate Reverb), and reinstalling them did not help. The root cause is unknown and a standalone test does not reproduce it. Track meters no longer use taps; they are measured inside the dry path's delay unit as it renders. If such a unit stops rendering, it is logged to `~/Library/Logs/MyDAW/MeterRecovery.log`.
 - **Instruments**: not supported in AU or VST3 (effects only). AU discovery looks only for `kAudioUnitType_Effect`, so music effects (`aumf`) are not listed either.
 - **Input monitoring latency**: depends on buffer size (about 25–30 ms round trip at 48 kHz / 512 frames). Use 128–256 for guitar. Using the interface's direct monitoring at the same time makes the signal sound doubled.
-- **Graph changes while playing**: inserting, removing and reordering plug-ins is only allowed while stopped.
+- **Graph changes while playing**: inserting, removing, reordering and copying plug-ins is only allowed while stopped.
 - **Track reordering and folder operations**: not undoable (undo covers clip edits only). Dragging a track to the edge of the view does not scroll vertically.
 - **Folders and file compatibility**: a project with folders opened and saved in v2.0 loses its folders (the tracks stay).
 - **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
@@ -405,7 +428,7 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 ## 7. Improvement candidates
 
 ### High priority
-1. Update or remove `Package.swift` (the Xcode project lists all sources again as of v2.2).
+1. Update or remove `Package.swift`, and add the built-in effects (`Sources/BuiltIn`, `BuiltInPlugins.swift`) to the Xcode project, ideally as a folder reference so synced files need no manual edits.
 2. Device, sample-rate and language changes without a restart (rebuilding the engine and VST3 instances, switching the GUI language live).
 3. Automated tests, starting with pure logic (`ClipLayering`, `FadeCurve`, range edits, dB conversion, recording trim).
 4. Run import conversion and Reverse in the background with progress.
@@ -426,7 +449,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 
 ## 8. Development and verification practice
 
-- Sources are snapshotted to `snapshots/<name>-<timestamp>/` before and after changes (Git is not used).
-- Build with `./scripts/build.sh`. When building inside Google Drive, the script strips extended attributes before code signing.
+- Sources are snapshotted to `snapshots/<name>-<timestamp>/` before and after changes. Since 2026-10-06 the project is also a Git repository (committed from VS Code; the git directory lives outside Google Drive).
+- The built-in effects are developed in `../MyPlugIn` in parallel; change them there and run `scripts/sync-myplugin.sh` before building MyDAW.
+- Build with `./scripts/build.sh`. It no longer writes `build/MyDAW.zip`: the git pre-commit hook (`scripts/pre-commit.sh`, main only) refuses a commit whose staged sources are newer than `build/MyDAW.app`, then refreshes the zip with `scripts/make-zip.sh` and adds it to the commit; the post-commit hook copies the zip and manuals to the web folder (`copy-to-note.sh`). The hooks in the git dir only call these scripts and must be recreated on a new clone. When building inside Google Drive, the script strips extended attributes before code signing.
 - Runtime logging: stdout is buffered and its tail is lost on a crash. Use stderr (`FileHandle.standardError`) or a file for diagnostics; `NSLog` output may not be readable from the system log.
 - For audio timing problems, do not fix by guesswork: measure with shared-clock timestamps or dump the graph first, then fix.

@@ -39,5 +39,6 @@ open class MyFXExtensionViewController: AUViewController, AUAudioUnitFactory {
         editor.view.autoresizingMask = [.width, .height]
         view.addSubview(editor.view)
         self.editor = editor
+        preferredContentSize = editor.size
     }
 }

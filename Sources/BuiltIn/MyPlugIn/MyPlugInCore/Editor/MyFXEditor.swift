@@ -58,8 +58,9 @@ public enum MyFXPalette {
 
 // MARK: - Model
 
-/// One stereo meter: falling level, 1.5 s peak hold (as MyDAW's mixer), and
-/// the highest peak since the readout was last clicked.
+/// One stereo meter: falling level, 1.5 s peak hold (as MyDAW's mixer), the
+/// highest peak since the readout was last clicked, and whether a sample
+/// reached 0 dBFS since then.
 public struct MyFXMeterState: Equatable {
     public var left: Float = 0
     public var right: Float = 0
@@ -67,19 +68,22 @@ public struct MyFXMeterState: Equatable {
     public var holdRight: Float = 0
     public var maximum: Float = 0
     public var holdAge = 0.0
+    /// A sample at or above 0 dBFS (|x| >= 1) since the last `clearPeaks`.
+    public var clipped = false
 
     /// About 20 dB per second at 30 updates per second.
     private static let fall: Float = 0.926
     private static let holdSeconds = 1.5
 
     public init(left: Float = 0, right: Float = 0, holdLeft: Float = 0, holdRight: Float = 0,
-                maximum: Float = 0, holdAge: Double = 0) {
+                maximum: Float = 0, holdAge: Double = 0, clipped: Bool = false) {
         self.left = left
         self.right = right
         self.holdLeft = holdLeft
         self.holdRight = holdRight
         self.maximum = maximum
         self.holdAge = holdAge
+        self.clipped = clipped
     }
 
     public mutating func update(left peakLeft: Float, right peakRight: Float, interval: Double) {
@@ -96,6 +100,13 @@ public struct MyFXMeterState: Equatable {
             holdAge = 0
         }
         maximum = max(maximum, peakLeft, peakRight)
+        if peakLeft >= 1 || peakRight >= 1 { clipped = true }
+    }
+
+    /// What clicking the readout or the CLIP lamp does.
+    public mutating func clearPeaks() {
+        maximum = 0
+        clipped = false
     }
 }
 
@@ -105,6 +116,9 @@ public final class MyFXEditorModel: ObservableObject {
     @Published public private(set) var values: [AUParameterAddress: Float] = [:]
     @Published public var input = MyFXMeterState()
     @Published public var output = MyFXMeterState()
+    /// The channel the effect is on, as the host names it (AU contextName:
+    /// MyDAW gives the track, FX channel or MASTER); nil when not told.
+    @Published public var channelName: String?
 
     /// Meters are polled only while this says the editor is on screen.
     public var isVisible: () -> Bool = { true }
@@ -112,6 +126,7 @@ public final class MyFXEditorModel: ObservableObject {
     private let tree: AUParameterTree?
     private weak var metering: MyFXMetering?
     private var observerToken: AUParameterObserverToken?
+    private var channelObservation: NSKeyValueObservation?
     private var timer: Timer?
     private static let meterInterval = 1.0 / 30
 
@@ -131,7 +146,17 @@ public final class MyFXEditorModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        channelObservation?.invalidate()
         if let observerToken { tree?.removeParameterObserver(observerToken) }
+    }
+
+    /// Shows `unit`'s contextName and follows changes to it (a renamed track).
+    public func followChannelName(of unit: AUAudioUnit) {
+        channelName = unit.contextName
+        channelObservation = unit.observe(\.contextName, options: [.new]) { [weak self] unit, _ in
+            let name = unit.contextName
+            DispatchQueue.main.async { self?.channelName = name }
+        }
     }
 
     public func value(_ address: AUParameterAddress) -> Float {
@@ -176,7 +201,8 @@ public final class MyFXEditorModel: ObservableObject {
 
 // MARK: - Editor frame
 
-/// Header, IN/OUT meters and a fader row, sized 300 x 400 or larger.
+/// Header, channel name, IN/OUT meters and a fader row, sized 300 x 424
+/// or larger.
 public struct MyFXEditorView<Accessory: View, Faders: View>: View {
     @ObservedObject var model: MyFXEditorModel
     let title: String
@@ -204,6 +230,7 @@ public struct MyFXEditorView<Accessory: View, Faders: View>: View {
             }
             .padding(.horizontal, 4)
             .frame(height: 24)
+            MyFXChannelLabel(name: model.channelName)
             MyFXStrip {
                 VStack(spacing: 6) {
                     MyFXMeterRow(label: "IN", state: model.input) { model.input.maximum = 0 }
@@ -224,7 +251,7 @@ public struct MyFXEditorView<Accessory: View, Faders: View>: View {
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
-        .frame(minWidth: 300, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
+        .frame(minWidth: 300, maxWidth: .infinity, minHeight: 424, maxHeight: .infinity)
         .background(MyFXPalette.background)
     }
 }
@@ -241,6 +268,33 @@ public struct MyFXSubtitle: View {
         Text(text)
             .font(.system(size: 8, weight: .bold))
             .foregroundColor(.white.opacity(0.45))
+    }
+}
+
+/// The name of the channel the effect is on, framed like the sections
+/// below it; "-" when the host gives no name.
+public struct MyFXChannelLabel: View {
+    public static let height: CGFloat = 20
+    let name: String?
+
+    public init(name: String?) {
+        self.name = name
+    }
+
+    public var body: some View {
+        MyFXStrip {
+            HStack(spacing: 0) {
+                Text(name.flatMap { $0.isEmpty ? nil : $0 } ?? "-")
+                    .foregroundColor(MyFXPalette.value)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, weight: .bold))
+            .padding(.horizontal, 8)
+            .frame(height: Self.height)
+        }
+        .help("The channel this effect is on")
     }
 }
 
@@ -263,18 +317,23 @@ public struct MyFXStrip<Content: View>: View {
 
 // MARK: - Meters
 
-/// "IN"/"OUT", a horizontal L/R meter, and the maximum peak in dB (click
-/// to clear).
+/// "IN"/"OUT", a horizontal L/R meter, optionally a CLIP lamp that stays
+/// lit after a sample reaches 0 dBFS, and the maximum peak in dB. Clicking
+/// the readout or the lamp clears both.
 public struct MyFXMeterRow: View {
     public static let labelWidth: CGFloat = 26
     public static let readoutWidth: CGFloat = 38
+    public static let clipWidth: CGFloat = 8
     let label: String
     let state: MyFXMeterState
+    let showsClip: Bool
     let clearMaximum: () -> Void
 
-    public init(label: String, state: MyFXMeterState, clearMaximum: @escaping () -> Void) {
+    public init(label: String, state: MyFXMeterState, showsClip: Bool = false,
+                clearMaximum: @escaping () -> Void) {
         self.label = label
         self.state = state
+        self.showsClip = showsClip
         self.clearMaximum = clearMaximum
     }
 
@@ -286,6 +345,16 @@ public struct MyFXMeterRow: View {
                 .frame(width: Self.labelWidth, alignment: .leading)
             MyFXHorizontalMeter(state: state)
                 .frame(height: 11)
+            if showsClip {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(state.clipped ? Color.red : MyFXPalette.well)
+                    .overlay(RoundedRectangle(cornerRadius: 1.5).stroke(MyFXPalette.border, lineWidth: 1))
+                    .shadow(color: state.clipped ? .red.opacity(0.8) : .clear, radius: 2)
+                    .frame(width: Self.clipWidth, height: 11)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: clearMaximum)
+                    .help("CLIP: a sample reached 0 dBFS (click to clear)")
+            }
             Text(MyFXMeterScale.label(forLevel: state.maximum))
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundColor(state.maximum >= 1 ? .white : MyFXPalette.level(state.maximum))
@@ -377,6 +446,7 @@ public struct MyFXMeterTicks: View {
 /// into values only through the callbacks, so each effect keeps its taper.
 public struct MyFXFaderColumn: View {
     let name: String
+    let nameColor: Color
     let valueText: String
     let fraction: Double
     let onType: (String) -> Void
@@ -385,13 +455,14 @@ public struct MyFXFaderColumn: View {
     let onEnd: () -> Void
     let onReset: () -> Void
 
-    public init(name: String, valueText: String, fraction: Double,
+    public init(name: String, nameColor: Color = MyFXPalette.heading, valueText: String, fraction: Double,
                 onType: @escaping (String) -> Void,
                 onBegin: @escaping () -> Void,
                 onChange: @escaping (Double) -> Void,
                 onEnd: @escaping () -> Void,
                 onReset: @escaping () -> Void) {
         self.name = name
+        self.nameColor = nameColor
         self.valueText = valueText
         self.fraction = fraction
         self.onType = onType
@@ -405,7 +476,7 @@ public struct MyFXFaderColumn: View {
         VStack(spacing: 4) {
             Text(name)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundColor(MyFXPalette.heading)
+                .foregroundColor(nameColor)
                 .lineLimit(1)
             MyFXEditableValue(text: valueText, onCommit: onType)
                 .frame(height: 16)
@@ -423,12 +494,14 @@ extension MyFXFaderColumn {
     /// gesture starts and ends so it can record automation. `fraction` and
     /// `value` are the effect's taper between value and fader travel.
     public init<Parameter: MyFXParameter>(parameter: Parameter, model: MyFXEditorModel,
+                                          nameColor: Color = MyFXPalette.heading,
                                           fraction: @escaping (Float) -> Double,
                                           value: @escaping (Double) -> Float) {
         let address = parameter.address
         let current = model.value(address)
         self.init(
             name: parameter.displayName,
+            nameColor: nameColor,
             valueText: parameter.displayString(for: current),
             fraction: fraction(current),
             onType: { text in
@@ -541,6 +614,86 @@ public struct MyFXVerticalFader: View {
             .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.6), lineWidth: 1))
             .frame(width: 22)
             .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+    }
+}
+
+/// A horizontal fader: relative drag (a click does not jump), ⌘ for fine
+/// steps, ⌥-click or double-click for the default. A tick marks `mark`;
+/// with a `detent` the cap settles on it when dragged within 3 % of it.
+public struct MyFXHorizontalFader: View {
+    let fraction: Double
+    let mark: Double
+    let detent: Double?
+    let onBegin: () -> Void
+    let onChange: (Double) -> Void
+    let onEnd: () -> Void
+    let onReset: () -> Void
+    @State private var dragStart: Double?
+
+    private let capWidth: CGFloat = 12
+    private static let detentWidth = 0.03
+
+    public init(fraction: Double, mark: Double = 0.5, detent: Double? = nil,
+                onBegin: @escaping () -> Void, onChange: @escaping (Double) -> Void,
+                onEnd: @escaping () -> Void, onReset: @escaping () -> Void) {
+        self.fraction = fraction
+        self.mark = mark
+        self.detent = detent
+        self.onBegin = onBegin
+        self.onChange = onChange
+        self.onEnd = onEnd
+        self.onReset = onReset
+    }
+
+    public var body: some View {
+        GeometryReader { geometry in
+            let travel = max(1, geometry.size.width - capWidth)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(MyFXPalette.well)
+                    .frame(height: 4)
+                    .padding(.horizontal, capWidth / 2)
+                Rectangle()
+                    .fill(Color.white.opacity(0.35))
+                    .frame(width: 1, height: 10)
+                    .offset(x: capWidth / 2 + travel * CGFloat(mark))
+                cap
+                    .frame(width: capWidth, height: geometry.size.height)
+                    .offset(x: CGFloat(fraction) * travel)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        guard dragStart != nil || drag.translation.width != 0 else { return }
+                        if dragStart == nil {
+                            dragStart = fraction
+                            onBegin()
+                        }
+                        let fine = NSEvent.modifierFlags.contains(.command) ? 0.15 : 1.0
+                        let start = dragStart ?? fraction
+                        var moved = min(1, max(0, start + Double(drag.translation.width / travel) * fine))
+                        if let detent, abs(moved - detent) < Self.detentWidth { moved = detent }
+                        onChange(moved)
+                    }
+                    .onEnded { _ in
+                        if dragStart != nil { onEnd() }
+                        dragStart = nil
+                    }
+            )
+            .simultaneousGesture(TapGesture(count: 2).onEnded(onReset))
+            .simultaneousGesture(TapGesture().modifiers(.option).onEnded(onReset))
+        }
+    }
+
+    private var cap: some View {
+        let tint = MyFXPalette.faderTint
+        return RoundedRectangle(cornerRadius: 2)
+            .fill(LinearGradient(colors: [tint.opacity(0.95), tint.opacity(0.45), tint.opacity(0.95)],
+                                 startPoint: .leading, endPoint: .trailing))
+            .overlay(Rectangle().fill(Color.white).frame(width: 1))
+            .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.black.opacity(0.6), lineWidth: 1))
     }
 }
 
@@ -678,18 +831,22 @@ private struct MyFXMenuAnchorView: NSViewRepresentable {
 
 // MARK: - View controller
 
-/// What an effect's `requestViewController` hands the host: a 300 x 400
-/// SwiftUI editor whose meters run while its window is visible.
+/// What an effect's `requestViewController` hands the host: a SwiftUI
+/// editor (300 x 424 unless the effect asks for another size) whose meters
+/// run while its window is visible.
 public final class MyFXEditorViewController: NSViewController {
-    public static let preferredSize = NSSize(width: 300, height: 400)
+    /// The usual editor size.
+    public static let preferredSize = NSSize(width: 300, height: 424)
     public let model: MyFXEditorModel
+    public let size: NSSize
     private let rootView: AnyView
 
-    public init<Content: View>(model: MyFXEditorModel, rootView: Content) {
+    public init<Content: View>(model: MyFXEditorModel, rootView: Content, size: NSSize = preferredSize) {
         self.model = model
         self.rootView = AnyView(rootView)
+        self.size = size
         super.init(nibName: nil, bundle: nil)
-        preferredContentSize = Self.preferredSize
+        preferredContentSize = size
     }
 
     @available(*, unavailable)
@@ -699,7 +856,7 @@ public final class MyFXEditorViewController: NSViewController {
 
     public override func loadView() {
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: Self.preferredSize)
+        hostingView.frame = NSRect(origin: .zero, size: size)
         view = hostingView
     }
 

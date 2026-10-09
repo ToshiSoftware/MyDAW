@@ -30,3 +30,6 @@
 /scripts/extract-strings.sh
 /scripts/make-document-icon.swift
 /scripts/copy-to-note.sh
+
+# Claude Code personal settings
+.claude/settings.local.json

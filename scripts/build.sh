@@ -11,7 +11,7 @@ echo " Building MyDAW (Mac / Apple Silicon)   "
 echo "========================================"
 
 APP_NAME="MyDAW"
-BASE_VERSION="2.3"
+BASE_VERSION="3.0"
 BUILD_VERSION="${BASE_VERSION}.$(date +%Y%m%d.%H%M)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
@@ -124,16 +124,12 @@ codesign --force --deep --sign - --entitlements "MyDAW.entitlements" "$APP_BUNDL
 # the project in this build.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" || true
 
-# Zip the app for GitHub (only build/MyDAW.zip is committed, not the .app).
-# ditto keeps the signature and permissions and adds no __MACOSX folder.
-echo "Zipping application bundle..."
-APP_ZIP="$BUILD_DIR/$APP_NAME.zip"
-rm -f "$APP_ZIP"
-ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
+# build/MyDAW.zip (the copy committed for GitHub) is not made here: the git
+# pre-commit hook makes it on main with scripts/make-zip.sh, so everyday
+# builds leave the committed zip alone.
 
 echo "========================================"
 echo " Build Succeeded!                       "
 echo " App location: $APP_BUNDLE              "
-echo " Zip location: $APP_ZIP                 "
 echo " To run: open $APP_BUNDLE               "
 echo "========================================"

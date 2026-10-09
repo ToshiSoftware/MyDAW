@@ -39,6 +39,9 @@ open class MyFXAudioUnit: AUAudioUnit, MyFXMetering, @unchecked Sendable {
 
     open class var version: UInt32 { 0x0001_0000 }
 
+    /// The editor's size; hosts size the plug-in window to it.
+    open class var editorSize: NSSize { MyFXEditorViewController.preferredSize }
+
     /// Makes the unit available to AVAudioUnit.instantiate in this process
     /// under `description`. `name` must be "Vendor: Name".
     public class func registerInProcess(as description: AudioComponentDescription, name: String) {
@@ -88,7 +91,9 @@ open class MyFXAudioUnit: AUAudioUnit, MyFXMetering, @unchecked Sendable {
 
     public func makeEditorViewController() -> MyFXEditorViewController {
         let model = MyFXEditorModel(parameterTree: parameterTree, metering: self)
-        return MyFXEditorViewController(model: model, rootView: makeEditorView(model: model))
+        model.followChannelName(of: self)
+        return MyFXEditorViewController(model: model, rootView: makeEditorView(model: model),
+                                        size: type(of: self).editorSize)
     }
 
     public override func requestViewController(completionHandler: @escaping (NSViewController?) -> Void) {
@@ -107,7 +112,10 @@ open class MyFXAudioUnit: AUAudioUnit, MyFXMetering, @unchecked Sendable {
     public override var outputBusses: AUAudioUnitBusArray { outputBusArray }
     public override var channelCapabilities: [NSNumber]? { [1, 1, 2, 2] }
     public override var tailTime: TimeInterval { kernel.tailTime }
-    public override var latency: TimeInterval { 0 }
+    public override var latency: TimeInterval {
+        let sampleRate = outputBusArray[0].format.sampleRate
+        return sampleRate > 0 ? Double(kernel.latencySamples) / sampleRate : 0
+    }
     public override var supportsUserPresets: Bool { false }
 
     public override var shouldBypassEffect: Bool {
@@ -158,7 +166,13 @@ open class MyFXAudioUnit: AUAudioUnit, MyFXMetering, @unchecked Sendable {
         try super.allocateRenderResources()
         let frames = Int(maximumFramesToRender)
         renderer.allocate(frames: frames, channelCount: Int(output.channelCount))
+        let oldLatency = latency
         kernel.prepare(sampleRate: output.sampleRate, maximumFrames: frames)
+        if latency != oldLatency {
+            // Hosts observe `latency` to keep their delay compensation right.
+            willChangeValue(forKey: "latency")
+            didChangeValue(forKey: "latency")
+        }
     }
 
     public override func reset() {

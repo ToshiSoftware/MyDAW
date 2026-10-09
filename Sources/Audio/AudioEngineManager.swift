@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AppKit
+import Combine
 import CoreAudioKit
 
 public enum MyDAWNotificationCenter {
@@ -187,6 +188,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// they stay attached until connectTrackChainTail rewires the fan-out.
     private var retiredSendGains: [UUID: [AVAudioMixerNode]] = [:]
     private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
+    /// The channel each plug-in is on ("Vocal", "FX 1", "MASTER"), given to
+    /// its AU as contextName so its editor can show it.
+    private var pluginChannelNames: [UUID: String] = [:]
+    /// Follow track and FX channel renames, which do not re-sync the graph.
+    private var channelNameObservers: [AnyCancellable] = []
     private var vst3Instances: [UUID: VST3NativeInstance] = [:]
     private var syncedFXChannels: [FXChannel] = []
     private var pluginWindows: [UUID: NSWindow] = [:]
@@ -792,7 +798,32 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    /// Names every plug-in after its track or FX channel now and whenever
+    /// the name or the plug-ins change (master plug-ins: syncMasterPlugins).
+    private func observeChannelNames(tracks: [AudioTrack], fxChannels: [FXChannel]) {
+        let observe = { [weak self] (name: Published<String>.Publisher,
+                                     plugins: Published<[TrackPluginDescriptor]>.Publisher) in
+            name.combineLatest(plugins).sink { name, plugins in
+                MainActor.assumeIsolated {
+                    self?.setChannelName(name, forPlugins: plugins.map(\.id))
+                }
+            }
+        }
+        channelNameObservers = tracks.map { observe($0.$name, $0.$plugins) }
+            + fxChannels.map { observe($0.$name, $0.$plugins) }
+    }
+
+    private func setChannelName(_ name: String, forPlugins pluginIDs: [UUID]) {
+        for pluginID in pluginIDs {
+            pluginChannelNames[pluginID] = name
+            if let unit = pluginAudioUnits[pluginID]?.auAudioUnit, unit.contextName != name {
+                unit.contextName = name
+            }
+        }
+    }
+
     private func replacePluginAudioUnit(_ audioUnit: AVAudioUnit, for pluginID: UUID) {
+        audioUnit.auAudioUnit.contextName = pluginChannelNames[pluginID]
         // A hidden AU window (see windowShouldClose) is dropped with the old
         // unit's view but not shown again.
         let existingWindow = pluginWindows[pluginID]
@@ -1485,6 +1516,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 descriptors[plugin.id] = plugin
             }
         syncVST3Instances(for: allPlugins)
+        observeChannelNames(tracks: tracks, fxChannels: fxChannels)
         syncMasterPlugins(configuredMasterPlugins)
         syncFXChannels(fxChannels)
         // Sends stay wired between syncs; only new or retargeted ones are
@@ -1813,6 +1845,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
 
     public func syncMasterPlugins(_ plugins: [TrackPluginDescriptor]) {
+        setChannelName("MASTER", forPlugins: plugins.map(\.id))
         let signature = plugins.map(\.id)
         if isMasterPluginGraphBuilding {
             if signature == masterPluginSignature {
@@ -3454,8 +3487,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
     }
 
+    /// Marks plug-in windows so the main window's key handling can pass
+    /// transport shortcuts typed in them on to MyDAW.
+    public static let pluginWindowIdentifier = NSUserInterfaceItemIdentifier("MyDAW.PluginWindow")
+
     private func configurePluginWindow(_ window: NSWindow) {
         window.delegate = self
+        window.identifier = Self.pluginWindowIdentifier
         // .floating レベルにすることで、メインウィンドウを何度クリックしても
         // プラグインウィンドウが後ろに回らないようにする。
         // プラグイン同士は同じ .floating レベルにあるため、

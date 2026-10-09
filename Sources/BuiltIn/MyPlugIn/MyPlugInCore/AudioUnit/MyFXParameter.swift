@@ -82,7 +82,14 @@ public protocol MyFXKernel: MyFXRenderKernel {
     func requestReset()
     var isBypassed: Bool { get set }
     var tailTime: Double { get }
+    /// How many samples the output lags the input (a look-ahead); hosts
+    /// compensate for it. Valid after `prepare`.
+    var latencySamples: Int { get }
     func takeMeterPeaks() -> MyFXPeaks
     /// The current target of a parameter (what the host reads back).
     func targetValue(_ address: AUParameterAddress) -> AUValue
+}
+
+extension MyFXKernel {
+    public var latencySamples: Int { 0 }
 }

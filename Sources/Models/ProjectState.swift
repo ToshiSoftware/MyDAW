@@ -5,6 +5,13 @@ import AppKit
 import UniformTypeIdentifiers
 import AVFoundation
 
+/// A strip's insert list: a track's, an FX channel's, or the master's.
+public enum PluginChain: Equatable {
+    case track(UUID)
+    case fx(UUID)
+    case master
+}
+
 /// Clips being dragged. The clips themselves move in time as the pointer
 /// moves; they change tracks only when the drag ends, so until then they are
 /// hidden in their lanes and drawn as a block that follows the pointer.
@@ -926,13 +933,6 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
-    public func movePlugin(_ pluginID: UUID, before targetPluginID: UUID, on trackID: UUID) {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording,
-              let track = tracks.first(where: { $0.id == trackID }) else { return }
-        track.movePlugin(id: pluginID, before: targetPluginID)
-        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-    }
-
     public func togglePlugin(_ pluginID: UUID, on trackID: UUID) {
         guard let track = tracks.first(where: { $0.id == trackID }),
               let index = track.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
@@ -1007,13 +1007,6 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels)
     }
 
-    public func movePlugin(_ pluginID: UUID, before targetPluginID: UUID, onFX fxChannelID: UUID) {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording,
-              let channel = fxChannels.first(where: { $0.id == fxChannelID }) else { return }
-        channel.movePlugin(id: pluginID, before: targetPluginID)
-        audioEngine.syncTracks(tracks, fxChannels: fxChannels)
-    }
-
     public func togglePlugin(_ pluginID: UUID, onFX fxChannelID: UUID) {
         guard let channel = fxChannels.first(where: { $0.id == fxChannelID }),
               let index = channel.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
@@ -1033,17 +1026,6 @@ public final class ProjectState: ObservableObject {
         audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
     }
 
-    public func moveMasterPlugin(_ pluginID: UUID, before targetPluginID: UUID) {
-        guard !audioEngine.isPlaying && !audioEngine.isRecording,
-              pluginID != targetPluginID,
-              let sourceIndex = masterPlugins.firstIndex(where: { $0.id == pluginID }),
-              let targetIndex = masterPlugins.firstIndex(where: { $0.id == targetPluginID }) else { return }
-        let plugin = masterPlugins.remove(at: sourceIndex)
-        let adjustedTargetIndex = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
-        masterPlugins.insert(plugin, at: adjustedTargetIndex)
-        audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
-    }
-
     public func toggleMasterPlugin(_ pluginID: UUID) {
         guard let index = masterPlugins.firstIndex(where: { $0.id == pluginID }) else { return }
         masterPlugins[index].enabled.toggle()
@@ -1055,6 +1037,57 @@ public final class ProjectState: ObservableObject {
             return
         }
         audioEngine.openPluginUI(pluginID: pluginID)
+    }
+
+    /// A plug-in dropped on a chain's insert list, before `targetPluginID`
+    /// (at the end when nil). Within its own chain it moves; on another
+    /// chain a copy with the same settings goes in and the original stays.
+    public func dropPlugin(_ pluginID: UUID, before targetPluginID: UUID?, on chain: PluginChain) {
+        guard !audioEngine.isPlaying && !audioEngine.isRecording,
+              let sourceChain = pluginChain(containing: pluginID),
+              var plugins = plugins(on: chain) else { return }
+        if sourceChain == chain {
+            guard pluginID != targetPluginID,
+                  let sourceIndex = plugins.firstIndex(where: { $0.id == pluginID }) else { return }
+            let plugin = plugins.remove(at: sourceIndex)
+            let index = targetPluginID.flatMap { id in plugins.firstIndex(where: { $0.id == id }) } ?? plugins.endIndex
+            plugins.insert(plugin, at: index)
+        } else {
+            guard let source = self.plugins(on: sourceChain)?.first(where: { $0.id == pluginID }) else { return }
+            let copy = source.newInstance()
+            // The copy picks up the state when its instance is built below.
+            audioEngine.copyPluginStates([pluginID: copy.id])
+            let index = targetPluginID.flatMap { id in plugins.firstIndex(where: { $0.id == id }) } ?? plugins.endIndex
+            plugins.insert(copy, at: index)
+        }
+        setPlugins(plugins, on: chain)
+        audioEngine.syncTracks(tracks, fxChannels: fxChannels, masterPlugins: masterPlugins)
+    }
+
+    private func pluginChain(containing pluginID: UUID) -> PluginChain? {
+        if let track = tracks.first(where: { $0.plugins.contains(where: { $0.id == pluginID }) }) {
+            return .track(track.id)
+        }
+        if let channel = fxChannels.first(where: { $0.plugins.contains(where: { $0.id == pluginID }) }) {
+            return .fx(channel.id)
+        }
+        return masterPlugins.contains(where: { $0.id == pluginID }) ? .master : nil
+    }
+
+    private func plugins(on chain: PluginChain) -> [TrackPluginDescriptor]? {
+        switch chain {
+        case .track(let id): return tracks.first(where: { $0.id == id })?.plugins
+        case .fx(let id): return fxChannels.first(where: { $0.id == id })?.plugins
+        case .master: return masterPlugins
+        }
+    }
+
+    private func setPlugins(_ plugins: [TrackPluginDescriptor], on chain: PluginChain) {
+        switch chain {
+        case .track(let id): tracks.first(where: { $0.id == id })?.plugins = plugins
+        case .fx(let id): fxChannels.first(where: { $0.id == id })?.plugins = plugins
+        case .master: masterPlugins = plugins
+        }
     }
 
     public func deleteTrack(id: UUID) {
