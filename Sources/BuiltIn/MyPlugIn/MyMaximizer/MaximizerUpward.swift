@@ -1,6 +1,6 @@
 import Foundation
 
-/// UPWARD COMPRESS: an AGC that lifts what is quieter than -12 dBFS, by at
+/// UPWARD COMPRESS: an AGC that lifts what is quieter than -6 dBFS, by at
 /// most `amount` dB, and backs off where the music is loud.
 ///
 /// - Detector: the louder channel's peak, falling over 50 ms.
@@ -15,7 +15,7 @@ import Foundation
 ///
 /// Render thread only after `prepare`.
 final class MaximizerUpward {
-    static let threshold: Float = -12
+    static let threshold: Float = -6
     static let detectorFallSeconds = 0.05
     /// Release = this times the limiter's RELEASE.
     static let releaseFactor = 10.0

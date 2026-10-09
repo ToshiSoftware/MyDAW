@@ -55,7 +55,7 @@ public enum MaximizerParameter: Int, CaseIterable, Sendable, MyFXParameter {
     public var range: ClosedRange<Float> {
         switch self {
         case .inputGain: return -12...24
-        case .upward: return 0...12
+        case .upward: return 0...9
         case .threshold: return -30...0
         case .attack: return 0...10
         case .release: return 10...500

@@ -90,8 +90,8 @@ struct MaximizerEditorView: View {
                 MaximizerGraph(columns: display.columns, firstIndex: display.firstIndex, merge: merge,
                                ceiling: model.value(MaximizerParameter.outputLevel.address),
                                threshold: model.value(MaximizerParameter.threshold.address))
-                    // One point per point of width: scrolling moves whole pixels.
-                    .frame(width: CGFloat(MaximizerHistory.viewColumns), height: 120)
+                    // One point per device pixel: scrolling moves whole pixels.
+                    .frame(width: MaximizerHistory.viewWidth, height: 120)
                     .contentShape(Rectangle())
                     .onTapGesture { display.nextSpan() }
                     .help("Level (teal), limiter reduction (red; THRESH dotted), upward boost (green); click for 3 / 6 / 12 s")

@@ -19,11 +19,13 @@ public struct MaximizerColumn: Equatable, Sendable {
 }
 
 /// The graph's time base: the shortest view (3 s) spans `viewColumns`
-/// columns; 6 s and 12 s views merge 2 and 4 columns into one.
+/// columns; 6 s and 12 s views merge 2 and 4 columns into one. The graph is
+/// `viewWidth` points wide, so on a 2x display a column is one pixel.
 public enum MaximizerHistory {
-    public static let viewColumns = 284
+    public static let viewColumns = 568
+    public static let viewWidth: CGFloat = 284
     public static let spans: [Double] = [3, 6, 12]
-    public static let capacity = 1_200
+    public static let capacity = 2_400
 
     static func columnFrames(sampleRate: Double) -> Int {
         max(1, Int((sampleRate * spans[0] / Double(viewColumns)).rounded()))
