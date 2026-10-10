@@ -26,6 +26,7 @@ add_library(MyDAWVST3Bridge STATIC
     VST3HostBridge.cpp
     VST3PluginInstance.cpp
     RealtimeAtomics.cpp
+    ObjCExceptionCatcher.mm
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp"
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/hostclasses.cpp"
     "${VST3_SDK_ROOT}/public.sdk/source/common/memorystream.cpp"
@@ -36,6 +37,7 @@ set_source_files_properties(
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm"
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
+set_source_files_properties(ObjCExceptionCatcher.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_compile_features(MyDAWVST3Bridge PRIVATE cxx_std_17)
 target_link_libraries(

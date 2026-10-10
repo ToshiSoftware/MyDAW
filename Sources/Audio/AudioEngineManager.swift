@@ -227,6 +227,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     )
     private var pluginGraphGenerations: [UUID: Int] = [:]
     private var pluginGraphSignatures: [UUID: [UUID]] = [:]
+    /// Capture and switch units around each wired chain plug-in, by plug-in node.
+    private var pluginSwitches: [ObjectIdentifier: (capture: AVAudioUnitEffect, output: AVAudioUnitEffect)] = [:]
+    /// On/off of each chain plug-in node, applied to its switch once wired.
+    private var pluginEnabledStates: [ObjectIdentifier: Bool] = [:]
     private var fxPluginGraphGenerations: [UUID: Int] = [:]
 
     public func isPluginUnavailable(_ pluginID: UUID) -> Bool {
@@ -236,18 +240,98 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private func safeDisconnectNodeOutput(_ node: AVAudioNode) {
         guard node !== engine.outputNode else { return }
         guard engine.attachedNodes.contains(node) else { return }
-        engine.disconnectNodeOutput(node)
+        engineDisconnectOutput(node)
     }
 
     private func safeDisconnectNodeInput(_ node: AVAudioNode) {
         guard node !== engine.mainMixerNode && node !== engine.outputNode else { return }
         guard engine.attachedNodes.contains(node) else { return }
-        engine.disconnectNodeInput(node)
+        engineDisconnectInput(node)
     }
 
     private func safeDetach(_ node: AVAudioNode) {
+        detachPluginSwitch(of: node)
         guard engine.attachedNodes.contains(node) else { return }
-        engine.detach(node)
+        engineDetach(node)
+    }
+
+    // MARK: Guarded engine calls
+
+    // AVAudioEngine reports an impossible connection (unattached node,
+    // format it rejects, a tap already there...) by raising an Objective-C
+    // exception, which Swift cannot catch: the app ended. Every graph call
+    // goes through these, so a failed call is abandoned and logged instead.
+
+    @discardableResult
+    private func guardedEngineCall(_ what: @autoclosure () -> String, _ body: @escaping () -> Void) -> Bool {
+        guard let failure = ObjCExceptionCatcher.run(body) else { return true }
+        let text = "\(what()) failed: \(failure)"
+        print("[Engine] \(text)")
+        noteGraphEvent(text)
+        return false
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to destination: AVAudioNode, format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(type(of: destination))") {
+            engine.connect(source, to: destination, format: format)
+        }
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to destination: AVAudioNode, fromBus: AVAudioNodeBus,
+                               toBus: AVAudioNodeBus, format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(type(of: destination)) bus \(toBus)") {
+            engine.connect(source, to: destination, fromBus: fromBus, toBus: toBus, format: format)
+        }
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to points: [AVAudioConnectionPoint], fromBus: AVAudioNodeBus,
+                               format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(points.count) points") {
+            engine.connect(source, to: points, fromBus: fromBus, format: format)
+        }
+    }
+
+    private func engineDisconnectOutput(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("disconnect output of \(type(of: node))") { engine.disconnectNodeOutput(node) }
+    }
+
+    private func engineDisconnectInput(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("disconnect input of \(type(of: node))") { engine.disconnectNodeInput(node) }
+    }
+
+    private func engineAttach(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("attach \(type(of: node))") { engine.attach(node) }
+    }
+
+    private func engineDetach(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("detach \(type(of: node))") { engine.detach(node) }
+    }
+
+    /// Empty when the query raises (a fan-out still pointing at a detached node).
+    private func engineOutputPoints(for node: AVAudioNode, outputBus: AVAudioNodeBus) -> [AVAudioConnectionPoint] {
+        let engine = self.engine
+        let (points, failure) = ObjCExceptionCatcher.value([AVAudioConnectionPoint]()) {
+            engine.outputConnectionPoints(for: node, outputBus: outputBus)
+        }
+        if let failure {
+            print("[Engine] connection query of \(type(of: node)) failed: \(failure)")
+            noteGraphEvent("connection query of \(type(of: node)) failed: \(failure)")
+        }
+        return points
+    }
+
+    private func installTapGuarded(on node: AVAudioNode, bus: AVAudioNodeBus, bufferSize: AVAudioFrameCount,
+                                   format: AVAudioFormat?, block: @escaping AVAudioNodeTapBlock) {
+        guardedEngineCall("tap on \(type(of: node))") {
+            node.installTap(onBus: bus, bufferSize: bufferSize, format: format, block: block)
+        }
     }
 
     private func markPluginUnavailable(_ pluginID: UUID) {
@@ -515,29 +599,43 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         self.hardwareSampleRate = hwSampleRate
         self.sampleRate = hwSampleRate
 
-        let masterNode = AVAudioMixerNode()
-        engine.attach(masterNode)
-        masterOutputNode = masterNode
+        // Set up again (buffer size change, device apply): the master node is
+        // kept, so the master plug-ins hanging from it stay in the path. A
+        // new node every time left them on the old one, out of the path.
+        let masterNode: AVAudioMixerNode
+        if let existing = masterOutputNode {
+            masterNode = existing
+            engineDisconnectInput(masterNode)
+            engineDisconnectOutput(masterNode)
+        } else {
+            masterNode = AVAudioMixerNode()
+            engineAttach(masterNode)
+            masterOutputNode = masterNode
+        }
         if let masterFormat = AVAudioFormat(standardFormatWithSampleRate: hwSampleRate, channels: 2) {
             let meterNode: AVAudioMixerNode
             if let existing = masterMeterNode {
                 meterNode = existing
                 meterNode.removeTap(onBus: 0)
-                engine.disconnectNodeInput(meterNode)
-                engine.disconnectNodeOutput(meterNode)
+                engineDisconnectInput(meterNode)
+                engineDisconnectOutput(meterNode)
             } else {
                 meterNode = AVAudioMixerNode()
-                engine.attach(meterNode)
+                engineAttach(meterNode)
                 masterMeterNode = meterNode
             }
-            engine.disconnectNodeOutput(mixer)
-            engine.connect(mixer, to: masterNode, format: masterFormat)
-            engine.connect(masterNode, to: meterNode, format: masterFormat)
-            engine.connect(meterNode, to: engine.outputNode, format: masterFormat)
+            engineDisconnectOutput(mixer)
+            engineConnect(mixer, to: masterNode, format: masterFormat)
+            if masterPluginNodes.isEmpty {
+                engineConnect(masterNode, to: meterNode, format: masterFormat)
+            } else {
+                reconnectPluginChain(from: masterNode, through: masterPluginNodes, to: meterNode, format: masterFormat)
+            }
+            engineConnect(meterNode, to: engine.outputNode, format: masterFormat)
             masterNode.outputVolume = masterVolume
 
             mixer.removeTap(onBus: 0)
-            meterNode.installTap(onBus: 0, bufferSize: 512, format: masterFormat) { [weak self] buffer, when in
+            installTapGuarded(on: meterNode, bus: 0, bufferSize: 512, format: masterFormat) { [weak self] buffer, when in
                 let peak = StereoPeak(buffer: buffer)
                 let exportSink = self?.peakLock.withLock { () -> ((AVAudioPCMBuffer, AVAudioTime) -> Void)? in
                     self?.masterOutputPeak = (self?.masterOutputPeak ?? .zero).merged(with: peak)
@@ -558,10 +656,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
            let accentBuffer = Self.makeClickBuffer(format: clickFormat, frequency: 1800.0, amplitude: 0.42) {
             let node = AVAudioPlayerNode()
                         let clickMixer = AVAudioMixerNode()
-            engine.attach(node)
-                        engine.attach(clickMixer)
-                        engine.connect(node, to: clickMixer, format: clickFormat)
-                        engine.connect(clickMixer, to: mixer, format: clickFormat)
+            engineAttach(node)
+                        engineAttach(clickMixer)
+                        engineConnect(node, to: clickMixer, format: clickFormat)
+                        engineConnect(clickMixer, to: mixer, format: clickFormat)
             clickNode = node
                         clickMixerNode = clickMixer
             clickBuffer = buffer
@@ -575,7 +673,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // Install tap BEFORE engine.start()
         inputNode.removeTap(onBus: 0)
         if hasInput {
-            inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
+            installTapGuarded(on: inputNode, bus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
                 self?.processInputAudioBuffer(buffer: buffer, time: time)
             }
         }
@@ -603,8 +701,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         if engineWarmupNode == nil {
             let node = AVAudioPlayerNode()
-            engine.attach(node)
-            engine.connect(node, to: engine.mainMixerNode, format: format)
+            engineAttach(node)
+            engineConnect(node, to: engine.mainMixerNode, format: format)
             engineWarmupNode = node
         }
 
@@ -1547,7 +1645,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let currentFXIDs = Set(fxChannels.map(\.id))
         for (key, gainNode) in sendGainNodes
         where !currentTrackIDs.contains(key.trackID) || !currentFXIDs.contains(key.fxChannelID) {
-            engine.disconnectNodeOutput(gainNode)
+            engineDisconnectOutput(gainNode)
             gainNode.outputVolume = 0
             retiredSendGains[key.trackID, default: []].append(gainNode)
             sendGainNodes.removeValue(forKey: key)
@@ -1556,16 +1654,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         for (id, renderer) in trackRenderers where !currentTrackIDs.contains(id) {
             renderer.unregister()
-            engine.disconnectNodeOutput(renderer.node)
-            engine.detach(renderer.node)
+            engineDisconnectOutput(renderer.node)
+            engineDetach(renderer.node)
             trackRenderers.removeValue(forKey: id)
             if let outputNode = trackOutputNodes.removeValue(forKey: id) {
-                engine.disconnectNodeOutput(outputNode)
-                engine.detach(outputNode)
+                engineDisconnectOutput(outputNode)
+                engineDetach(outputNode)
             }
             if let downmixNode = trackDownmixNodes.removeValue(forKey: id) {
-                engine.disconnectNodeOutput(downmixNode)
-                engine.detach(downmixNode)
+                engineDisconnectOutput(downmixNode)
+                engineDetach(downmixNode)
             }
             trackPluginLatencies.removeValue(forKey: id)
             trackChainTails.removeValue(forKey: id)
@@ -1574,28 +1672,29 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             trackMeterWatch.removeValue(forKey: id)
             trackMeterStallsLogged.remove(id)
             if let splitter = trackSplitterNodes.removeValue(forKey: id) {
-                engine.disconnectNodeOutput(splitter)
-                engine.detach(splitter)
+                engineDisconnectOutput(splitter)
+                engineDetach(splitter)
             }
             for gainNode in retiredSendGains.removeValue(forKey: id) ?? [] {
                 safeDetach(gainNode)
             }
             if let panNode = trackPanNodes.removeValue(forKey: id) {
-                engine.disconnectNodeOutput(panNode)
-                engine.detach(panNode)
+                engineDisconnectOutput(panNode)
+                engineDetach(panNode)
             }
             trackPanValues.removeValue(forKey: id)
             trackDryAudible.removeValue(forKey: id)
             if let dryDelay = trackDryDelayNodes.removeValue(forKey: id) {
-                engine.disconnectNodeOutput(dryDelay)
-                engine.detach(dryDelay)
+                engineDisconnectOutput(dryDelay)
+                engineDetach(dryDelay)
             }
         }
 
         for (id, nodes) in trackPluginNodes where !currentTrackIDs.contains(id) {
             for pluginNode in nodes {
-                engine.disconnectNodeOutput(pluginNode)
-                engine.detach(pluginNode)
+                engineDisconnectOutput(pluginNode)
+                engineDetach(pluginNode)
+                detachPluginSwitch(of: pluginNode)
             }
             trackPluginNodes.removeValue(forKey: id)
             pluginGraphSignatures.removeValue(forKey: id)
@@ -1624,20 +1723,20 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 outputNode = existing
             } else {
                 outputNode = AVAudioMixerNode()
-                engine.attach(outputNode)
+                engineAttach(outputNode)
                 trackOutputNodes[track.id] = outputNode
             }
             // A renderer works at one sample rate; a new rate gets a new one.
             if let existing = trackRenderers[track.id], existing.sampleRate != hardwareSampleRate {
                 existing.unregister()
-                engine.disconnectNodeOutput(existing.node)
-                engine.detach(existing.node)
+                engineDisconnectOutput(existing.node)
+                engineDetach(existing.node)
                 trackRenderers.removeValue(forKey: track.id)
             }
             if trackRenderers[track.id] == nil {
                 let renderer = TrackRenderer(sampleRate: hardwareSampleRate)
-                engine.attach(renderer.node)
-                engine.connect(renderer.node, to: outputNode, fromBus: 0, toBus: 0, format: format)
+                engineAttach(renderer.node)
+                engineConnect(renderer.node, to: outputNode, fromBus: 0, toBus: 0, format: format)
                 trackRenderers[track.id] = renderer
             }
             // The inserts start after the downmix, so a mono track is mono
@@ -1652,9 +1751,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             } else {
                 _ = MonoDownmixAudioUnit.registration
                 downmixNode = AVAudioUnitEffect(audioComponentDescription: MonoDownmixAudioUnit.componentDescription)
-                engine.attach(downmixNode)
+                engineAttach(downmixNode)
                 trackDownmixNodes[track.id] = downmixNode
-                engine.connect(outputNode, to: downmixNode, format: format)
+                engineConnect(outputNode, to: downmixNode, format: format)
             }
             (downmixNode.auAudioUnit as? MonoDownmixAudioUnit)?.isMono = track.channelMode == .mono
             let chainHead: AVAudioNode = downmixNode
@@ -1691,7 +1790,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         to: engine.mainMixerNode,
                         format: format
                     )
-                    connectTrackChainTail(track.id, from: reusableNodes.last ?? chainHead, format: format)
+                    connectTrackChainTail(track.id, from: reusableNodes.last.map(chainOutput) ?? chainHead, format: format)
                     for plugin in auPlugins {
                         if let au = pluginAudioUnits[plugin.id] {
                             setAUBypass(au, bypassed: !plugin.enabled)
@@ -1837,7 +1936,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         if let existing = sendGainNodes[key] { return existing }
         let gainNode = AVAudioMixerNode()
         gainNode.outputVolume = 0.0
-        engine.attach(gainNode)
+        engineAttach(gainNode)
         sendGainNodes[key] = gainNode
         return gainNode
     }
@@ -2066,13 +2165,25 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         if let au = pluginAudioUnits[pluginID] {
             setAUBypass(au, bypassed: !enabled)
         }
-        // A bypassed plug-in still counts its latency (bypass keeps the
-        // delay), so toggling it never moves the compensation.
+        // A plug-in switched off still counts its latency (its switch delays
+        // the dry signal by it), so toggling it never moves the compensation.
 
         return pluginAudioUnits[pluginID] != nil || vst3Instances[pluginID] != nil
     }
 
+    /// Turns a chain plug-in on or off. Wired plug-ins are switched around
+    /// (see PluginSwitchAudioUnit) and keep running unbypassed; the plug-in's
+    /// own bypass is used only until its switch is wired.
     private func setAUBypass(_ audioUnit: AVAudioUnit, bypassed: Bool) {
+        pluginEnabledStates[ObjectIdentifier(audioUnit)] = !bypassed
+        if pluginSwitches[ObjectIdentifier(audioUnit)] != nil {
+            updatePluginSwitch(of: audioUnit)
+            return
+        }
+        applyOwnBypass(audioUnit, bypassed: bypassed)
+    }
+
+    private func applyOwnBypass(_ audioUnit: AVAudioUnit, bypassed: Bool) {
         audioUnit.auAudioUnit.shouldBypassEffect = bypassed
         (audioUnit as? AVAudioUnitEffect)?.bypass = bypassed
 
@@ -2162,7 +2273,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             return acceptsChainFormat(audioUnit, format: format, name: name)
         }
         if accepted {
-            engine.connect(source, to: destination, format: format)
+            engineConnect(source, to: destination, format: format)
         }
         if restart {
             try? engine.start()
@@ -2186,10 +2297,73 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         var previousNode = source
         for pluginNode in pluginNodes {
-            connectReformatting(previousNode, to: pluginNode, format: format)
-            previousNode = pluginNode
+            previousNode = connectChainPlugin(pluginNode, after: previousNode, format: format)
         }
         connectReformatting(previousNode, to: destination, format: format)
+    }
+
+    /// Wires previous → capture → plug-in → switch and returns the switch,
+    /// which stands for the plug-in as the next unit's source.
+    private func connectChainPlugin(_ plugin: AVAudioNode, after previous: AVAudioNode,
+                                    format: AVAudioFormat) -> AVAudioNode {
+        let key = ObjectIdentifier(plugin)
+        let pair: (capture: AVAudioUnitEffect, output: AVAudioUnitEffect)
+        if let existing = pluginSwitches[key] {
+            pair = existing
+        } else {
+            _ = PluginSwitchAudioUnit.registration
+            let capture = AVAudioUnitEffect(audioComponentDescription: PluginSwitchAudioUnit.captureDescription)
+            let output = AVAudioUnitEffect(audioComponentDescription: PluginSwitchAudioUnit.outputDescription)
+            let kernel = PluginSwitchKernel()
+            (capture.auAudioUnit as? PluginSwitchAudioUnit)?.kernel = kernel
+            (output.auAudioUnit as? PluginSwitchAudioUnit)?.kernel = kernel
+            pair = (capture, output)
+            pluginSwitches[key] = pair
+        }
+        for node in [pair.capture, pair.output] where !engine.attachedNodes.contains(node) {
+            engineAttach(node)
+        }
+        safeDisconnectNodeOutput(previous)
+        safeDisconnectNodeInput(pair.capture)
+        safeDisconnectNodeOutput(pair.capture)
+        safeDisconnectNodeInput(plugin)
+        safeDisconnectNodeOutput(plugin)
+        safeDisconnectNodeInput(pair.output)
+        safeDisconnectNodeOutput(pair.output)
+        connectReformatting(previous, to: pair.capture, format: format)
+        connectReformatting(pair.capture, to: plugin, format: format)
+        connectReformatting(plugin, to: pair.output, format: format)
+        if let audioUnit = plugin as? AVAudioUnit {
+            updatePluginSwitch(of: audioUnit)
+        }
+        return pair.output
+    }
+
+    /// The node that carries a chain plug-in's output: its switch once wired.
+    private func chainOutput(of plugin: AVAudioNode) -> AVAudioNode {
+        pluginSwitches[ObjectIdentifier(plugin)]?.output ?? plugin
+    }
+
+    private func updatePluginSwitch(of audioUnit: AVAudioUnit) {
+        guard let pair = pluginSwitches[ObjectIdentifier(audioUnit)],
+              let kernel = (pair.output.auAudioUnit as? PluginSwitchAudioUnit)?.kernel else { return }
+        applyOwnBypass(audioUnit, bypassed: false)
+        // A plug-in may report anything: NaN or infinity would trap in Int().
+        let latency = audioUnit.auAudioUnit.latency
+        let seconds = latency.isFinite ? min(max(latency, 0), PluginSwitchKernel.maximumLatencySeconds) : 0
+        kernel.latencyFrames = Int((seconds * hardwareSampleRate).rounded())
+        kernel.isEnabled = pluginEnabledStates[ObjectIdentifier(audioUnit)] ?? true
+    }
+
+    private func detachPluginSwitch(of plugin: AVAudioNode) {
+        let key = ObjectIdentifier(plugin)
+        guard let pair = pluginSwitches.removeValue(forKey: key) else { return }
+        pluginEnabledStates.removeValue(forKey: key)
+        for node in [pair.capture, pair.output] where engine.attachedNodes.contains(node) {
+            safeDisconnectNodeInput(node)
+            safeDisconnectNodeOutput(node)
+            engineDetach(node)
+        }
     }
 
     private func installMasterAudioUnits(
@@ -2209,24 +2383,24 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 masterPluginNodes.append(existingAU)
             }
             if !engine.attachedNodes.contains(existingAU) {
-                engine.attach(existingAU)
+                engineAttach(existingAU)
             }
             safeDisconnectNodeOutput(previousNode)
             safeDisconnectNodeInput(existingAU)
-            connectReformatting(previousNode, to: existingAU, format: format)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
             setAUBypass(existingAU, bypassed: !plugin.enabled)
 
             if index + 1 < plugins.count {
                 installMasterAudioUnits(
                     plugins,
-                    previousNode: existingAU,
+                    previousNode: chainTail,
                     format: format,
                     index: index + 1,
                     generation: generation,
                     resumeEngine: resumeEngine
                 )
             } else {
-                connectMasterOutput(from: existingAU, format: format)
+                connectMasterOutput(from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
                     try? engine.start()
                 }
@@ -2293,11 +2467,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     }
                     self.safeDisconnectNodeOutput(previousNode)
                     if !self.engine.attachedNodes.contains(audioUnit) {
-                        self.engine.attach(audioUnit)
+                        self.engineAttach(audioUnit)
                     }
                     self.safeDisconnectNodeInput(audioUnit)
                     self.unavailablePluginIDs.remove(pluginID)
-                    self.connectReformatting(previousNode, to: audioUnit, format: format)
+                    let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
                     self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
                     self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
                     self.masterPluginNodes.append(audioUnit)
@@ -2306,14 +2480,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     if index + 1 < plugins.count {
                         self.installMasterAudioUnits(
                             plugins,
-                            previousNode: audioUnit,
+                            previousNode: chainTail,
                             format: format,
                             index: index + 1,
                             generation: generation,
                             resumeEngine: resumeEngine
                         )
                     } else {
-                        self.connectMasterOutput(from: audioUnit, format: format)
+                        self.connectMasterOutput(from: chainTail, format: format)
                         if !self.engine.isRunning {
                             try? self.engine.start()
                         }
@@ -2388,7 +2562,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let compensation = fxLatencies.values.max() ?? 0.0
 
         let frames: (Double) -> Int = { [hardwareSampleRate] seconds in
-            Int((max(0.0, seconds) * hardwareSampleRate).rounded())
+            // Sums of finite latencies; capped so a wild report cannot
+            // overflow Int() (the delay units hold 1 s at most anyway).
+            Int((min(max(0.0, seconds), 60.0) * hardwareSampleRate).rounded())
         }
         for node in trackDryDelayNodes.values {
             (node.auAudioUnit as? DelayCompensationAudioUnit)?.delayFrames = frames(compensation)
@@ -2466,7 +2642,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private func makeDelayCompensationNode() -> AVAudioUnitEffect {
         _ = DelayCompensationAudioUnit.registration
         let node = AVAudioUnitEffect(audioComponentDescription: DelayCompensationAudioUnit.componentDescription)
-        engine.attach(node)
+        engineAttach(node)
         return node
     }
 
@@ -2494,7 +2670,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             splitter = existing
         } else {
             splitter = AVAudioMixerNode()
-            engine.attach(splitter)
+            engineAttach(splitter)
             trackSplitterNodes[trackID] = splitter
         }
         let panNode: AVAudioMixerNode
@@ -2502,22 +2678,22 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             panNode = existing
         } else {
             panNode = AVAudioMixerNode()
-            engine.attach(panNode)
+            engineAttach(panNode)
             trackPanNodes[trackID] = panNode
         }
 
         // A stale format (e.g. wired before the device's real sample rate was
         // known) would leave a hidden resampling stage in the path, so the
         // format is part of "up to date", not just the topology.
-        let panTargets = engine.outputConnectionPoints(for: panNode, outputBus: 0)
+        let panTargets = engineOutputPoints(for: panNode, outputBus: 0)
         if panTargets.count != 1 || panTargets.first?.node !== splitter ||
             splitter.inputFormat(forBus: 0) != format {
             safeDisconnectNodeOutput(panNode)
             safeDisconnectNodeInput(splitter)
-            engine.connect(panNode, to: splitter, format: format)
+            engineConnect(panNode, to: splitter, format: format)
         }
         panNode.pan = trackPanValues[trackID] ?? 0
-        let tailTargets = engine.outputConnectionPoints(for: tail, outputBus: 0)
+        let tailTargets = engineOutputPoints(for: tail, outputBus: 0)
         if tailTargets.count != 1 || tailTargets.first?.node !== panNode ||
             panNode.inputFormat(forBus: 0) != format {
             safeDisconnectNodeOutput(tail)
@@ -2549,11 +2725,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let sendGains = sends.map(\.gain)
         let sendsReachFX = sends.allSatisfy { send in
             wiredSendTargets[send.key] === send.fxInput &&
-                engine.outputConnectionPoints(for: send.gain, outputBus: 0).contains { $0.node === send.fxInput }
+                engineOutputPoints(for: send.gain, outputBus: 0).contains { $0.node === send.fxInput }
         }
-        let currentTargets = engine.outputConnectionPoints(for: splitter, outputBus: 0).compactMap(\.node)
+        let currentTargets = engineOutputPoints(for: splitter, outputBus: 0).compactMap(\.node)
         let desiredTargets: [AVAudioNode] = [dryDelay] + sendGains
-        let dryReachesMain = engine.outputConnectionPoints(for: dryDelay, outputBus: 0)
+        let dryReachesMain = engineOutputPoints(for: dryDelay, outputBus: 0)
             .contains { $0.node === engine.mainMixerNode }
         let isUpToDate = currentTargets.count == desiredTargets.count &&
             desiredTargets.allSatisfy { desired in currentTargets.contains { $0 === desired } } &&
@@ -2588,7 +2764,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         if !dryReachesMain || dryDelay.outputFormat(forBus: 0) != format {
             safeDisconnectNodeOutput(dryDelay)
-            engine.connect(
+            engineConnect(
                 dryDelay,
                 to: engine.mainMixerNode,
                 fromBus: 0,
@@ -2599,11 +2775,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // Send → FX input connects need the stopped engine too: queued
         // connects into one mixer all take the same input bus.
         for send in sends {
-            let reachesFX = engine.outputConnectionPoints(for: send.gain, outputBus: 0)
+            let reachesFX = engineOutputPoints(for: send.gain, outputBus: 0)
                 .contains { $0.node === send.fxInput }
             guard !reachesFX || wiredSendTargets[send.key] !== send.fxInput else { continue }
             safeDisconnectNodeOutput(send.gain)
-            engine.connect(send.gain, to: send.fxInput, fromBus: 0, toBus: send.fxInput.nextAvailableInputBus, format: format)
+            engineConnect(send.gain, to: send.fxInput, fromBus: 0, toBus: send.fxInput.nextAvailableInputBus, format: format)
             wiredSendTargets[send.key] = send.fxInput
         }
         var points = [AVAudioConnectionPoint(node: dryDelay, bus: 0)]
@@ -2611,7 +2787,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             safeDisconnectNodeInput(gainNode)
             points.append(AVAudioConnectionPoint(node: gainNode, bus: 0))
         }
-        engine.connect(splitter, to: points, fromBus: 0, format: format)
+        engineConnect(splitter, to: points, fromBus: 0, format: format)
         detachRetiredSendGains(of: trackID)
         if wasRunning {
             try? engine.start()
@@ -2628,25 +2804,25 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private func syncFXChannels(_ fxChannels: [FXChannel]) {
         let currentIDs = Set(fxChannels.map(\.id))
         for (id, node) in fxInputNodes where !currentIDs.contains(id) {
-            engine.disconnectNodeInput(node)
-            engine.disconnectNodeOutput(node)
-            engine.detach(node)
+            engineDisconnectInput(node)
+            engineDisconnectOutput(node)
+            engineDetach(node)
             fxInputNodes.removeValue(forKey: id)
             if let output = fxOutputNodes.removeValue(forKey: id) {
                 output.removeTap(onBus: 0)
-                engine.disconnectNodeInput(output)
-                engine.disconnectNodeOutput(output)
-                engine.detach(output)
+                engineDisconnectInput(output)
+                engineDisconnectOutput(output)
+                engineDetach(output)
             }
             if let panNode = fxPanNodes.removeValue(forKey: id) {
-                engine.disconnectNodeInput(panNode)
-                engine.disconnectNodeOutput(panNode)
-                engine.detach(panNode)
+                engineDisconnectInput(panNode)
+                engineDisconnectOutput(panNode)
+                engineDetach(panNode)
             }
             if let returnDelay = fxReturnDelayNodes.removeValue(forKey: id) {
-                engine.disconnectNodeInput(returnDelay)
-                engine.disconnectNodeOutput(returnDelay)
-                engine.detach(returnDelay)
+                engineDisconnectInput(returnDelay)
+                engineDisconnectOutput(returnDelay)
+                engineDetach(returnDelay)
             }
             // A removed plug-in left attached stays alive with its threads.
             for pluginNode in fxPluginNodes.removeValue(forKey: id) ?? [] {
@@ -2669,7 +2845,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 input = existing
             } else {
                 input = AVAudioMixerNode()
-                engine.attach(input)
+                engineAttach(input)
                 fxInputNodes[channel.id] = input
             }
 
@@ -2724,12 +2900,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
 
             for node in previousNodes {
-                engine.disconnectNodeOutput(node)
-                engine.detach(node)
+                engineDisconnectOutput(node)
+                engineDetach(node)
+                detachPluginSwitch(of: node)
             }
             fxPluginNodes[channel.id] = []
 
-            engine.disconnectNodeOutput(input)
+            engineDisconnectOutput(input)
             if plugins.isEmpty {
                 connectFXOutput(channelID: channel.id, from: input, format: format)
             }
@@ -2747,7 +2924,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     private func fxOutputsMissingMainMixer() -> [AVAudioMixerNode] {
         fxOutputNodes.values.filter { output in
-            !engine.outputConnectionPoints(for: output, outputBus: 0)
+            !engineOutputPoints(for: output, outputBus: 0)
                 .contains { $0.node === engine.mainMixerNode }
         }
     }
@@ -2768,7 +2945,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             engine.stop()
         }
         for output in missing {
-            engine.connect(
+            engineConnect(
                 output,
                 to: engine.mainMixerNode,
                 fromBus: 0,
@@ -2801,16 +2978,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // Connected to the main mixer by connectFXOutputsToMainMixer(), with
         // the engine stopped.
         let output = AVAudioMixerNode()
-        engine.attach(output)
+        engineAttach(output)
         let panNode = AVAudioMixerNode()
-        engine.attach(panNode)
+        engineAttach(panNode)
         // Pan → return delay → output (fader meter and mute stay after it).
         let returnDelay = makeDelayCompensationNode()
         fxReturnDelayNodes[channelID] = returnDelay
-        engine.connect(panNode, to: returnDelay, format: format)
-        engine.connect(returnDelay, to: output, format: format)
+        engineConnect(panNode, to: returnDelay, format: format)
+        engineConnect(returnDelay, to: output, format: format)
         fxPanNodes[channelID] = panNode
-        output.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
+        installTapGuarded(on: output, bus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
             let peak = StereoPeak(buffer: buffer)
             self?.peakLock.withLock {
                 let previous = self?.fxOutputPeaks[channelID] ?? .zero
@@ -2844,11 +3021,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 fxPluginNodes[channelID, default: []].append(existingAU)
             }
             if !engine.attachedNodes.contains(existingAU) {
-                engine.attach(existingAU)
+                engineAttach(existingAU)
             }
             safeDisconnectNodeOutput(previousNode)
             safeDisconnectNodeInput(existingAU)
-            connectReformatting(previousNode, to: existingAU, format: format)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
             setAUBypass(existingAU, bypassed: !plugin.enabled)
             restoreSavedState(for: plugin.id, audioUnit: existingAU)
 
@@ -2856,14 +3033,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 installFXAudioUnits(
                     plugins,
                     channelID: channelID,
-                    previousNode: existingAU,
+                    previousNode: chainTail,
                     format: format,
                     index: index + 1,
                     generation: generation,
                     resumeEngine: resumeEngine
                 )
             } else {
-                connectFXOutput(channelID: channelID, from: existingAU, format: format)
+                connectFXOutput(channelID: channelID, from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
                     try? engine.start()
                 }
@@ -2911,11 +3088,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     }
                     self.safeDisconnectNodeOutput(previousNode)
                     if !self.engine.attachedNodes.contains(audioUnit) {
-                        self.engine.attach(audioUnit)
+                        self.engineAttach(audioUnit)
                     }
                     self.unavailablePluginIDs.remove(plugin.id)
                     self.safeDisconnectNodeInput(audioUnit)
-                    self.connectReformatting(previousNode, to: audioUnit, format: format)
+                    let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
                     self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
                     self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
                     self.fxPluginNodes[channelID, default: []].append(audioUnit)
@@ -2925,14 +3102,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         self.installFXAudioUnits(
                             plugins,
                             channelID: channelID,
-                            previousNode: audioUnit,
+                            previousNode: chainTail,
                             format: format,
                             index: index + 1,
                             generation: generation,
                             resumeEngine: wasEngineRunning
                         )
                     } else {
-                        self.connectFXOutput(channelID: channelID, from: audioUnit, format: format)
+                        self.connectFXOutput(channelID: channelID, from: chainTail, format: format)
                         if wasEngineRunning && !self.engine.isRunning {
                             try? self.engine.start()
                         }
@@ -3038,11 +3215,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 trackPluginNodes[trackID, default: []].append(existingAU)
             }
             if !engine.attachedNodes.contains(existingAU) {
-                engine.attach(existingAU)
+                engineAttach(existingAU)
             }
             safeDisconnectNodeOutput(previousNode)
             safeDisconnectNodeInput(existingAU)
-            connectReformatting(previousNode, to: existingAU, format: format)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
             setAUBypass(existingAU, bypassed: !plugin.enabled)
             restoreSavedState(for: plugin.id, audioUnit: existingAU)
             updateLatencyCompensation()
@@ -3051,14 +3228,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 installAudioUnits(
                     plugins,
                     for: trackID,
-                    previousNode: existingAU,
+                    previousNode: chainTail,
                     format: format,
                     index: index + 1,
                     generation: generation,
                     resumeEngine: resumeEngine
                 )
             } else {
-                connectTrackChainTail(trackID, from: existingAU, format: format)
+                connectTrackChainTail(trackID, from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
                     try? engine.start()
                 }
@@ -3110,11 +3287,11 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         }
                         self.safeDisconnectNodeOutput(previousNode)
                         if !self.engine.attachedNodes.contains(audioUnit) {
-                            self.engine.attach(audioUnit)
+                            self.engineAttach(audioUnit)
                         }
                         self.unavailablePluginIDs.remove(pluginID)
                         self.safeDisconnectNodeInput(audioUnit)
-                        self.connectReformatting(previousNode, to: audioUnit, format: format)
+                        let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
                         self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
                         self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
                         self.trackPluginNodes[trackID, default: []].append(audioUnit)
@@ -3125,14 +3302,14 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                             self.installAudioUnits(
                                 plugins,
                                 for: trackID,
-                                previousNode: audioUnit,
+                                previousNode: chainTail,
                                 format: format,
                                 index: index + 1,
                                 generation: generation,
                                 resumeEngine: wasEngineRunning
                             )
                         } else {
-                            self.connectTrackChainTail(trackID, from: audioUnit, format: format)
+                            self.connectTrackChainTail(trackID, from: chainTail, format: format)
                             if wasEngineRunning && !self.engine.isRunning {
                                 try? self.engine.start()
                             }
@@ -3505,7 +3682,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
     /// Marks plug-in windows so the main window's key handling can pass
     /// transport shortcuts typed in them on to MyDAW.
-    public static let pluginWindowIdentifier = NSUserInterfaceItemIdentifier("MyDAW.PluginWindow")
+    nonisolated public static let pluginWindowIdentifier = NSUserInterfaceItemIdentifier("MyDAW.PluginWindow")
 
     private func configurePluginWindow(_ window: NSWindow) {
         window.delegate = self
@@ -3951,7 +4128,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
 
     private func connectInputMonitors() {
-        engine.disconnectNodeOutput(engine.inputNode)
+        engineDisconnectOutput(engine.inputNode)
         for (trackID, node) in inputMonitorNodes
             where desiredInputMonitors[trackID] == nil || trackOutputNodes[trackID] == nil {
             safeDisconnectNodeOutput(node)
@@ -3973,7 +4150,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 node = existing
             } else {
                 node = AVAudioUnitEffect(audioComponentDescription: InputMonitorAudioUnit.componentDescription)
-                engine.attach(node)
+                engineAttach(node)
                 inputMonitorNodes[trackID] = node
             }
             (node.auAudioUnit as? InputMonitorAudioUnit)?.configure(
@@ -3986,7 +4163,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 // An AU with allocated resources refuses a format change.
                 node.auAudioUnit.deallocateRenderResources()
             }
-            engine.connect(
+            engineConnect(
                 node,
                 to: trackOutput,
                 fromBus: 0,
@@ -3996,7 +4173,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             points.append(AVAudioConnectionPoint(node: node, bus: 0))
         }
         if !points.isEmpty {
-            engine.connect(engine.inputNode, to: points, fromBus: 0, format: inputFormat)
+            engineConnect(engine.inputNode, to: points, fromBus: 0, format: inputFormat)
         }
     }
 
@@ -4371,7 +4548,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         )
         peakLock.withLock {
             masterExportSink = { buffer, when in
-                guard writeError == nil, let slice = window.slice(buffer, at: when) else { return }
+                guard writeError == nil, let cut = window.slice(buffer, at: when) else { return }
+                // A new buffer, used only by the write queue from here on.
+                nonisolated(unsafe) let slice = cut
                 writeQueue.async {
                     do {
                         try file.write(from: slice)

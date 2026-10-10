@@ -32,7 +32,7 @@ enum ReverbFaderTaper {
             return log(value / 0.1) / log(600)
         case .preDelay:
             return value.squareRoot()
-        case .mix:
+        case .mix, .width:
             return value / 100
         }
     }
@@ -51,22 +51,24 @@ enum ReverbFaderTaper {
             value = 0.1 * pow(600, fraction)
         case .preDelay:
             value = fraction * fraction
-        case .mix:
+        case .mix, .width:
             value = fraction * 100
         }
         return parameter.clamped(Float(value))
     }
 }
 
-/// Five faders, one per parameter, in address order.
+/// Six faders, one per parameter, MIX last.
 struct ReverbEditorView: View {
     @ObservedObject var model: MyFXEditorModel
+
+    static let faderOrder: [ReverbParameter] = [.hpf, .lpf, .rt, .preDelay, .width, .mix]
 
     var body: some View {
         MyFXEditorView(model: model, title: "MyReverb") {
             MyFXSubtitle("PLATE REVERB")
         } faders: {
-            ForEach(ReverbParameter.allCases, id: \.self) { parameter in
+            ForEach(Self.faderOrder, id: \.self) { parameter in
                 fader(parameter)
             }
         }

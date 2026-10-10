@@ -4,7 +4,7 @@ import Foundation
 import MyPlugInCore
 #endif
 
-/// The five controls of MyReverb. The raw value is the AU parameter address,
+/// The six controls of MyReverb. The raw value is the AU parameter address,
 /// so it must never change once projects have been saved.
 public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
     case hpf = 0
@@ -12,6 +12,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
     case rt = 2
     case preDelay = 3
     case mix = 4
+    case width = 5
 
     public var identifier: String {
         switch self {
@@ -20,6 +21,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .rt: return "rt"
         case .preDelay: return "preDelay"
         case .mix: return "mix"
+        case .width: return "width"
         }
     }
 
@@ -30,11 +32,12 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .rt: return "RT"
         case .preDelay: return "PD"
         case .mix: return "MIX"
+        case .width: return "WIDTH"
         }
     }
 
     /// HPF 0 Hz (Thru) to 1 kHz; LPF 200 Hz to 24 kHz (Thru); RT 0.1 to 60 s;
-    /// pre-delay 0 to 1 s; mix 0 to 100 % wet.
+    /// pre-delay 0 to 1 s; mix 0 to 100 % wet; width 0 (mono) to 100 % (as tuned).
     public var range: ClosedRange<Float> {
         switch self {
         case .hpf: return 0...1_000
@@ -42,6 +45,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .rt: return 0.1...60
         case .preDelay: return 0...1
         case .mix: return 0...100
+        case .width: return 0...100
         }
     }
 
@@ -52,6 +56,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .rt: return 2
         case .preDelay: return 0.020
         case .mix: return 100
+        case .width: return 100
         }
     }
 
@@ -59,7 +64,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
         switch self {
         case .hpf, .lpf: return .hertz
         case .rt, .preDelay: return .seconds
-        case .mix: return .percent
+        case .mix, .width: return .percent
         }
     }
 
@@ -81,7 +86,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
             return value < 10 ? String(format: "%.2f s", value) : String(format: "%.1f s", value)
         case .preDelay:
             return String(format: "%.0f ms", value * 1_000)
-        case .mix:
+        case .mix, .width:
             return String(format: "%.0f%%", value)
         }
     }
@@ -112,7 +117,7 @@ public enum ReverbParameter: Int, CaseIterable, Sendable, MyFXParameter {
             if unit.hasPrefix("ms") { parsed /= 1_000 }
         case .preDelay:
             if !unit.hasPrefix("s") { parsed /= 1_000 } // ms unless "s"
-        case .mix:
+        case .mix, .width:
             break
         }
         return clamped(parsed)

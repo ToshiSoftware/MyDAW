@@ -125,6 +125,44 @@ final class ReverbAllpass {
     deinit { buffer.deallocate() }
 }
 
+// MARK: - Stereo image
+
+/// Output stage that gives the tank the image of a Lexicon-style plate
+/// (measured on Relab LX480 Essentials, Plate): the side signal is raised
+/// below `sideBoostCutoff`, so the low end is slightly anti-phase between
+/// the speakers (there: L/R correlation -0.1 to -0.25 at 125 to 250 Hz).
+/// Left and right stay equally loud: a 2 dB left bias copied from that
+/// plate's first 100 ms lasted the whole tail here and pulled long tails to
+/// the left. `width` (WIDTH, 0 to 1) then scales the side signal: 0 mono,
+/// 1 as above. A value type, so the render loop can keep it local.
+struct ReverbStereoImage {
+    static let sideBoost: Float = 1.3
+    static let sideBoostCutoff = 200.0
+
+    private var lowPassCoefficient: Float = 0
+    private var sideLow: Float = 0
+
+    init() {}
+
+    init(sampleRate: Double) {
+        lowPassCoefficient = Float(1 - exp(-2 * Double.pi * Self.sideBoostCutoff / sampleRate))
+    }
+
+    mutating func reset() {
+        sideLow = 0
+    }
+
+    @inline(__always)
+    mutating func process(left: Float, right: Float, width: Float) -> (Float, Float) {
+        let mid = 0.5 * (left + right)
+        var side = 0.5 * (left - right)
+        sideLow += lowPassCoefficient * (side - sideLow)
+        side += (Self.sideBoost - 1) * sideLow
+        side *= width
+        return (mid + side, mid - side)
+    }
+}
+
 // MARK: - Tank
 
 /// Eight-line feedback delay network with a Hadamard feedback matrix.
@@ -136,22 +174,29 @@ final class ReverbAllpass {
 /// all-pass interpolation, which (unlike linear) loses no treble per pass
 /// and so leaves RT as set. The output also taps each line part way along,
 /// so the tail starts within a few milliseconds instead of after the
-/// shortest line.
+/// shortest line; each side taps only the lines its own input feeds, so a
+/// panned source stays on its side for the first 50 to 100 ms.
 final class ReverbTank {
     static let lineCount = 8
-    /// Line lengths in samples at 44.1 kHz (mutually prime, 34 to 85 ms).
-    private static let baseLengths: [Double] = [1499, 1723, 2111, 2357, 2633, 2971, 3413, 3761]
+    /// Line lengths in samples at 44.1 kHz (primes, 31 to 97 ms, irregular
+    /// spacing). Chosen by ear from five sets; on the 80 to 800 ms tail
+    /// (RT 2 s) its envelope ripple repeats least (autocorrelation 0.12;
+    /// the earlier 34 to 85 ms set: 0.16 every 80 ms, heard as repeats).
+    private static let baseLengths: [Double] = [1381, 1669, 1847, 2341, 2617, 2999, 3491, 4289]
     private static let modulationRates: [Double] = [0.31, 0.47, 0.53, 0.67, 0.71, 0.83, 0.97, 1.09]
     private static let modulationDepthSeconds = 0.000_17
     /// Output tap positions as fractions of each line's length.
     private static let tapFractions: [Double] = [0.11, 0.29, 0.17, 0.37, 0.23, 0.41, 0.13, 0.31]
-    private static let tapGain: Float = 0.3
+    /// Set so the tail peaks about 40 ms in, 3 to 4 dB above its level at
+    /// 130 to 160 ms, like the LX480 plate.
+    private static let tapGain: Float = 0.7
     /// Lengths of the all-passes inside the feedback loop, at 44.1 kHz
     /// (primes, 2.6 to 9.5 ms; none shares a factor with a line length).
     private static let loopAllpassLengths: [Double] = [241, 113, 373, 167, 421, 199, 331, 283]
 
     /// Nyquist RT as a fraction of the set RT. 1 disables damping (tests).
-    var highFrequencyRatio: Double = 0.5 {
+    /// 0.7 matches the LX480 plate's treble in the tail (0.5 was 2 dB darker).
+    var highFrequencyRatio: Double = 0.7 {
         didSet { configuredRT = -1 }
     }
 
@@ -298,8 +343,15 @@ final class ReverbTank {
         var tapRight: Float = 0
         for index in 0..<Self.lineCount {
             let tap = buffer[index * lineSize + ((writeIndex - taps[index]) & lineMask)]
-            tapLeft += index & 1 == 0 ? tap : -tap
-            tapRight += index & 2 == 0 ? tap : -tap
+            // Each output taps only the lines its own input feeds, with the
+            // input's signs, so the first reflections stay on the source's
+            // side (mixing all lines into both lost the track's pan).
+            let signed = index & 2 == 0 ? tap : -tap
+            if index & 1 == 0 {
+                tapLeft += signed
+            } else {
+                tapRight += signed
+            }
         }
 
         // Read (modulated, all-pass interpolated) and absorb.

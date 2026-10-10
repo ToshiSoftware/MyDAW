@@ -51,6 +51,8 @@
 		DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00280000000000000001 /* VST3AudioUnit.swift */; };
 		DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */; };
 		DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */; };
+		DAWB0F010000000000000001 /* PluginSwitchAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */; };
+		DAWB0F020000000000000001 /* ObjCExceptionCatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */; };
 		DAWB00940000000000000001 /* DelayCompensationAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */; };
 		DAWB00920000000000000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = DAWF00920000000000000001 /* AppIcon.icns */; };
 		DAWB00A80000000000000001 /* DocumentIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = DAWF00A80000000000000001 /* DocumentIcon.icns */; };
@@ -102,6 +104,8 @@
 		DAWF00280000000000000001 /* VST3AudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3AudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMonitorAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonoDownmixAudioUnit.swift; sourceTree = "<group>"; };
+		DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginSwitchAudioUnit.swift; sourceTree = "<group>"; };
+		DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjCExceptionCatcher.swift; sourceTree = "<group>"; };
 		DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DelayCompensationAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00900000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		DAWF00910000000000000001 /* MyDAW.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyDAW.entitlements; sourceTree = "<group>"; };
@@ -177,6 +181,8 @@
 				DAWF00240000000000000001 /* GenericAUParameterView.swift */,
 				DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */,
 				DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */,
+				DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */,
+				DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */,
 				DAWF00940000000000000001 /* DelayCompensationAudioUnit.swift */,
 				DAWF00170000000000000001 /* PluginManager.swift */,
 				DAWF00960000000000000001 /* AudioLoadMonitor.swift */,
@@ -367,6 +373,8 @@
 				DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */,
 				DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */,
 				DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */,
+				DAWB0F010000000000000001 /* PluginSwitchAudioUnit.swift in Sources */,
+				DAWB0F020000000000000001 /* ObjCExceptionCatcher.swift in Sources */,
 				DAWB00940000000000000001 /* DelayCompensationAudioUnit.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

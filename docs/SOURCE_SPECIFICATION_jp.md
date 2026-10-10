@@ -251,6 +251,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `trackDownmixNodes` | 各トラックのチェーン先頭（インサートの前）にある `MonoDownmixAudioUnit` |
 | `trackDryDelayNodes`／`fxReturnDelayNodes` | 各トラックのドライ経路（分岐 → mainMixer。遅延 D。FX ソロ時のドライ消音も担当）と各 FX のリターン（PAN → 出力。遅延 D − 自分の遅延）にある `DelayCompensationAudioUnit`。`updateLatencyCompensation()` が設定 |
 | `trackPluginNodes` | インサート（AU／`VST3AudioUnit`） |
+| `pluginSwitches`／`pluginEnabledStates` | チェーンの各プラグイン（トラック・FX・マスター共通。キーはプラグインノードの `ObjectIdentifier`）を挟む `PluginSwitchAudioUnit` の取り込み・切り替えユニットの組と、そのプラグインの ON／OFF |
 | `trackPanNodes` | PAN ミキサー（インサートの後） |
 | `trackSplitterNodes` | 分岐ミキサー（mainMixer と Send へ 1 対多接続） |
 | `trackMeters` | トラックごとの `RenderPeakMeter`。ドライ経路の `DelayCompensationAudioUnit` が描画のたびに入力（＝分岐の出力。ポストインサート・ポストフェーダー・ポストパン、ドライ消音の前）のピークを記録し、30 Hz タイマーが `take()` で読む。以前は分岐ミキサーのタップだったが、FX へのプラグイン挿入（UADx Pure Plate Reverb）の後に全トラックのタップが呼ばれなくなり、付け直しても戻らないことがあったため、タップを使わない |
@@ -271,7 +272,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | メソッド | 内容 |
 | --- | --- |
 | `startMetronome(at:)` | クリックを 256 拍分予約し、最後のクリックで続きを予約。トランスポート開始時はその開始時刻と位置から、再生中の ON・BPM 変更・続きの予約では、頭が欠けずに鳴らせる最も早い時刻（`earliestPlayerStartHostTime`）とその時刻のトランスポート位置（`transportPosition(atHostTime:)`）から、次の拍に合わせる |
-| `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
+| `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築（2 回目以降はマスター用ミキサーと最終メーターを作り直さずに使い、マスターのプラグインのチェーンを `reconnectPluginChain` でつなぎ直す。バッファサイズの変更などで呼ばれる）、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | 選択デバイスを macOS の既定入力・既定出力に設定する（入力を使う AVAudioEngine は既定入出力の集約デバイスで動作するため）。初回に元の既定を記録し、`restoreOriginalDefaultDevices()` が `shutdown()` で戻す |
 | `startMeterTimer` | 30 Hz でピークを集計し通知。マスターのレベルは別オブジェクト `masterMeter`（`TrackMeter`）が持ち、変わったときだけ通知する（`MasterFaderColumn` だけが監視）。`masterPeak` は通知しない内部値 |
 | `checkTrackMeters`、`noteGraphEvent`、`writeMeterRecoveryLog` | トラックメーターの監視。30 Hz タイマーで、再生・録音中かつエンジンが動作中で、マスターのタップ回数が直近 0.5 秒以内に増えているときに、`RenderPeakMeter` の描画回数（無音でも増える）が 1 秒以上増えないトラックがあれば、状態と直近 60 件のエンジン・配線のイベント（エンジンの停止／開始、`AVAudioEngineConfigurationChange`、`setupEngine`、`syncTracks`、分岐の配線のやり直し・延期など）を `~/Library/Logs/MyDAW/MeterRecovery.log` に追記する（記録のみ。1 回の再生でトラックごとに 1 回。1 MB を超えたら古い分を捨てて約 0.5 MB に） |
@@ -280,6 +281,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | 停止時の録音確定（`stop` 内のタスク） | writer を確定してクリップを読み込む。録音したファイルがあるときだけ `syncTracks` を呼ぶ |
 | `installAudioUnits`／`installFXAudioUnits`／`installMasterAudioUnits` | プラグインを非同期生成し、挿入順に直列接続。VST3 は `VST3AudioUnit` を生成してインスタンスを結び付ける |
 | `connectTrackChainTail` | チェーン末尾 → PAN → 分岐 → mainMixer＋Send の配線。1 対多接続は**エンジン停止中のみ**（再生中は `pendingSplitterRewires` で停止時まで保留） |
+| `connectChainPlugin`／`chainOutput`／`updatePluginSwitch`／`detachPluginSwitch` | 前段 → 取り込み → プラグイン → 切り替え の配線（切り替えユニットを返し、次のプラグインの前段にする）、プラグインの出力を担うノード、切り替えへの ON／OFF と遅延（`auAudioUnit.latency` × サンプルレート）の反映（プラグイン自身のバイパスは外す）、プラグインを外すときの組の取り外し（`safeDetach` からも呼ぶ）。`setAUBypass` は組があれば切り替えを操作し、まだ配線前ならプラグイン自身のバイパスを使う |
 | `connectReformatting` | 接続先／元の AU が描画リソース確保済みでフォーマットが変わる場合、先に解放してから接続（-10865 例外の回避）。接続の前に両端の AU を `acceptsChainFormat` で確かめ、拒否されたら接続しない |
 | `acceptsChainFormat` | AU の入出力バス 0 に `AUAudioUnitBus.setFormat` でチェーンのフォーマットを設定してみる（描画リソース未確保なら毎回、確保済みならフォーマットが違うときだけ）。拒否はエラーとして返るので false（`engine.connect` に任せると捕まえられない ObjC 例外で異常終了する。例: モノラル専用の Waves「AudioTrack(m)」をステレオのチェーンへ）。`installAudioUnits`／`installFXAudioUnits`／`installMasterAudioUnits` は生成直後にこれで確かめ、拒否された AU は生成失敗と同じく `markPluginUnavailable` にしてチェーンから外す。`nonisolated`（FX は生成のコールバックのスレッドで呼ぶ） |
 | `setMixerVolume` | 音量変更後にミキサーを `reset()`（無音入力で音量ランプが止まる問題の回避） |
@@ -328,7 +330,7 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 トラックのクリップを再生する仕組み。以前はクリップ 1 つにつき 1 つの `AVAudioPlayerNode` を使っていたが、`play(at:)` は 1 回ごとにレンダー 1 回分待たされ、その間エンジンのロックを握るため、クリップが多いと再生開始時に UI 全体（カーソル・メーター）が止まった。
 
 - **`TrackPlaybackPlan`**: メインスレッドでクリップから作る値（ファイル、位置、ゲイン、区間、`spans`）。読み込みスレッドは `AudioClip` に触れない。
-- **`TrackRenderer`**: `AVAudioSourceNode` を 1 つ持つ。描画スレッドは、先読み済みのブロック（4,096 フレーム × 48 スロット、約 4 秒）から自分の位置の分をコピーするだけ。タイムラインのフレーム位置は「`anchorFrame` が `anchorHost` に聞こえる」対応を、最初のサイクルでサンプル時刻に換算して求める。スロットは連番（書き込み中は奇数）で守り、描画スレッドは待たず、書きかけのブロックは鳴らさない（無音にして `underruns` を数える）。録音中のミュートは約 5 ms のランプ。
+- **`TrackRenderer`**: `AVAudioSourceNode` を 1 つ持つ（描画クロージャはレンダラーを弱参照で持ち、解放後に呼ばれたら無音を返す。切り離した後にエンジンがもう 1 回呼ぶことがあるため）。描画スレッドは、先読み済みのブロック（4,096 フレーム × 48 スロット、約 4 秒）から自分の位置の分をコピーするだけ。タイムラインのフレーム位置は「`anchorFrame` が `anchorHost` に聞こえる」対応を、最初のサイクルでサンプル時刻に換算して求める。スロットは連番（書き込み中は奇数）で守り、描画スレッドは待たず、書きかけのブロックは鳴らさない（無音にして `underruns` を数える）。録音中のミュートは約 5 ms のランプ。
 - **`TrackStreamer`**: 全レンダラーを順番に回るバックグラウンドスレッド（1 回に各トラック最大 4 ブロック）。再生位置の先のブロックを、計画に従ってファイルから読み、ゲインとフェード・クロスフェード（`ClipLayering.Envelope`）を掛けてミックスする。計画が変わると、再生位置の 2 ブロック先以降を読み直す（直前のブロックは書き換えない）。ファイルは先読みの範囲で使うものだけを開く。
 - **`ClipReader`**: ファイルを出力レートのステレオとして読む。レートが違うファイルは `AVAudioConverter` で連続的に変換する。
 - **アトミック操作**: Swift の Atomics は macOS 15 以降のため、`VST3Host/RealtimeAtomics.cpp` の `MyDAWAtomicLoad64`／`MyDAWAtomicStore64`／`MyDAWMemoryFence` を `@_silgen_name` で呼ぶ。
@@ -336,7 +338,19 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 ### `DelayCompensationAudioUnit.swift`（v1.8 新規）
 `StereoDelayLine`（レンダースレッド用のリングバッファ。保持できない遅延は素通し）と、`delayFrames`・`isMuted`（約 5 ms のランプ）・`meter` を持つアプリ内 AUv3（`aufx`/`dlcp`/`MyDW`）。`RenderPeakMeter` はトラックのドライ経路で入力のピークと描画回数を記録する（レンダースレッドは `os_unfair_lock_trylock` が取れたときだけ渡し、取れなければ次の回へ持ち越すので待たない）。最大 1 秒まで。自身のレイテンシーは 0 と報告します。`VST3AudioUnit` も `StereoDelayLine` を使い、バイパス時の出力をプラグインのレイテンシー分だけ遅らせます。
 
-`AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（バイパス中も含む）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら各レンダラーの `anchorFrame` を合わせ直します（`updateRendererAnchors`）。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。トランスポートの開始時刻はエンジンの計算済み区間の先（`lastRenderTime` から IO バッファ 2 つ分・最低 50 ms）に P を足した時刻で、各トラックのレンダラーは自分の先読み（自分の遅延 ＋ D）だけ早く音を出すので、開始位置以降の音は欠けません。録音は、開始時刻が決まった後・レンダラーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
+`AudioEngineManager.updateLatencyCompensation()` は各チェーンの `auAudioUnit.latency` を合計し（OFF のプラグインも含む。OFF の間は `PluginSwitchAudioUnit` が素通し音を同じだけ遅らせる）、D = FX チャンネルの遅延の最大値を求めて遅延ノードに設定し、全プラグインに `kAudioUnitProperty_Latency` のリスナーを付け、再生中に値が変わったら各レンダラーの `anchorFrame` を合わせ直します（`updateRendererAnchors`）。`transportPreRoll` P = D ＋ トラックのインサートの遅延の最大値。トランスポートの開始時刻はエンジンの計算済み区間の先（`lastRenderTime` から IO バッファ 2 つ分・最低 50 ms）に P を足した時刻で、各トラックのレンダラーは自分の先読み（自分の遅延 ＋ D）だけ早く音を出すので、開始位置以降の音は欠けません。録音は、開始時刻が決まった後・レンダラーの開始前に呼ばれる `beforePlayersStart` で、テイクのファイル作成と入力の取り込みを始めます。`exportMasterMix` はエンジンの処理開始を待ってから、同じ方法でトランスポートを始め、`ExportWindow` で「開始位置の音が聞こえるホストタイム（＋マスタープラグインの遅延）」から `end − start` 秒分のフレームだけをタップから切り出します。範囲を取り込みきれなかったときはエラーにします。
+
+### `PluginSwitchAudioUnit.swift`（v3.0 で追加）
+チェーンの各プラグインの ON／OFF を、プラグイン自身のバイパスに頼らずに行うアプリ内 AUv3 の組（取り込み `aufx`/`pscc`/`MyDW`、切り替え `aufx`/`pswo`/`MyDW`。どちらも同じクラスで、`role` で動作が変わる）。2 つは `PluginSwitchKernel` を共有する。
+- **取り込み**（プラグインの前）: 入力をそのまま通し、リングバッファ（最大 1 秒＋1 回分）に記録する。
+- **切り替え**（プラグインの後）: `isEnabled` なら入力（＝プラグインの出力）をそのまま、OFF なら同じ描画回に記録した入力を `latencyFrames` だけ遅らせて出す。切り替えは 10 ms のクロスフェード。プラグインは同じフレーム数で前段を引くので、取り込みと切り替えの位置はそろう。
+- フラグを変えるだけでつなぎ替えないので、再生中でも切り替えられる。OFF のプラグインはバイパスせずに動かし続ける（CPU は下がらない）。
+- 導入の理由: Relab LX480 Essentials はバイパス時に左入力を左右両方へ出し、同じチェーンの前にあるプラグイン（MyReverb）までモノラルにしていた。
+
+### `ObjCExceptionCatcher.swift`（v3.0 で追加）
+AVAudioEngine は、接続できないノードやフォーマットを渡されると ObjC 例外を投げる。Swift では捕まえられず、アプリが異常終了していた。`ObjCExceptionCatcher.run { … }` は、C++ ライブラリ側の `MyDAWCatchObjCException`（`VST3Host/ObjCExceptionCatcher.mm`、`@try`／`@catch`）を `@_silgen_name` で呼び、例外が出たら「名前: 理由」を返す。`value(_:_:)` は戻り値のある呼び出し用（例外時は代わりの値）。例外で中断されたクロージャが保持していたものは解放されない（漏れる）ため、`withoutActuallyEscaping` は使わない。
+
+`AudioEngineManager` のグラフ操作はすべてこれを通す: `engineConnect`（3 種類）、`engineDisconnectOutput`／`engineDisconnectInput`、`engineAttach`／`engineDetach`、`engineOutputPoints`（例外時は空）、`installTapGuarded`。失敗は `guardedEngineCall` が `print` と `noteGraphEvent` に記録し、処理は続ける。
 
 ### `MonoDownmixAudioUnit.swift`
 各トラックの出力ミキサーの直後に置くアプリ内 AUv3（`aufx`/`mndx`/`MyDW`）。`isMono`（トラックがモノラル）のときは `(L + R) / 2` を L/R 両方に書き、それ以外はそのまま通します。モノラルのクリップは `TrackRenderer` が L = R に展開して届けるので、どちらの場合も変化しません。
@@ -369,7 +383,7 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 ### `Sources/BuiltIn/MyPlugIn/`（v3.0 で追加）
 `scripts/sync-myplugin.sh` が作る `../MyPlugIn/Sources` のコピー（Swift ファイルのみ。同期のたびにフォルダを削除して作り直す）。ここでは編集しないこと。詳しい仕様は MyPlugIn 側（`Docs/My*.md`）にある。
 - **`MyPlugInCore`**: `MyFXAudioUnit`（共通の `AUAudioUnit` 基底クラス。パラメーター、状態、遅延、エディタ）、`MyFXParameter`、`MyFXExtensionViewController`（MyPlugIn の AUv3 アプリ拡張の principal class。MyDAW のプロセス内では使わない）、共通エディタ（`MyFXEditor`。`MyFXEditorViewController` が SwiftUI のエディタを `NSHostingView` で表示。`contextName` から取ったチャンネル名のヘッダー、IN／OUT メーター、フェーダー、つまみ、`MyFXEditableValue`）、描画まわりの補助。
-- **エフェクト**: `MyReverb`、`MyDelay`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。
+- **エフェクト**: `MyReverb`、`MyDelay`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。MyReverb のパラメーターは HPF・LPF・RT・PD・MIX・WIDTH（アドレス 0〜5。WIDTH は後から追加したアドレスで、WIDTH を含まない保存データでは 100 %）。
 - **`MyPlugInCatalog`**: `plugIns`（メニュー順のエフェクト一覧）と `registerAll(manufacturer:vendorName:)`。エフェクトは `#if canImport(…)` で import するので、同じファイルが MyPlugIn のパッケージでも MyDAW の単一モジュールでもビルドできる。
 
 ### `VST3HostBridge.swift` / `VST3Host.swift`

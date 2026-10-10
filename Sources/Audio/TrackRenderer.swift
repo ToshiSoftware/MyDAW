@@ -128,8 +128,19 @@ final class TrackRenderer: @unchecked Sendable {
         left.initialize(repeating: 0, count: Self.slotCount * Self.blockFrames)
         right.initialize(repeating: 0, count: Self.slotCount * Self.blockFrames)
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
-        node = AVAudioSourceNode(format: format) { [unowned self] isSilence, timestamp, frameCount, bufferList in
-            self.render(isSilence: isSilence, timestamp: timestamp, frameCount: Int(frameCount), bufferList: bufferList)
+        // Weak: the engine may call the node once more after the renderer is
+        // released (detached on a track removal or rate change); unowned
+        // would then touch freed memory. Without a renderer: silence.
+        node = AVAudioSourceNode(format: format) { [weak self] isSilence, timestamp, frameCount, bufferList in
+            guard let self else {
+                for buffer in UnsafeMutableAudioBufferListPointer(bufferList) {
+                    if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+                }
+                isSilence.pointee = true
+                return noErr
+            }
+            return self.render(isSilence: isSilence, timestamp: timestamp, frameCount: Int(frameCount),
+                               bufferList: bufferList)
         }
         TrackStreamer.shared.register(self)
     }
@@ -552,7 +563,7 @@ final class TrackStreamer: @unchecked Sendable {
     private let wakeSignal = DispatchSemaphore(value: 0)
 
     private init() {
-        let thread = Thread { [unowned self] in self.run() }
+        let thread = Thread { [weak self] in self?.run() }
         thread.name = "MyDAW.TrackStreamer"
         thread.qualityOfService = .userInteractive
         thread.start()

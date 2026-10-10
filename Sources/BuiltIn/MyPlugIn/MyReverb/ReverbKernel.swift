@@ -6,8 +6,8 @@ import MyPlugInCore
 
 /// The whole MyReverb signal path, independent of Audio Unit APIs:
 ///
-///     input ─┬─ pre-delay ─ diffusion ─ tank ─ HPF ─ LPF ─┐ (wet)
-///            └───────────────────────────────────────────┴─ mix ─ output
+///     input ─┬─ pre-delay ─ diffusion ─ tank ─ stereo image (WIDTH) ─ HPF ─ LPF ─┐ (wet)
+///            └──────────────────────────────────────────────────────────────────┴─ mix ─ output
 ///
 /// Threading: `prepare` and `reset` run while not rendering. `process` runs
 /// on the render thread. `setTarget`, `requestReset` and `isBypassed` may be
@@ -17,8 +17,9 @@ public final class ReverbKernel: MyFXKernel {
     public static let maximumPreDelaySeconds = 1.0
     /// Coefficients (RT, filter cutoffs) are updated once per chunk.
     private static let chunkSize = 32
-    /// Wet level: a 2 s tail of white noise comes out at about input RMS.
-    private static let wetGain: Float = 0.6
+    /// Wet level: the first second of an impulse response carries the same
+    /// energy as the LX480 plate's at RT 2 s.
+    private static let wetGain: Float = 0.245
     private static let mixSmoothingSeconds = 0.02
     private static let preDelayFadeSeconds = 0.03
     private static let cutoffSmoothingSeconds = 0.03
@@ -37,6 +38,7 @@ public final class ReverbKernel: MyFXKernel {
 
     private let preDelay = ReverbPreDelay()
     private let tank = ReverbTank()
+    private var stereoImage = ReverbStereoImage()
     private var highPassLeft = Butterworth3State()
     private var highPassRight = Butterworth3State()
     private var lowPassLeft = Butterworth3State()
@@ -46,6 +48,7 @@ public final class ReverbKernel: MyFXKernel {
 
     // Smoothed values (render thread only).
     private var mix: Float = 1
+    private var width: Float = 1
     private var highPassEngage: Float = 0
     private var lowPassEngage: Float = 0
     private var highPassCutoff = 0.0
@@ -128,6 +131,7 @@ public final class ReverbKernel: MyFXKernel {
         preDelay.prepare(sampleRate: sampleRate, maximumSeconds: Self.maximumPreDelaySeconds,
                          fadeSeconds: Self.preDelayFadeSeconds)
         tank.prepare(sampleRate: sampleRate)
+        stereoImage = ReverbStereoImage(sampleRate: sampleRate)
         mixCoefficient = Float(1 - exp(-1 / (Self.mixSmoothingSeconds * sampleRate)))
         isPrepared = true
         reset()
@@ -137,6 +141,7 @@ public final class ReverbKernel: MyFXKernel {
     public func reset() {
         preDelay.reset(delaySamples: preDelayTargetSamples)
         tank.reset()
+        stereoImage.reset()
         highPassLeft = Butterworth3State()
         highPassRight = Butterworth3State()
         lowPassLeft = Butterworth3State()
@@ -145,6 +150,7 @@ public final class ReverbKernel: MyFXKernel {
         wasBypassed = false
 
         mix = target(.mix) / 100
+        width = target(.width) / 100
         highPassEngage = ReverbParameter.isHighPassThru(target(.hpf)) ? 0 : 1
         lowPassEngage = ReverbParameter.isLowPassThru(target(.lpf)) ? 0 : 1
         highPassCutoff = highPassCutoffTarget
@@ -190,11 +196,13 @@ public final class ReverbKernel: MyFXKernel {
         var lowPassLeft = self.lowPassLeft
         var lowPassRight = self.lowPassRight
         var mix = self.mix
+        var width = self.width
         var highPassEngage = self.highPassEngage
         var lowPassEngage = self.lowPassEngage
         let mixCoefficient = self.mixCoefficient
         let preDelay = self.preDelay
         let tank = self.tank
+        var stereoImage = self.stereoImage
 
         var offset = 0
         while offset < frameCount {
@@ -204,12 +212,14 @@ public final class ReverbKernel: MyFXKernel {
             let lowPass = lowPassCoefficients
             let wetScale = Self.wetGain * tank.loudnessCompensation
             let mixTarget = target(.mix) / 100
+            let widthTarget = target(.width) / 100
             let preDelayTarget = preDelayTargetSamples
             let highPassEngageTarget: Float = ReverbParameter.isHighPassThru(target(.hpf)) ? 0 : 1
             let lowPassEngageTarget: Float = ReverbParameter.isLowPassThru(target(.lpf)) ? 0 : 1
 
             for frame in offset..<(offset + count) {
                 mix += (mixTarget - mix) * mixCoefficient
+                width += (widthTarget - width) * mixCoefficient
                 highPassEngage += (highPassEngageTarget - highPassEngage) * mixCoefficient
                 lowPassEngage += (lowPassEngageTarget - lowPassEngage) * mixCoefficient
 
@@ -218,8 +228,8 @@ public final class ReverbKernel: MyFXKernel {
                 let (delayedLeft, delayedRight) = preDelay.process(
                     left: dryLeft, right: dryRight, delaySamples: preDelayTarget)
                 var (wetLeft, wetRight) = tank.process(left: delayedLeft, right: delayedRight)
-                wetLeft *= wetScale
-                wetRight *= wetScale
+                (wetLeft, wetRight) = stereoImage.process(left: wetLeft * wetScale, right: wetRight * wetScale,
+                                                          width: width)
 
                 // The filters always run (warm state); "Thru" fades them out.
                 wetLeft += highPassEngage * (highPassLeft.process(wetLeft, highPass, highPass: true) - wetLeft)
@@ -236,13 +246,16 @@ public final class ReverbKernel: MyFXKernel {
             }
             tank.renormalizeModulation()
             offset += count
+
         }
 
+        self.stereoImage = stereoImage
         self.highPassLeft = highPassLeft
         self.highPassRight = highPassRight
         self.lowPassLeft = lowPassLeft
         self.lowPassRight = lowPassRight
         self.mix = mix
+        self.width = width
         self.highPassEngage = highPassEngage
         self.lowPassEngage = lowPassEngage
         meterPeaks.recordOutput(outputLeft, outputRight ?? outputLeft, frameCount)

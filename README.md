@@ -68,12 +68,13 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 
 ### Plug-ins
 - Audio Unit and VST3 effects on tracks, FX channels and master; mixed in any order.
-- **Built-in effects** (listed as "MyDAW: …"): **MyReverb** (plate reverb), **MyDelay**, **MyChannelStrip** (4-band EQ + compressor) and **MyMaximizer** (loudness maximizer with 10 ms look-ahead). They come from the separate MyPlugIn project and are compiled into MyDAW as in-process Audio Units; each editor shows the name of the channel it is on.
+- **Built-in effects** (listed as "MyDAW: …"): **MyReverb** (plate reverb with a WIDTH control, tuned against a Lexicon-style plate), **MyDelay**, **MyChannelStrip** (4-band EQ + compressor) and **MyMaximizer** (loudness maximizer with 10 ms look-ahead). They come from the separate MyPlugIn project and are compiled into MyDAW as in-process Audio Units; each editor shows the name of the channel it is on.
 - Drag a plug-in name onto another channel's INSERT list to insert a copy with the same settings (the original stays); dropping on an empty part of the list adds it at the bottom.
 - Clicks in a plug-in window or the main window act on the first click, even when another window was in front, and Space / R / ← keep working while a plug-in window is in front.
 - VST3 runs in real time inside the audio graph; GUI parameter changes are heard immediately.
 - VST3 discovery runs in a separate process with a cache; VST3s that also exist as an AU are hidden to avoid conflicts between the two builds.
-- **Plug-in latency compensation** for track inserts and FX channels: dry and effect sounds stay in time, even with a high-latency plug-in (such as a mastering suite) on an FX channel. Bypassing a plug-in keeps its compensation, and a plug-in that changes its latency is followed.
+- **Plug-in latency compensation** for track inserts and FX channels: dry and effect sounds stay in time, even with a high-latency plug-in (such as a mastering suite) on an FX channel. Turning a plug-in off keeps its compensation, and a plug-in that changes its latency is followed.
+- **Plug-in on/off**: a plug-in that is off passes its input through unchanged, also during playback. MyDAW does this itself instead of using the plug-in's bypass, which some plug-ins implement in mono.
 - The sound right at the play position is heard from the first sample; the metronome's first click too.
 - Plug-in state saved with the project.
 - A plug-in that cannot be used is shown in red in the insert list; its tooltip says whether it cannot be used on this Mac or was not found (not installed).
@@ -169,6 +170,7 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 - Plug-ins can be inserted, removed, reordered and copied only while stopped.
 - Mono-only plug-ins (such as Waves "(m)" versions) cannot be used, because the insert chain is stereo even on mono tracks. Use the stereo version ("(s)").
 - If a plug-in's own editor does not respond within 3 seconds, MyDAW shows a generic parameter view (Generic UI) instead.
+- A plug-in that is turned off keeps running, so turning it off does not lower the CPU load; remove it to do that.
 
 ---
 

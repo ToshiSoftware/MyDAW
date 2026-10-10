@@ -35,7 +35,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips, one min–max bar per point from 512- and 64-sample peaks and, zoomed in far, the samples themselves. Wheel / pinch zoom (5–3200 px/s). Auto-scroll during playback can be turned on/off. The timeline is the song's length (clips and end flag, at least 60 s) and is darkened past it; the ruler always fills the view.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
 - **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry. Coloured vertical lines where folders and the FX channels start (click to change the colour; one colour for all FX channels), the current track's name shown reversed, and a fold button (v2.1). Channels ⇧/⌘-clicked are operated together with the current track (faders keep their dB differences, pan and sends their value differences; M/S take the same state). Unavailable plug-ins are shown in red, with a tooltip telling "cannot be used" from "not found".
-- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChannelStrip and MyMaximizer (v3.0, 3.6). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0).
+- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChannelStrip and MyMaximizer (v3.0, 3.6). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0). A plug-in turned off passes its input through without relying on the plug-in's own bypass (`PluginSwitchAudioUnit`, v3.0, 3.2).
 - **Windows and keys** (v3.0): the main window and plug-in windows act on the first click even when another window (or another app) is in front; Space / R / ← work while a plug-in window is key (4.12).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
@@ -78,6 +78,8 @@ MyDAW/
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
+│   │   ├── PluginSwitchAudioUnit.swift Plug-in on/off (a capture and an output in-app AUv3)
+│   │   ├── ObjCExceptionCatcher.swift Catches AVAudioEngine's ObjC exceptions (native side VST3Host/ObjCExceptionCatcher.mm)
 │   │   ├── TrackRenderer.swift Track playback (AVAudioSourceNode + read-ahead thread)
 │   │   ├── DelayCompensationAudioUnit.swift In-app AUv3 delay for FX latency compensation (also measures track meters)
 │   │   ├── VST3NativeInstance.swift  Swift wrapper around the C++ VST3 instance
@@ -94,6 +96,7 @@ MyDAW/
 │       ├── FolderHeaderView.swift    Folder header (open/close, colour, name, M/S, delete)
 │       ├── WaveformLaneView.swift    Waveform lane, clip gestures, overlap shading
 │       ├── WaveformCanvas.swift      Waveform drawing (SwiftUI Canvas)
+│       ├── PreviewStretch.swift      Stretched waveform preview while zooming, track-height zoom anchor
 │       ├── MixerView.swift           Mixer (three-section strips)
 │       ├── MixerControls.swift       Fader, pan, meter, dB scale
 │       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler); title-bar double-click zooms
@@ -163,7 +166,8 @@ Track output mixer (fader volume)
 MonoDownmixAudioUnit (L+R)/2 on mono tracks, pass-through on stereo
       │
       ▼
-Inserts (AU / VST3AudioUnit, in insert order)
+Inserts (AU / VST3AudioUnit, in insert order; each plug-in sits
+         between a PluginSwitch capture and a PluginSwitch output)
       │
       ▼
 Pan mixer (applies pan)
@@ -174,7 +178,9 @@ Splitter mixer
       └──► Send gain mixers ──► FX channel inputs
 ```
 
-Plug-in latency compensation: clips are scheduled early by the track's insert latency plus D, where D is the largest FX channel latency. The dry path is delayed by D and each FX return by D minus its own latency, so dry, wet and the metronome all line up with the timeline. Bypassed plug-ins still count (bypass keeps the delay; the VST3 wrapper delays its bypass signal), and every FX channel counts, fed or not. Latencies are re-read on a plug-in's kAudioUnitProperty_Latency change.
+Plug-in latency compensation: clips are scheduled early by the track's insert latency plus D, where D is the largest FX channel latency. The dry path is delayed by D and each FX return by D minus its own latency, so dry, wet and the metronome all line up with the timeline. Plug-ins that are off still count (while off, the switch unit plays the captured input delayed by the plug-in's latency), and every FX channel counts, fed or not. Latencies are re-read on a plug-in's kAudioUnitProperty_Latency change.
+
+Plug-in on/off: in every chain (track, FX, master) each plug-in sits between the two units of `PluginSwitchAudioUnit` (capture → plug-in → output). The capture unit passes its input through and records it in a ring buffer; the output unit plays the plug-in's output when on, or the recorded input (delayed by the plug-in's latency) when off, with a 10 ms crossfade. The plug-in itself is never bypassed and keeps running. Nothing is rewired, so it switches during playback too. MyDAW does not rely on a plug-in's own bypass because some change the channel layout when bypassed (Relab LX480 Essentials plays its left input on both sides; chapter 5).
 
 #### FX channel
 
@@ -242,7 +248,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Where the code lives**: the effects are developed in the separate MyPlugIn project (`../MyPlugIn`, a Swift package with its own tests and host apps). `scripts/sync-myplugin.sh` copies its Swift sources one way into `Sources/BuiltIn/MyPlugIn` (deleting the old copy first), and `build.sh` compiles them into the MyDAW executable with the rest of the sources. Changes made only in MyDAW's copy are lost at the next sync.
 - **Registration**: at launch `BuiltInPlugins.registration` calls `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")`, which registers every effect of the catalog with `AUAudioUnit.registerSubclass`. They then appear in the plug-in list as "MyDAW: MyReverb" etc. and are inserted, saved (`fullStateForDocument`) and latency-compensated like any in-process AU. An effect added to MyPlugIn's catalog comes along with the next sync and build, with no change in MyDAW. The component codes are stored in projects, so they must not change; vendor 'MyDW' is reserved for MyDAW's internal units, which `PluginManager` hides.
 - **Channel name**: `AudioEngineManager` sets each AU's `contextName` to the name of its track or FX channel, or "MASTER", and follows renames and insert changes through Combine (`observeChannelNames`); the built-in editors show it under the effect name.
-- **Effects**: MyReverb (plate reverb), MyDelay, MyChannelStrip (4-band EQ and compressor, either order) and MyMaximizer (maximizer with a 10 ms look-ahead, reported as latency). Their screens and parameters are described in chapter 11 of the operation manual.
+- **Effects**: MyReverb (plate reverb, tuned against impulse responses of Relab LX480 Essentials' Plate: the tail peaks about 40 ms in, a panned source stays on its side for the first 50 to 100 ms, the side signal below 200 Hz is raised x1.3, WIDTH sets the stereo width of the reverb; details in MyPlugIn's Docs/MyReverb.md), MyDelay, MyChannelStrip (4-band EQ and compressor, either order) and MyMaximizer (maximizer with a 10 ms look-ahead, reported as latency). Their screens and parameters are described in chapter 11 of the operation manual.
 
 ---
 
@@ -369,6 +375,9 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 | Transport bar tooltips never appear | The meter timer assigned `masterPeak` / `masterStereoPeak` at 30 Hz even when stopped, so views observing `AudioEngineManager` redrew constantly | Assign only on change; decayed meter values below -100 dB become 0 |
 | No tooltips right after opening a project (they appear after resizing the window) | When a full-window overlay (start screen, the plug-in scan log left in place but transparent) goes away the layout below is unchanged, so SwiftUI does not re-register tooltip areas | Remove the scan log from the view hierarchy when hidden; when an overlay goes away, widen the window by 1 pt and back (`refreshToolTips`) |
 | Toggling input monitoring (I) freezes the UI or crashes | With input monitoring on, `syncTracks` disconnected and reconnected every send into the FX inputs on each sync and AVAudioEngine threw `required condition is false: mixingDest`. AppKit swallows ObjC exceptions raised inside button actions, leaving Swift state broken so a later button action crashed | Wire a send only when its target changes (`wireSend`). Reproduced outside a button action with a temporary env-var test hook to read the exception |
+| MyReverb sounds mono, and moving a track's pan does not change its reverb | (1) MyReverb's early taps mixed all 8 lines into both sides; (2) Relab LX480 Essentials, chained on the same FX for comparison, plays its left input on both sides when turned off (AU bypass), making everything mono | (1) Each side taps only the lines its own input feeds; (2) turning a plug-in off no longer uses its bypass: `PluginSwitchAudioUnit` passes the input through. Found by loading the AUs offline and measuring impulse responses |
+| Changing only the buffer size in Settings drops the master plug-ins (such as MyMaximizer) out of the path (found in a code review) | `setupEngine()` made a new master mixer every time; the master plug-ins stayed on the old one, and `syncMasterPlugins` saw no change to rewire | The master mixer is kept, and `setupEngine()` rewires the master plug-in chain |
+| A failed AVAudioEngine connection could end the app (found in a code review) | AVAudioEngine raises an ObjC exception for an impossible connection, which Swift cannot catch | Every graph call (connect, disconnect, attach, detach, connection queries, taps) goes through `ObjCExceptionCatcher`; a failure abandons that call and is logged |
 | Turning I on while playing, then stopping, cuts the FX reverb tail with a replayed-block sound | The stop-time rewiring of the deferred input monitor paused the engine; the recording finalisation also called `syncTracks` even without a recording, rewiring at once | Rewire only once the master output is below -60 dB; sync after finalisation only after a recording. Verified by capturing the master output around the stop and comparing the decay |
 | After Rewind the song start flag is sometimes off screen (stopping right after an auto-scroll) | `ScrollViewReader.scrollTo` finds its target in the layout of the moment. Rewind also shrinks the timeline width, and the position was taken from the old layout, so the view stayed where it was | The tracks' horizontal scroll sets the `NSClipView` directly and repeats it once the new width is laid out (`setTrackScrollOffset`) |
 | The resize cursor shows on the mixer edge only sometimes (dragging works with the arrow) | SwiftUI `onHover` with `NSCursor.push()` / `pop()` gets out of step and is overridden by other views' cursors | The edge is an AppKit `VerticalResizeHandle` (cursor rect and drag in the same `NSView`) |
@@ -419,7 +428,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **Folders and file compatibility**: a project with folders opened and saved in v2.0 loses its folders (the tracks stay).
 - **FX latency and monitoring**: the dry path is delayed by D (the largest FX channel latency), so input monitoring on armed tracks is late by D too, and playback starts that much later.
 - **Plug-in latency changes**: AU latency changes are followed (property listener); a VST3's latency is read once when it is created.
-- **Bypass and latency**: a bypassed plug-in keeps counting its latency. MyDAW's VST3 wrapper delays its bypass signal to match; an AU's bypass relies on the plug-in keeping its delay.
+- **Caught ObjC exceptions**: when an AVAudioEngine call raises, only that call is abandoned (that path stays silent; logged and in `graphEventHistory`). Memory held by the interrupted call is leaked, acceptable for a rare failure.
+- **Plug-ins turned off**: a plug-in keeps running while off, so the CPU load does not go down. Its pass-through is delayed by its latency (up to 1 s; a longer latency is out of time while off). If a plug-in changes its latency, the delay is updated at the next on/off or rewiring.
 - **Edits during playback**: the renderer re-reads from two blocks past the playhead (about 0.1–0.2 s ahead), so an edit is heard that much later.
 - **Read-ahead and the disk**: about 4 s per track is read ahead. If the disk cannot keep up, silence plays and the stop logs it (`[Playback] … render cycles found no audio read ahead`).
 
