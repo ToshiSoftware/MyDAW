@@ -18,7 +18,7 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 | 言語 | Swift（UI・エンジン）、C++17 / Objective-C++（VST3 ブリッジ） |
 | 音声基盤 | AVAudioEngine、Core Audio HAL、AUAudioUnit（v3 サブクラス） |
 | 録音形式 | 24-bit Linear PCM WAV、44.1 / 48 / 88.2 / 96 kHz、モノラル／ステレオ |
-| プラグイン | Audio Unit エフェクト、VST3 エフェクト（同名の AU がある VST3 は一覧から除外）、MyPlugIn の内蔵エフェクト 4 種（v3.0） |
+| プラグイン | Audio Unit エフェクト、VST3 エフェクト（同名の AU がある VST3 は一覧から除外）、MyPlugIn の内蔵エフェクト 5 種（v3.0） |
 | ソース規模 | アプリの Swift 約 21,500 行、内蔵エフェクトの Swift 約 6,800 行（`Sources/BuiltIn`）／ C++ 約 900 行（`VST3Host/`） |
 | ビルド | `./scripts/build.sh`（CMake で VST3 ブリッジを構築し `swiftc` でリンク） |
 
@@ -35,7 +35,7 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 - **表示**: 波形はフェード・クロスフェード・上位クリップによる隠れを反映した音量で、512／64 サンプル単位のピーク（強く拡大したときはサンプルそのもの）から 1pt ごとの最小〜最大の棒で描画。ホイール／ピンチで拡大縮小（5〜3200 px/秒）。再生中の自動スクロールは ON／OFF 可能。タイムラインは曲の長さ（クリップと終了フラグ、最低 60 秒）で、それより先は暗く表示。ルーラーは常に画面の右端まで描く。
 - **重なり処理（レイヤー）**: クリップが重なると後から追加したクリップが優先。境界はクロスフェード（既定は等パワー、形は上位クリップのフェードカーブ）。
 - **ミキサー**: Studio One 風の 3 区画ストリップ（INSERT／SEND／コントロール）、dB フェーダー（最大 +6 dB）、ステレオ・ピークメーター、PAN、M／S（FX チャンネルにも。FX のソロはそのリターンだけを再生）、数値直接入力。フォルダと FX チャンネルの始まりに色の縦線（クリックで色変更。FX は全チャンネル共通の色）、カレントトラックの名前欄の反転表示、たたむボタン（v2.1）。⇧／⌘クリックで追加したチャンネルを、カレントトラックと一緒に操作（フェーダーは dB の差、パン・センドは値の差を保って動かし、M／S は同じ状態にする）。使用不可のプラグインは赤く表示し、ツールチップで「使用できません」「見つかりません」を区別。
-- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。内蔵エフェクト MyReverb・MyDelay・MyChannelStrip・MyMaximizer（v3.0、3.6）。プラグインをほかのチャンネルのインサートへドラッグすると、同じ設定のコピーを挿入（v3.0）。OFF にしたプラグインは、プラグイン自身のバイパスに頼らず入力を素通しする（`PluginSwitchAudioUnit`、v3.0、3.2）。
+- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。内蔵エフェクト MyReverb・MyDelay・MyChorusPan・MyChannelStrip・MyMaximizer（v3.0、3.6）。プラグインをほかのチャンネルのインサートへドラッグすると、同じ設定のコピーを挿入（v3.0）。OFF にしたプラグインは、プラグイン自身のバイパスに頼らず入力を素通しする（`PluginSwitchAudioUnit`、v3.0、3.2）。
 - **デバイス**: 入力と出力に別々のデバイスを選択可能。起動中は macOS の既定入出力を切り替え、終了時に復元。デバイス・サンプルレート変更時は保存と再起動を確認。
 - **ウインドウとキー操作**（v3.0）: メインウインドウとプラグインのウインドウは、別のウインドウ（別のアプリ）が前にあっても 1 回目のクリックで操作できる。プラグインのウインドウがキーのときも Space・R・← が効く（4.12）。
 - **表示言語**: GUI は日本語・英語に対応（初期値は macOS の言語）。設定画面で切り替え、再起動後に反映。
@@ -101,7 +101,7 @@ MyDAW/
 │       ├── MixerControls.swift       フェーダー、PAN、メーター、dB スケール
 │       └── WindowCloseHandler.swift  ウィンドウを閉じたらアプリを終了（保存確認は終了処理側）、タイトルバーのダブルクリックでズーム
 │   └── BuiltIn/MyPlugIn/       内蔵エフェクト。../MyPlugIn/Sources のコピー（MyPlugInCore、MyReverb、MyDelay、
-│                               MyChannelStrip、MyMaximizer、MyPlugInCatalog）。修正は MyPlugIn 側で行う
+│                               MyChorusPan、MyChannelStrip、MyMaximizer、MyPlugInCatalog）。修正は MyPlugIn 側で行う
 ├── VST3Host/                   C++ VST3 ホストブリッジ（CMake で静的ライブラリ化）
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  翻訳（en.lproj・ja.lproj の Localizable.strings、InfoPlist.strings）
@@ -248,7 +248,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - **ソースの置き場所**: エフェクトは別プロジェクト MyPlugIn（`../MyPlugIn`。独自のテストとホストアプリを持つ Swift パッケージ）で開発します。`scripts/sync-myplugin.sh` がその Swift ソースを `Sources/BuiltIn/MyPlugIn` に一方向でコピーし（古いコピーは先に削除）、`build.sh` がほかのソースと一緒に MyDAW の実行ファイルへコンパイルします。MyDAW 側のコピーだけを直しても、次の同期で消えます。
 - **登録**: 起動時に `BuiltInPlugins.registration` が `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")` を呼び、カタログの全エフェクトを `AUAudioUnit.registerSubclass` で登録します。プラグイン一覧には「MyDAW: MyReverb」などとして表示され、ほかのプロセス内 AU と同じように挿入・保存（`fullStateForDocument`）・遅延補正されます。MyPlugIn のカタログに追加したエフェクトは、MyDAW を変更しなくても次の同期とビルドで入ります。コンポーネントのコードはプロジェクトに保存されるため変更不可です。メーカーコード 'MyDW' は MyDAW の内部ユニット用で、`PluginManager` が一覧から隠します。
 - **チャンネル名**: `AudioEngineManager` は各 AU の `contextName` に、挿さっているトラック・FX チャンネルの名前か「MASTER」を設定し、名前の変更とインサートの変更に Combine で追従します（`observeChannelNames`）。内蔵エフェクトの画面は、これをエフェクト名の下に表示します。
-- **エフェクト**: MyReverb（プレートリバーブ。Relab LX480 Essentials の Plate のインパルス応答と比べて調整：立ち上がり約 40 ms でピーク、パンした音源は最初の 50〜100 ms その側に残る、200 Hz 以下の Side を 1.3 倍、WIDTH で残響の左右の広がり。詳細は MyPlugIn の Docs/MyReverb.md）、MyDelay、MyChannelStrip（4 バンド EQ とコンプレッサー。順番は切り替え可）、MyMaximizer（10 ms 先読みのマキシマイザー。先読みは遅延として報告）。画面とパラメーターは操作マニュアル第 11 章で説明しています。
+- **エフェクト**: MyReverb（プレートリバーブ。Relab LX480 Essentials の Plate のインパルス応答と比べて調整：立ち上がり約 40 ms でピーク、パンした音源は最初の 50〜100 ms その側に残る、200 Hz 以下の Side を 1.3 倍、WIDTH で残響の左右の広がり。詳細は MyPlugIn の Docs/MyReverb.md）、MyDelay、MyChorusPan（Chorus Pedal・Dimension・Flanger Pedal・Auto Pan の 4 モード。パラメーターはモードごとに別に持ち、INIT でそのモードを推奨値に戻す。Dimension は Arturia「Chorus DIMENSION-D」の説明書にあるシグナルフロー（左右別のディレイと逆相のクロスミックス、1〜3 と BOOST）に合わせた。詳細は MyPlugIn の Docs/MyChorusPan.md）、MyChannelStrip（4 バンド EQ とコンプレッサー。順番は切り替え可）、MyMaximizer（10 ms 先読みのマキシマイザー。先読みは遅延として報告）。画面とパラメーターは操作マニュアル第 11 章で説明しています。
 
 ---
 

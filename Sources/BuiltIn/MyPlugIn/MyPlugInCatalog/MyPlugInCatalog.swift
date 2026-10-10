@@ -14,6 +14,9 @@ import MyChannelStrip
 #if canImport(MyMaximizer)
 import MyMaximizer
 #endif
+#if canImport(MyChorusPan)
+import MyChorusPan
+#endif
 // new-plugin.sh: imports
 
 /// Every MyPlugIn effect, in menu order. A host registers them all with
@@ -25,6 +28,7 @@ public enum MyPlugInCatalog {
         MyDelayAudioUnit.self,
         MyChannelStripAudioUnit.self,
         MyMaximizerAudioUnit.self,
+        MyChorusPanAudioUnit.self,
         // new-plugin.sh: catalog
     ]
 

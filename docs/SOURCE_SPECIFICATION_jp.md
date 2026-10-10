@@ -383,7 +383,7 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 ### `Sources/BuiltIn/MyPlugIn/`（v3.0 で追加）
 `scripts/sync-myplugin.sh` が作る `../MyPlugIn/Sources` のコピー（Swift ファイルのみ。同期のたびにフォルダを削除して作り直す）。ここでは編集しないこと。詳しい仕様は MyPlugIn 側（`Docs/My*.md`）にある。
 - **`MyPlugInCore`**: `MyFXAudioUnit`（共通の `AUAudioUnit` 基底クラス。パラメーター、状態、遅延、エディタ）、`MyFXParameter`、`MyFXExtensionViewController`（MyPlugIn の AUv3 アプリ拡張の principal class。MyDAW のプロセス内では使わない）、共通エディタ（`MyFXEditor`。`MyFXEditorViewController` が SwiftUI のエディタを `NSHostingView` で表示。`contextName` から取ったチャンネル名のヘッダー、IN／OUT メーター、フェーダー、つまみ、`MyFXEditableValue`）、描画まわりの補助。
-- **エフェクト**: `MyReverb`、`MyDelay`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。MyReverb のパラメーターは HPF・LPF・RT・PD・MIX・WIDTH（アドレス 0〜5。WIDTH は後から追加したアドレスで、WIDTH を含まない保存データでは 100 %）。
+- **エフェクト**: `MyReverb`、`MyDelay`、`MyChorusPan`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。MyReverb のパラメーターは HPF・LPF・RT・PD・MIX・WIDTH（アドレス 0〜5。WIDTH は後から追加したアドレスで、WIDTH を含まない保存データでは 100 %）。MyChorusPan のパラメーターはモードごとに 10 番台（Chorus Pedal 10〜、Dimension 20〜、Flanger Pedal 30〜、Auto Pan 40〜。0 はモード）。カーネルは `ChorusPanKernel`、LFO は `ChorusPanLFO`、エディタは INIT・ボタンの行・SPEED ランプ（`ChorusPanLampModel` が 60 Hz でカーネルの LFO 位相を読む）を持つ。
 - **`MyPlugInCatalog`**: `plugIns`（メニュー順のエフェクト一覧）と `registerAll(manufacturer:vendorName:)`。エフェクトは `#if canImport(…)` で import するので、同じファイルが MyPlugIn のパッケージでも MyDAW の単一モジュールでもビルドできる。
 
 ### `VST3HostBridge.swift` / `VST3Host.swift`
