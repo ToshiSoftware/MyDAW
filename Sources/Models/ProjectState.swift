@@ -422,10 +422,15 @@ public final class ProjectState: ObservableObject {
     public init(audioEngine: AudioEngineManager? = nil, deviceManager: AudioDeviceManager? = nil, pluginManager: PluginManager? = nil) {
         let deviceManager = deviceManager ?? AudioDeviceManager()
         self.deviceManager = deviceManager
-        // The engine must be bound to its devices before it first starts.
+        let launch = Self.launchArguments()
+        launchProjectPath = launch.projectPath
+        launchSampleRate = launch.sampleRate
+        // The engine must be bound to its devices, at the launch project's
+        // sample rate, before it first starts.
         self.audioEngine = audioEngine ?? AudioEngineManager(
             inputDeviceID: deviceManager.selectedInputDeviceID,
-            outputDeviceID: deviceManager.selectedOutputDeviceID
+            outputDeviceID: deviceManager.selectedOutputDeviceID,
+            sampleRate: launch.sampleRate
         )
         self.pluginManager = pluginManager ?? PluginManager()
 
@@ -437,6 +442,7 @@ public final class ProjectState: ObservableObject {
         }
 
         if audioEngine == nil {
+            self.deviceManager.restoreSavedBufferFrameSize()
             self.audioEngine.applyInputBufferFrameSize(self.deviceManager.bufferFrameSize)
         }
 
@@ -1361,7 +1367,8 @@ public final class ProjectState: ObservableObject {
                 folder.standardizedFileURL.path == projectFolderURL.standardizedFileURL.path
                     ? "."
                     : relativePath(for: folder, to: projectFolderURL)
-            }
+            },
+            sampleRate: audioEngine.deviceSampleRate
         )
 
         do {
@@ -1452,19 +1459,12 @@ public final class ProjectState: ObservableObject {
         alert.alertStyle = .informational
         alert.addButton(withTitle: String(localized: "Save and Restart"))
         alert.addButton(withTitle: String(localized: "Restart Without Saving"))
-        alert.addButton(withTitle: String(localized: "Cancel"))
 
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            if isProjectOpen {
-                guard saveProject() else { return }
-            }
-        case .alertSecondButtonReturn:
-            break
-        default:
-            return
-        }
-        relaunch()
+        // No Cancel: the new settings are already applied to the devices and
+        // the engine, and MyDAW does not work with them until it restarts.
+        // A failed save asks again.
+        while alert.runModal() == .alertFirstButtonReturn, isProjectOpen, !saveProject() {}
+        relaunch(projectURL: isProjectOpen ? currentProjectURL : nil, sampleRate: audioEngine.deviceSampleRate)
     }
 
     /// Set while relaunching: the project was already saved or discarded.
@@ -1493,29 +1493,110 @@ public final class ProjectState: ObservableObject {
         }
     }
 
-    /// Starts a fresh copy of MyDAW once this process has exited, passing the
-    /// current project file so it opens again, then quits.
-    private func relaunch() {
-        let pid = ProcessInfo.processInfo.processIdentifier
-        var arguments = [Bundle.main.bundleURL.path]
-        if isProjectOpen, let projectPath = currentProjectURL?.path,
-           FileManager.default.fileExists(atPath: projectPath) {
-            arguments += ["--args", projectPath]
-        }
-        let quoted = arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; open -n \(quoted.joined(separator: " "))"
+    /// The project file and sample rate MyDAW was relaunched with.
+    private var launchProjectPath: String?
+    private let launchSampleRate: Double?
 
+    /// Reads the project file and `--sample-rate` passed by `relaunch`. The
+    /// rate is the explicit one if given, else the project's saved rate.
+    private static func launchArguments() -> (projectPath: String?, sampleRate: Double?) {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let projectPath = arguments.first(where: { $0.hasSuffix(".mydaw") })
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path.precomposedStringWithCanonicalMapping }
+        if let index = arguments.firstIndex(of: "--sample-rate"),
+           index + 1 < arguments.count,
+           let rate = Double(arguments[index + 1]), rate > 0 {
+            return (projectPath, rate)
+        }
+        guard let projectPath,
+              let data = FileManager.default.contents(atPath: projectPath),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rate = (object["sampleRate"] as? NSNumber)?.doubleValue, rate > 0 else {
+            return (projectPath, nil)
+        }
+        return (projectPath, rate)
+    }
+
+    /// Posted by a relaunched MyDAW once its window is up, with the old
+    /// process's ID as the object.
+    private static let relaunchedNotification = Notification.Name("com.tokada.MyDAW.relaunched")
+
+    /// Starts a fresh copy of MyDAW, passing the project file to open and
+    /// the sample rate to run at, then quits. The rate is set before the new
+    /// engine first starts. This window stays on screen until the new one is
+    /// up, so the screen does not go blank in between; this process's audio
+    /// is shut down first, leaving the devices for the new one to put back.
+    private func relaunch(projectURL: URL?, sampleRate: Double?) {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        var launchArguments: [String] = []
+        if let projectPath = projectURL?.path,
+           FileManager.default.fileExists(atPath: projectPath) {
+            launchArguments.append(projectPath)
+        }
+        if let sampleRate {
+            launchArguments += ["--sample-rate", String(Int(sampleRate.rounded()))]
+        }
+        launchArguments += audioEngine.originalDeviceSettingsArguments()
+        launchArguments += ["--parent-pid", String(pid)]
+
+        audioEngine.shutdown(restoresDevices: false)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", Bundle.main.bundleURL.path, "--args"] + launchArguments
         do {
             try process.run()
         } catch {
+            // The audio is already down: put the devices back and quit.
+            audioEngine.restoreOriginalDeviceSettings()
             presentProjectError(String(localized: "MyDAW could not restart itself. Please quit and reopen it manually.\n\n\(error.localizedDescription)"))
+            skipsQuitConfirmation = true
+            NSApp.terminate(nil)
             return
         }
         skipsQuitConfirmation = true
-        NSApp.terminate(nil)
+        isRelaunching = true
+        for window in NSApp.windows {
+            window.ignoresMouseEvents = true
+        }
+        // Keys too (Space, menu shortcuts): this process's audio is down.
+        relaunchEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .keyUp, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+        ) { _ in nil }
+        var didQuit = false
+        let quit = {
+            guard !didQuit else { return }
+            didQuit = true
+            NSApp.terminate(nil)
+        }
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.relaunchedNotification,
+            object: String(pid),
+            queue: .main
+        ) { _ in quit() }
+        // Quit anyway if the new copy never reports in.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { quit() }
+    }
+
+    /// Set once `relaunch` has handed over to a new process: nothing may
+    /// open a project or touch the audio any more.
+    private(set) var isRelaunching = false
+    private var relaunchEventMonitor: Any?
+
+    /// Tells the MyDAW that relaunched this one that its window is up, so
+    /// the old window can go.
+    func notifyRelaunchingProcess() {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--parent-pid"), index + 1 < arguments.count else { return }
+        let parentPID = arguments[index + 1]
+        // A moment for the window to be drawn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.relaunchedNotification,
+                object: parentPID,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+        }
     }
 
     public func loadProject() {
@@ -1545,6 +1626,7 @@ public final class ProjectState: ObservableObject {
     /// Opens a .mydaw file double-clicked in the Finder (or dropped on the
     /// Dock icon). An open project is offered for saving first.
     func openProjectFile(_ url: URL) {
+        guard !isRelaunching else { return }
         NSApp.activate(ignoringOtherApps: true)
         let url = url.standardizedFileURL
         if isProjectOpen, currentProjectURL?.standardizedFileURL.path == url.path { return }
@@ -1624,12 +1706,14 @@ public final class ProjectState: ObservableObject {
     }
 
     public func loadProject(from url: URL, projectFolderURL: URL) {
+        guard !isRelaunching else { return }
         do {
             let projectFolderURL = projectFolderURL.standardizedFileURL
             let recordingsURL = projectFolderURL.appendingPathComponent("Recordings", isDirectory: true)
             try FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
 
             let document = try JSONDecoder().decode(ProjectDocument.self, from: Data(contentsOf: url))
+            guard prepareSampleRate(for: document, at: url) else { return }
             var restoredPluginIDs = Set<UUID>()
             func uniquePluginInstances(_ plugins: [TrackPluginDescriptor]) -> [TrackPluginDescriptor] {
                 plugins.map { plugin in
@@ -1755,6 +1839,33 @@ public final class ProjectState: ObservableObject {
         } catch {
             presentProjectError(String(localized: "Could not open project: \(error.localizedDescription)"))
         }
+    }
+
+    /// Runs the project at its saved sample rate. The engine cannot change
+    /// rate safely while running, so a project at another rate is opened in
+    /// a relaunched MyDAW that sets the rate before its engine starts; false
+    /// when that relaunch has begun. A rate the devices cannot run at is
+    /// reported and the project plays at the current rate.
+    private func prepareSampleRate(for document: ProjectDocument, at url: URL) -> Bool {
+        let currentRate = audioEngine.hardwareSampleRate
+        // Compared precomposed: the same path can come decomposed from a
+        // panel or the Finder (the Drive folder name has voiced kana).
+        let isLaunchProject = url.standardizedFileURL.path.precomposedStringWithCanonicalMapping == launchProjectPath
+        if isLaunchProject {
+            // Opened once in this process; a later reopen is checked again.
+            launchProjectPath = nil
+        }
+        let wantedRate = isLaunchProject ? (launchSampleRate ?? document.sampleRate) : document.sampleRate
+        guard let wantedRate, abs(wantedRate - currentRate) > 0.5 else { return true }
+        // A process launched to run at this rate has already tried it:
+        // relaunching again could loop when the device does not switch.
+        let alreadyTried = launchSampleRate.map { abs($0 - wantedRate) <= 0.5 } ?? false
+        if !isLaunchProject, !alreadyTried, audioEngine.supportsSampleRate(wantedRate) {
+            relaunch(projectURL: url, sampleRate: wantedRate)
+            return false
+        }
+        presentProjectError(String(localized: "The audio device could not be set to the project's sample rate of \(Int(wantedRate.rounded())) Hz. The project plays at \(Int(currentRate.rounded())) Hz."))
+        return true
     }
 
     private func relativePath(for fileURL: URL, to projectFolderURL: URL) -> String {
@@ -1913,13 +2024,15 @@ public final class ProjectState: ObservableObject {
         let channelCount: AVAudioChannelCount
         let sampleRate: Double
         let bitDepth: Int
+        let isFloat: Bool
     }
 
     /// Rewrites the project's clips to play files holding only the part they
     /// play: one file per clip, shared by clips that play the same part of
     /// the same file. Each file is converted down to the current sample rate
     /// (never up) and to 16-bit or 24-bit integer; a clip on a mono track
-    /// gets a mono file. Source files no clip uses any more are moved to
+    /// gets a mono file. Each of these three is chosen in the confirmation
+    /// (all on by default). Source files no clip uses any more are moved to
     /// Recordings/Unused. Not done when other projects share the folder,
     /// since their clips would lose their files.
     public func optimizeRecordings() {
@@ -1937,20 +2050,41 @@ public final class ProjectState: ObservableObject {
 
         let confirmation = NSAlert()
         confirmation.messageText = String(localized: "Optimize recordings to minimum size?")
-        confirmation.informativeText = String(localized: "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.")
+        confirmation.informativeText = String(localized: "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.")
+        let targetSampleRate = audioEngine.hardwareSampleRate
+        func checkbox(_ title: String) -> NSButton {
+            let button = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+            button.state = .on
+            return button
+        }
+        let sampleRateCheckbox = checkbox(String(localized: "Down-convert the sample rate (to \(Int(targetSampleRate.rounded())) Hz)"))
+        let bitDepthCheckbox = checkbox(String(localized: "Down-convert the bit depth (to 24-bit)"))
+        let channelCheckbox = checkbox(String(localized: "Down-convert the channels (stereo to mono on mono tracks)"))
+        let noUpConversion = NSTextField(wrappingLabelWithString: String(localized: "Nothing is converted up. Files at or below the current project settings keep their original values."))
+        noUpConversion.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        noUpConversion.textColor = .secondaryLabelColor
+        noUpConversion.preferredMaxLayoutWidth = 300
+        noUpConversion.widthAnchor.constraint(equalToConstant: 300).isActive = true
         let warning = NSTextField(labelWithString: String(localized: "This cannot be undone. Do you want to continue?"))
         warning.font = NSFont.boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        warning.sizeToFit()
-        confirmation.accessoryView = warning
+        let options = NSStackView(views: [sampleRateCheckbox, bitDepthCheckbox, channelCheckbox, noUpConversion, warning])
+        options.orientation = .vertical
+        options.alignment = .leading
+        options.spacing = 6
+        options.setCustomSpacing(12, after: noUpConversion)
+        options.frame.size = options.fittingSize
+        confirmation.accessoryView = options
         confirmation.alertStyle = .warning
         confirmation.addButton(withTitle: String(localized: "Optimize"))
         let cancelButton = confirmation.addButton(withTitle: String(localized: "Cancel"))
         cancelButton.keyEquivalent = "\u{1b}"
         guard confirmation.runModal() == .alertFirstButtonReturn, saveProject() else { return }
+        let reducesSampleRate = sampleRateCheckbox.state == .on
+        let reducesBitDepth = bitDepthCheckbox.state == .on
+        let reducesChannels = channelCheckbox.state == .on
 
         let fileManager = FileManager.default
         let recordingsURL = audioEngine.recordingsDirectory.standardizedFileURL
-        let targetSampleRate = audioEngine.hardwareSampleRate
         func key(_ url: URL) -> String {
             url.standardizedFileURL.resolvingSymlinksInPath().path
         }
@@ -1978,14 +2112,18 @@ public final class ProjectState: ObservableObject {
                     sourceStartTime: clip.sourceStartTime,
                     duration: clip.duration,
                     isMonoTrack: track.channelMode == .mono,
-                    targetSampleRate: targetSampleRate
+                    targetSampleRate: targetSampleRate,
+                    reducesSampleRate: reducesSampleRate,
+                    reducesBitDepth: reducesBitDepth,
+                    reducesChannels: reducesChannels
                 ) else { continue }
                 let extract = RecordingExtract(
                     sourcePath: path,
                     frames: plan.frames,
                     channelCount: plan.channelCount,
                     sampleRate: plan.sampleRate,
-                    bitDepth: plan.bitDepth
+                    bitDepth: plan.bitDepth,
+                    isFloat: plan.isFloat
                 )
                 let index = extractIndex[extract] ?? {
                     extracts.append(extract)
@@ -2031,6 +2169,7 @@ public final class ProjectState: ObservableObject {
                     channelCount: extract.channelCount,
                     sampleRate: extract.sampleRate,
                     bitDepth: extract.bitDepth,
+                    isFloat: extract.isFloat,
                     to: destination
                 )
                 await progress.update(done: index + 1)

@@ -31,6 +31,7 @@ public struct AudioDeviceOption: Identifiable, Hashable, Sendable {
 public final class AudioDeviceManager: ObservableObject {
     private static let savedInputDeviceUIDKey = "MyDAW.inputDeviceUID"
     private static let savedOutputDeviceUIDKey = "MyDAW.outputDeviceUID"
+    private static let savedBufferFrameSizeKey = "MyDAW.bufferFrameSize"
 
     @Published public var deviceName: String = String(localized: "Default Audio Interface")
     @Published public var availableMonoChannels: [AudioInputChannelOption] = []
@@ -216,8 +217,20 @@ public final class AudioDeviceManager: ObservableObject {
 
         if succeeded {
             bufferFrameSize = clampedFrameCount
+            UserDefaults.standard.set(clampedFrameCount, forKey: Self.savedBufferFrameSizeKey)
         }
         return succeeded
+    }
+
+    /// The device buffer size is a per-process request that Core Audio drops
+    /// when MyDAW quits, so the saved size is set again at every launch.
+    /// Call after the engine is bound to its devices (they are the defaults).
+    @discardableResult
+    public func restoreSavedBufferFrameSize() -> Bool {
+        guard let saved = UserDefaults.standard.object(forKey: Self.savedBufferFrameSizeKey) as? Int else {
+            return false
+        }
+        return setBufferFrameSize(saved)
     }
 
     private func defaultDevice(selector: AudioObjectPropertySelector) -> AudioDeviceID {

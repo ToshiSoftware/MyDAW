@@ -1183,11 +1183,17 @@ private struct PunchRangeOverlay: View {
         let endX = CGFloat(projectState.punchRange.endBeat * beatDuration) * pixelsPerSecond
 
         ZStack(alignment: .topLeading) {
-            Rectangle()
-                .fill(projectState.punchRange.enabled ? Color.red.opacity(0.38) : Color.gray.opacity(0.08))
-                .frame(width: max(1.0, endX - startX), height: 10)
-                .offset(x: startX, y: 0)
-                .allowsHitTesting(false)
+            // From the Record button until stop: blinks while standing by,
+            // lit while recording inside the range.
+            Blinking(isActive: projectState.punchRange.enabled && audioEngine.isRecordPass && !audioEngine.isPunchRecording) { isLit in
+                Rectangle()
+                    .fill(projectState.punchRange.enabled
+                        ? Color.red.opacity(isLit ? 0.38 : 0.12)
+                        : Color.gray.opacity(0.08))
+                    .frame(width: max(1.0, endX - startX), height: 10)
+            }
+            .offset(x: startX, y: 0)
+            .allowsHitTesting(false)
 
             Text("PUNCH")
                 .font(.system(size: 8, weight: .bold))

@@ -255,6 +255,7 @@ extension ClipAudioProcessing {
         let channelCount: AVAudioChannelCount
         let sampleRate: Double
         let bitDepth: Int
+        let isFloat: Bool
         /// Where the clip starts in the new file: the part of a source
         /// sample it started inside of.
         let sourceStartTime: Double
@@ -270,23 +271,33 @@ extension ClipAudioProcessing {
 
     /// The file a clip needs: only the frames it plays; one channel on a
     /// mono track, otherwise the source's (at most two); the source rate,
-    /// lowered to `targetSampleRate` but never raised; 16-bit for integer
-    /// sources of 16 bits or less, otherwise 24-bit.
+    /// lowered to `targetSampleRate` but never raised; integer sources of up
+    /// to 24 bits keep their bit depth, others become 24-bit. Nothing is
+    /// ever converted up. With `reducesSampleRate`,
+    /// `reducesBitDepth` or `reducesChannels` off, the source's rate, sample
+    /// format or channels (at most two) are kept.
     static func extractDecision(
         for info: FileInfo,
         sourceStartTime: Double,
         duration: Double,
         isMonoTrack: Bool,
-        targetSampleRate: Double
+        targetSampleRate: Double,
+        reducesSampleRate: Bool = true,
+        reducesBitDepth: Bool = true,
+        reducesChannels: Bool = true
     ) -> ExtractDecision {
         let start = min(info.length, max(0, AVAudioFramePosition((sourceStartTime * info.sampleRate).rounded(.down))))
         let end = min(info.length, AVAudioFramePosition(((sourceStartTime + duration) * info.sampleRate).rounded(.up)))
         guard end > start else { return .nothing }
-        let channelCount: AVAudioChannelCount = isMonoTrack ? 1 : min(2, info.channelCount)
-        let sampleRate = info.sampleRate - targetSampleRate > 0.5 ? targetSampleRate : info.sampleRate
-        let bitDepth = !info.isFloat && info.bitDepth <= 16 ? 16 : 24
+        let channelCount: AVAudioChannelCount = reducesChannels && isMonoTrack ? 1 : min(2, info.channelCount)
+        let sampleRate = reducesSampleRate && info.sampleRate - targetSampleRate > 0.5
+            ? targetSampleRate
+            : info.sampleRate
+        let keepsSampleFormat = !reducesBitDepth && info.bitDepth > 0
+        let bitDepth = keepsSampleFormat ? info.bitDepth : (!info.isFloat && info.bitDepth > 0 && info.bitDepth <= 24 ? info.bitDepth : 24)
+        let isFloat = keepsSampleFormat && info.isFloat
         if start == 0, end == info.length, channelCount == info.channelCount,
-           sampleRate == info.sampleRate, bitDepth == info.bitDepth, !info.isFloat {
+           sampleRate == info.sampleRate, bitDepth == info.bitDepth, isFloat == info.isFloat {
             return .keep
         }
         return .extract(ExtractPlan(
@@ -294,12 +305,13 @@ extension ClipAudioProcessing {
             channelCount: channelCount,
             sampleRate: sampleRate,
             bitDepth: bitDepth,
+            isFloat: isFloat,
             sourceStartTime: sourceStartTime - Double(start) / info.sampleRate
         ))
     }
 
-    /// Writes `frames` of `url` to `destination` as an integer WAV of
-    /// `bitDepth` bits at `sampleRate`. With one channel, a stereo source is
+    /// Writes `frames` of `url` to `destination` as a WAV of `bitDepth` bits
+    /// (integer, or float with `isFloat`) at `sampleRate`. With one channel, a stereo source is
     /// mixed as (L + R) / 2, as a mono track plays it; with two, a mono
     /// source is doubled. Only the first two source channels are used.
     static func writeExtract(
@@ -308,6 +320,7 @@ extension ClipAudioProcessing {
         channelCount: AVAudioChannelCount,
         sampleRate: Double,
         bitDepth: Int,
+        isFloat: Bool = false,
         to destination: URL
     ) throws {
         let source = try AVAudioFile(forReading: url)
@@ -327,7 +340,7 @@ extension ClipAudioProcessing {
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: channelCount,
             AVLinearPCMBitDepthKey: bitDepth,
-            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsFloatKey: isFloat,
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false
         ]

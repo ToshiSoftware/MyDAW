@@ -24,6 +24,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     @Published public var isPlaying: Bool = false
     @Published public var isRecording: Bool = false
     @Published public private(set) var isPunchRecording: Bool = false
+    /// True from the start of a recording pass until it stops, also while a
+    /// punch pass waits for its punch-in.
+    @Published public private(set) var isRecordPass: Bool = false
     @Published public private(set) var hasPendingRecording: Bool = false
     @Published public private(set) var isStartingPlayback: Bool = false
     /// The playhead in seconds, kept in its own object: it changes 60 times
@@ -128,6 +131,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     @Published public private(set) var unavailablePluginIDs: Set<UUID> = []
     /// macOS default input/output found before MyDAW replaced them.
     private var originalDefaultDevices: (input: AudioDeviceID, output: AudioDeviceID)?
+    /// Device sample rates found before MyDAW first changed them, put back
+    /// by `shutdown()` like the default devices.
+    private var originalNominalSampleRates: [AudioDeviceID: Float64] = [:]
+    /// The rate last set on the devices. A running AVAudioEngine goes on
+    /// reporting the old rate for a while after the devices change, so
+    /// `hardwareSampleRate` lags until MyDAW restarts.
+    private var requestedSampleRate: Double?
+    /// Set by `shutdown()`; transport starts are refused from then on.
+    private var isShutDown = false
+    /// The rate the project runs at: the one last set on the devices, else
+    /// the rate the engine runs at. Saved with the project.
+    public var deviceSampleRate: Double { requestedSampleRate ?? hardwareSampleRate }
 
     /// Each track's clips play through one renderer (see `TrackRenderer`)
     /// into the track's output mixer.
@@ -480,11 +495,19 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             .reduce(0.0, +)
     }
 
-    public init(inputDeviceID: AudioDeviceID = 0, outputDeviceID: AudioDeviceID = 0) {
+    /// `sampleRate` is set on the devices before the engine first starts
+    /// (the rate of the project MyDAW is launched with).
+    public init(inputDeviceID: AudioDeviceID = 0, outputDeviceID: AudioDeviceID = 0, sampleRate: Double? = nil) {
         self.recordingsDirectory = Self.resolveRecordingsDirectory()
         super.init()
+        adoptInheritedOriginalDeviceSettings()
         if inputDeviceID != 0 || outputDeviceID != 0 {
             bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID)
+        }
+        if let sampleRate {
+            // Set before the engine first touches its nodes, so it reads
+            // the new rate at once.
+            setDeviceSampleRate(sampleRate, deviceIDs: [inputDeviceID, outputDeviceID])
         }
         setupEngine()
         startMeterTimer()
@@ -982,27 +1005,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         engine.stop()
 
         var applied = true
-        if let sampleRate,
-           sampleRate.isFinite,
-           sampleRate > 0.0 {
-            let deviceIDs = Set([inputDeviceID, outputDeviceID]).filter { $0 != 0 }
-            for deviceID in deviceIDs {
-                var value = Float64(sampleRate)
-                var address = AudioObjectPropertyAddress(
-                    mSelector: kAudioDevicePropertyNominalSampleRate,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain
-                )
-                let status = AudioObjectSetPropertyData(
-                    deviceID,
-                    &address,
-                    0,
-                    nil,
-                    UInt32(MemoryLayout<Float64>.size),
-                    &value
-                )
-                applied = applied && status == noErr
-            }
+        if let sampleRate {
+            applied = setDeviceSampleRate(sampleRate, deviceIDs: [inputDeviceID, outputDeviceID])
         }
 
         // Only switch the defaults when the device pair actually changes; the
@@ -1018,6 +1022,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         selectedInputDeviceID = inputDeviceID
         selectedOutputDeviceID = outputDeviceID
+        if let sampleRate {
+            requestedSampleRate = sampleRate
+        }
         setupEngine()
         return true
     }
@@ -1060,6 +1067,150 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             Self.setDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, to: original.output)
         }
         originalDefaultDevices = nil
+    }
+
+    /// Whether the selected devices can run at `rate`.
+    public func supportsSampleRate(_ rate: Double) -> Bool {
+        let deviceIDs = Set([selectedInputDeviceID, selectedOutputDeviceID]).filter { $0 != 0 }
+        return !deviceIDs.isEmpty && deviceIDs.allSatisfy { deviceID in
+            Self.availableSampleRateRanges(deviceID).contains { range in
+                rate >= range.mMinimum - 0.5 && rate <= range.mMaximum + 0.5
+            }
+        }
+    }
+
+    /// Sets the devices' nominal rate, keeping the rate each had before
+    /// MyDAW first changed it, and waits until the devices report the new
+    /// rate (the change is asynchronous), so the engine set up next runs at it.
+    @discardableResult
+    private func setDeviceSampleRate(_ rate: Double, deviceIDs: [AudioDeviceID]) -> Bool {
+        guard rate.isFinite, rate > 0.0 else { return false }
+        var succeeded = true
+        for deviceID in Set(deviceIDs).filter({ $0 != 0 }) {
+            guard let current = Self.nominalSampleRate(deviceID) else {
+                succeeded = false
+                continue
+            }
+            guard abs(current - rate) > 0.5 else { continue }
+            if originalNominalSampleRates[deviceID] == nil {
+                originalNominalSampleRates[deviceID] = current
+            }
+            succeeded = Self.writeNominalSampleRate(rate, to: deviceID) && succeeded
+        }
+        return succeeded
+    }
+
+    /// The device settings to put back at quit, as launch arguments for a
+    /// relaunched MyDAW that takes them over (this process then quits with
+    /// `shutdown(restoresDevices: false)`).
+    public func originalDeviceSettingsArguments() -> [String] {
+        var arguments: [String] = []
+        if let original = originalDefaultDevices {
+            arguments += ["--original-default-devices", "\(original.input),\(original.output)"]
+        }
+        if !originalNominalSampleRates.isEmpty {
+            let rates = originalNominalSampleRates.map { "\($0.key):\($0.value)" }.joined(separator: ",")
+            arguments += ["--original-sample-rates", rates]
+        }
+        return arguments
+    }
+
+    /// Takes over the settings a relaunching MyDAW left to put back, so
+    /// they are not taken for the originals when this process binds.
+    private func adoptInheritedOriginalDeviceSettings() {
+        let arguments = CommandLine.arguments
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+        if let devices = value(after: "--original-default-devices")?.split(separator: ",").compactMap({ AudioDeviceID($0) }),
+           devices.count == 2 {
+            originalDefaultDevices = (devices[0], devices[1])
+        }
+        for entry in value(after: "--original-sample-rates")?.split(separator: ",") ?? [] {
+            let parts = entry.split(separator: ":")
+            if parts.count == 2, let deviceID = AudioDeviceID(parts[0]), let rate = Double(parts[1]) {
+                originalNominalSampleRates[deviceID] = rate
+            }
+        }
+    }
+
+    /// Puts back the default devices and sample rates MyDAW changed.
+    public func restoreOriginalDeviceSettings() {
+        restoreOriginalSampleRates()
+        restoreOriginalDefaultDevices()
+    }
+
+    /// Puts back the device sample rates MyDAW changed.
+    private func restoreOriginalSampleRates() {
+        for (deviceID, rate) in originalNominalSampleRates {
+            Self.writeNominalSampleRate(rate, to: deviceID)
+        }
+        originalNominalSampleRates.removeAll()
+    }
+
+    private static func nominalSampleRate(_ deviceID: AudioDeviceID) -> Double? {
+        var value: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr,
+              value > 0 else { return nil }
+        return Double(value)
+    }
+
+    @discardableResult
+    private static func writeNominalSampleRate(_ rate: Double, to deviceID: AudioDeviceID) -> Bool {
+        var value = Float64(rate)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float64>.size),
+            &value
+        )
+        guard status == noErr else {
+            print("Failed to set sample rate \(rate) Hz on device \(deviceID): \(status)")
+            return false
+        }
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            if let current = nominalSampleRate(deviceID), abs(current - rate) <= 0.5 {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        print("Device \(deviceID) did not switch to \(rate) Hz in time")
+        return false
+    }
+
+    private static func availableSampleRateRanges(_ deviceID: AudioDeviceID) -> [AudioValueRange] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0 else {
+            return []
+        }
+        var ranges = [AudioValueRange](
+            repeating: AudioValueRange(),
+            count: Int(size) / MemoryLayout<AudioValueRange>.size
+        )
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ranges) == noErr else {
+            return []
+        }
+        return ranges
     }
 
     private static func defaultDevice(_ selector: AudioObjectPropertySelector) -> AudioDeviceID {
@@ -3796,6 +3947,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         fxChannels: [FXChannel],
         recordArmedTracks: Bool
     ) {
+        // After shutdown the plug-ins are released and, while a relaunched
+        // MyDAW starts, the devices belong to it.
+        guard !isShutDown else { return }
         // Ensure master graph matches configured master plugins before readiness check
         if configuredMasterPlugins.map(\.id) != masterPluginSignature && !isMasterPluginGraphBuilding {
             syncMasterPlugins(configuredMasterPlugins)
@@ -4211,6 +4365,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         punchArmedTrackIDs = Set(armedTracks.map(\.id))
         punchPlaybackState = 0
         isPunchRecording = punchInTime.map { currentTime >= $0 } ?? true
+        isRecordPass = true
         // CRITICAL: Use hardwareSampleRate (actual HW rate from inputNode) — NOT the UI sampleRate.
         // This ensures the WAV file header matches the actual captured audio sample rate.
         let recordSampleRate = self.hardwareSampleRate
@@ -4348,6 +4503,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         punchArmedTrackIDs.removeAll()
         punchPlaybackState = 0
         isPunchRecording = false
+        isRecordPass = false
         if isRollbackPass {
             isRollbackPass = false
             punchInTime = nil
@@ -4412,7 +4568,10 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         applyDeferredRewiresWhenQuiet()
     }
 
-    public func shutdown() {
+    /// `restoresDevices` false leaves the default devices and sample rates
+    /// to a relaunched MyDAW that took them over.
+    public func shutdown(restoresDevices: Bool = true) {
+        isShutDown = true
         startPlaybackTask?.cancel()
         startPlaybackTask = nil
         playbackRetryTask?.cancel()
@@ -4434,10 +4593,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             releaseVST3Instances()
             releaseAudioUnits()
         }
-        restoreOriginalDefaultDevices()
+        if restoresDevices {
+            restoreOriginalDeviceSettings()
+        } else {
+            originalNominalSampleRates.removeAll()
+            originalDefaultDevices = nil
+        }
 
         isPlaying = false
         isRecording = false
+        isRecordPass = false
     }
 
     // VST3 modules must be torn down (instances destroyed, module released so

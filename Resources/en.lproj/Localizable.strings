@@ -233,6 +233,7 @@
 "OK" = "OK";
 "Choose Recording File" = "Choose Recording File";
 "This recording file cannot be used.\n\nSample rate: %lld Hz (required: %lld Hz)" = "This recording file cannot be used.\n\nSample rate: %lld Hz (required: %lld Hz)";
+"The audio device could not be set to the project's sample rate of %lld Hz. The project plays at %lld Hz." = "The audio device could not be set to the project's sample rate of %lld Hz. The project plays at %lld Hz.";
 "Could not read the recording file.\n\n%@" = "Could not read the recording file.\n\n%@";
 "Project saved." = "Project saved.";
 "Restart MyDAW to apply the new settings?" = "Restart MyDAW to apply the new settings?";
@@ -303,7 +304,11 @@
 "Recordings cannot be optimized" = "Recordings cannot be optimized";
 "Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@" = "Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@";
 "Optimize recordings to minimum size?" = "Optimize recordings to minimum size?";
-"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.";
+"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.";
+"Down-convert the sample rate (to %lld Hz)" = "Down-convert the sample rate (to %lld Hz)";
+"Down-convert the bit depth (to 24-bit)" = "Down-convert the bit depth (to 24-bit)";
+"Down-convert the channels (stereo to mono on mono tracks)" = "Down-convert the channels (stereo to mono on mono tracks)";
+"Nothing is converted up. Files at or below the current project settings keep their original values." = "Nothing is converted up. Files at or below the current project settings keep their original values.";
 "This cannot be undone. Do you want to continue?" = "This cannot be undone. Do you want to continue?";
 "Optimize" = "Optimize";
 "Recordings are already optimized" = "Recordings are already optimized";

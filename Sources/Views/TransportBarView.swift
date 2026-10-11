@@ -140,17 +140,23 @@ public struct TransportBarView: View {
                 .buttonStyle(PlainButtonStyle())
                 .help(anyArmed ? "Record Armed Tracks (R)" : "No Tracks Armed for Recording")
 
+                // Fixed from the Record button until stop; an enabled punch
+                // blinks meanwhile, standing by or recording.
                 Button {
                     projectState.setPunchEnabled(!projectState.punchRange.enabled)
                 } label: {
-                    Text("P")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundColor(projectState.punchRange.enabled ? .black : .red.opacity(0.75))
-                        .frame(width: 34, height: 20)
-                        .background(projectState.punchRange.enabled ? Color.red : Color.white.opacity(0.08))
-                        .cornerRadius(3)
+                    let isOn = projectState.punchRange.enabled
+                    Blinking(isActive: isOn && audioEngine.isRecordPass) { isLit in
+                        Text("P")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(isOn ? .black : .red.opacity(0.75))
+                            .frame(width: 34, height: 20)
+                            .background(isOn ? Color.red.opacity(isLit ? 1.0 : 0.35) : Color.white.opacity(0.08))
+                            .cornerRadius(3)
+                    }
                 }
                 .buttonStyle(PlainButtonStyle())
+                .disabled(audioEngine.isRecordPass)
                 .help(projectState.punchRange.enabled ? "Disable Punch In/Out" : "Enable Punch In/Out")
 
                 // Rollback recording; a punch recording ignores it (dimmed).
@@ -651,7 +657,7 @@ private struct BufferSettingsView: View {
         _selectedBufferSize = State(initialValue: deviceManager.bufferFrameSize)
         _selectedInputDeviceID = State(initialValue: deviceManager.selectedInputDeviceID)
         _selectedOutputDeviceID = State(initialValue: deviceManager.selectedOutputDeviceID)
-        _selectedSampleRate = State(initialValue: audioEngine.hardwareSampleRate)
+        _selectedSampleRate = State(initialValue: audioEngine.deviceSampleRate)
         _recordingCompensationText = State(
             initialValue: String(format: "%.1f", audioEngine.manualRecordingCompensationMs)
         )
@@ -824,7 +830,7 @@ private struct BufferSettingsView: View {
                     commitRollbackBars()
                     let devicesChanged = selectedInputDeviceID != deviceManager.selectedInputDeviceID ||
                         selectedOutputDeviceID != deviceManager.selectedOutputDeviceID
-                    let sampleRateChanged = abs(selectedSampleRate - audioEngine.hardwareSampleRate) > 0.5
+                    let sampleRateChanged = abs(selectedSampleRate - audioEngine.deviceSampleRate) > 0.5
                     let bufferChanged = selectedBufferSize != deviceManager.bufferFrameSize
                     var needsRestart = false
                     if selectedLanguage != AppLanguage.current {

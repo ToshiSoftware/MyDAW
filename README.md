@@ -1,6 +1,6 @@
 # MyDAW — Professinal Audio Workstation for Mac (Apple Silicon)
 
-**Version 3.0** · [日本語版 README](README_jp.md)
+**Version 3.1** · [日本語版 README](README_jp.md)
 
 MyDAW is a multitrack audio recording, editing and mixing DAW (Digital Audio Workstation) for Apple Silicon Macs. It is built on Core Audio (AVAudioEngine / Core Audio HAL) and hosts both Audio Unit and VST3 effects.
 
@@ -84,12 +84,14 @@ This project was automatically generated using AI (Copilot, Antigravity). Please
 - A project is a `.mydaw` file plus the `Recordings/` folder next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). File and folder names are free, and the folder is fully portable. Several `.mydaw` files in one folder share its `Recordings/`. **Save Project As** (⇧⌘S) saves only into the same folder. Double-clicking a `.mydaw` file in the Finder opens it (the file shows a MyDAW document icon).
 - **Recent Projects** on the start screen: up to 50 projects with their last-saved date; click a name to open it.
 - Master mix export from a dialog (file name, folder, format) to WAV (16 / 24-bit) or MP3 (constant bitrate or VBR) at 44.1 / 48 / 96 kHz (MP3: up to 48 kHz), cut to the sample at the start and end positions (plug-in latency included). The master is rendered in real time, then converted.
-- **Optimize recordings**: for sharing a project, rewrites the recordings so that each clip plays its own WAV holding only the part it plays (clips playing the same part share one file), named `Optimized_NNN.wav`. Mono-track clips become mono; mono files stay mono; higher sample rates are lowered to the current rate (never raised); 32-bit and float files become 24-bit, 16/24-bit keep their depth. Originals no longer used go to `Recordings/Unused/`. It cannot be undone, and it is not done while other `.mydaw` files share the folder.
+- **Optimize recordings**: for sharing a project, rewrites the recordings so that each clip plays its own WAV holding only the part it plays (clips playing the same part share one file), named `Optimized_NNN.wav`. Sample rate, bit depth and channels can each be chosen in the confirmation (all on by default): higher sample rates are lowered to the project's rate, 32-bit and float files become 24-bit, and mono-track clips become mono. Nothing is converted up: files at or below the project settings keep their values. Originals no longer used go to `Recordings/Unused/`. It cannot be undone, and it is not done while other `.mydaw` files share the folder.
 - **Move unused recordings**: WAV files in `Recordings/` that the project no longer uses (for example deleted punch takes) are moved to `Recordings/Unused/`. Files used by other `.mydaw` files in the same folder are kept.
 
 ### Audio devices
 - Separate input and output devices (for example, an audio interface for input and a monitor's speakers for output). While MyDAW runs, the chosen devices become the macOS default input and output; the previous defaults are restored on quit.
-- Changing a device or the sample rate offers to save and restart, and reopens the project after the restart.
+- The sample rate is saved with each project. While the project is open, the devices run at its rate, and their previous rate is restored on quit. Opening a project at another rate restarts MyDAW once (the window stays on screen meanwhile).
+- The buffer size is remembered and set again at the next launch.
+- Changing a device or the sample rate asks to save and restart (there is no Cancel, since the change already reached the devices), and reopens the project after the restart.
 - **CPU meter** in the status bar: audio processing load as a bar that turns from green through yellow and orange to red, and a red **● Dropout** mark for 3 seconds whenever the sound breaks up.
 
 ### Languages
@@ -166,7 +168,7 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 - A VST3 plug-in that changes its latency after it is loaded is not followed (AU plug-ins are).
 - Device, sample-rate and language changes take effect after MyDAW restarts (it offers to restart when you change them).
 - Switching input monitoring (I) during playback takes effect after you stop: when turned on, the input is heard once effect tails have faded; when turned off, the input stays audible until you stop (monitoring cannot be rewired while playing).
-- While MyDAW runs, the chosen devices are the macOS defaults, so other apps use them too. If MyDAW crashes the defaults are not restored; reset them in System Settings → Sound.
+- While MyDAW runs, the chosen devices are the macOS defaults and run at the project's sample rate, so other apps use them too. If MyDAW crashes neither is restored; reset them in System Settings → Sound and Audio MIDI Setup.
 - Plug-ins can be inserted, removed, reordered and copied only while stopped.
 - Mono-only plug-ins (such as Waves "(m)" versions) cannot be used, because the insert chain is stereo even on mono tracks. Use the stereo version ("(s)").
 - If a plug-in's own editor does not respond within 3 seconds, MyDAW shows a generic parameter view (Generic UI) instead.
@@ -176,4 +178,4 @@ The MP3 encoder is [LAME](https://lame.sourceforge.io/) 3.100 (LGPL). `scripts/b
 
 ## Version
 
-The About dialog shows version **3.0**. Version 3.0 adds five built-in effects (MyReverb, MyDelay, MyChorusPan, MyChannelStrip, MyMaximizer), copying a plug-in to another channel by dragging it, first-click response in all windows, and transport shortcuts (Space / R / ←) while a plug-in window is in front. Version 2.3 adds **Optimize Recordings to Minimum Size** (File menu) for sharing a project, and shows the file's format and size next to its name in the clip right-click menu. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.
+The About dialog shows version **3.1**. Version 3.1 saves the sample rate with each project (the devices follow it while the project is open) and remembers the buffer size, shows the sample rate in the clip right-click menu, lets you choose what Optimize Recordings converts, tints armed tracks red and blinks R while recording, and locks and blinks P and the punch range from the Record button until stop. Version 3.0 adds five built-in effects (MyReverb, MyDelay, MyChorusPan, MyChannelStrip, MyMaximizer), copying a plug-in to another channel by dragging it, first-click response in all windows, and transport shortcuts (Space / R / ←) while a plug-in window is in front. Version 2.3 adds **Optimize Recordings to Minimum Size** (File menu) for sharing a project, and shows the file's format and size next to its name in the clip right-click menu. Version 2.2 replaces the export save panel with an export dialog (file name, folder, format) and adds MP3 export (constant bitrate or VBR) and 16-bit WAV / 44.1–96 kHz export choices. Version 2.1 adds track folders, the track header right-click menu and the mixer's fold button, among others (a project with folders loses them when opened in v2.0). Version 2.0 opens and creates projects by their `.mydaw` file instead of a folder, so the file no longer has to be named after its folder.

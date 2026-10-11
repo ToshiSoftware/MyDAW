@@ -233,6 +233,7 @@
 "OK" = "OK";
 "Choose Recording File" = "録音ファイルを選択";
 "This recording file cannot be used.\n\nSample rate: %lld Hz (required: %lld Hz)" = "この録音ファイルは使用できません。\n\nサンプルレート: %lld Hz（必要: %lld Hz）";
+"The audio device could not be set to the project's sample rate of %lld Hz. The project plays at %lld Hz." = "オーディオ機器をプロジェクトのサンプルレート %lld Hz に設定できませんでした。プロジェクトは %lld Hz で再生されます。";
 "Could not read the recording file.\n\n%@" = "録音ファイルを読み込めませんでした。\n\n%@";
 "Project saved." = "プロジェクトを保存しました。";
 "Restart MyDAW to apply the new settings?" = "新しい設定を反映するために MyDAW を再起動しますか？";
@@ -303,7 +304,11 @@
 "Recordings cannot be optimized" = "録音ファイルを最適化できません";
 "Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@" = "同じフォルダにある他のプロジェクトが Recordings フォルダを共有しているため、最適化するとそれらのプロジェクトのクリップが再生できなくなります。\n\n%@";
 "Optimize recordings to minimum size?" = "録音ファイルを最小サイズに最適化しますか？";
-"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Recordingsフォルダ内の録音ファイルを最適化します。\nトリミングされて再生されない部分を削除し、クリップごとに録音ファイルを生成します。音質を維持したまま、最小サイズのフォーマットに変換します。\n使用されなくなった録音ファイルは、Unusedフォルダへ移動します。";
+"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder." = "Recordingsフォルダ内の録音ファイルを最適化します。\nトリミングされて再生されない部分を削除し、クリップごとに録音ファイルを生成します。現在のプロジェクト設定に従い、音質を維持したまま、最小サイズのフォーマットに変換します。\n使用されなくなった録音ファイルは、Unusedフォルダへ移動します。";
+"Down-convert the sample rate (to %lld Hz)" = "サンプリング周波数をダウンコンバートする（%lld Hz へ）";
+"Down-convert the bit depth (to 24-bit)" = "ビット数をダウンコンバートする（24bit へ）";
+"Down-convert the channels (stereo to mono on mono tracks)" = "CH数をダウンコンバートする（モノトラックのステレオをモノへ）";
+"Nothing is converted up. Files at or below the current project settings keep their original values." = "アップコンバートは行いません。現在のプロジェクト設定値と同じか、それ以下のファイルは、元の設定値を維持します。";
 "This cannot be undone. Do you want to continue?" = "この処理は取り消せません。実行しますか？";
 "Optimize" = "実行";
 "Recordings are already optimized" = "録音ファイルはすでに最適化されています";

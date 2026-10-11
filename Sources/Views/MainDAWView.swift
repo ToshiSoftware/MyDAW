@@ -216,6 +216,7 @@ public struct MainDAWView: View {
         .onAppear {
             guard !didInitializePlayhead else { return }
             didInitializePlayhead = true
+            projectState.notifyRelaunchingProcess()
             projectState.audioEngine.rewind(tracks: projectState.tracks)
             if let projectArg = CommandLine.arguments.dropFirst().first(where: { $0.hasSuffix(".mydaw") }) {
                 let url = URL(fileURLWithPath: projectArg)

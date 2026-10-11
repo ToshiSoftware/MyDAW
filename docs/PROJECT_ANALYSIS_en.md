@@ -1,6 +1,6 @@
-# MyDAW Project Analysis (v3.0)
+# MyDAW Project Analysis (v3.1)
 
-> Version covered: **3.0** (source as of 2026-10-09)
+> Version covered: **3.1** (source as of 2026-10-11)
 > Japanese edition: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 > Type- and function-level details: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 
@@ -38,9 +38,9 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChorusPan, MyChannelStrip and MyMaximizer (v3.0, 3.6). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0). A plug-in turned off passes its input through without relying on the plug-in's own bypass (`PluginSwitchAudioUnit`, v3.0, 3.2).
 - **Windows and keys** (v3.0): the main window and plug-in windows act on the first click even when another window (or another app) is in front; Space / R / ← work while a plug-in window is key (4.12).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
-- **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. Device or sample-rate changes offer to save and restart.
+- **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. The sample rate is saved per project; while running the devices are set to it and restored on quit. The buffer size is kept in UserDefaults and set again at launch. Device or sample-rate changes ask to save and restart (no Cancel).
 - **Song flags**: optional start / end flags on the ruler. Rewind goes to the start flag (again: to 0), playback and recording stop at the end flag, and the flags set the export range.
-- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (dialog with file name / folder / format; WAV 16/24-bit or MP3 CBR/VBR at 44.1/48/96 kHz, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), optimizing recordings for sharing (one minimum-format WAV per clip holding only the part it plays), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
+- **Other**: BPM / bars-and-beats ruler with a bouncing playhead ball, metronome (can be switched on/off while playing or recording), master export (dialog with file name / folder / format; WAV 16/24-bit or MP3 CBR/VBR at 44.1/48/96 kHz, sample-accurate range), project save/load, WAV import (with sample-rate / bit-depth conversion), optimizing recordings for sharing (one minimum-format WAV per clip holding only the part it plays; sample rate, bit depth and channel conversion can each be chosen, and nothing is converted up), moving unused recordings to `Recordings/Unused`, track colours, the operation manual (PDF on the web) from the Help menu.
 
 ---
 
@@ -206,6 +206,12 @@ inputNode (all device input channels)
 
 With input in use, AVAudioEngine ignores a device set on its I/O unit (including an aggregate device the app creates) and runs on **an aggregate of the macOS default input and default output (`CADefaultDeviceAggregate`)**. MyDAW therefore makes the chosen input and output the macOS defaults before building the engine, and restores the previous defaults in `shutdown()`. A switch while running does not reach the engine, so device and sample-rate changes offer a restart (4.6).
 
+#### Sample rate and buffer size
+
+- The **sample rate** is saved in the project (`ProjectDocument.sampleRate`). A device's nominal rate (`kAudioDevicePropertyNominalSampleRate`) is shared by all apps and outlives MyDAW, so like the default devices, the rate before MyDAW first changed it is recorded and put back in `shutdown()`.
+- A running AVAudioEngine goes on reporting the old rate for a while after the device rate changes (measured with a Studio 24c; the inputNode output format stays old even after an engine restart). A rate set before the engine first touches its nodes is read at once. So a project at another rate is opened by relaunching MyDAW with that rate; the new process sets it on the devices before building the engine. Saving and relaunching use the rate last set on the devices (`deviceSampleRate`), not the one the engine reports.
+- The **buffer size** (`kAudioDevicePropertyBufferFrameSize`) is a per-process request that ends with the process and is not kept by the system, so MyDAW saves it in UserDefaults (`MyDAW.bufferFrameSize`) and sets it again at launch.
+
 ### 3.3 VST3 hosting
 
 VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
@@ -236,6 +242,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - A project is a **`.mydaw` file**; recordings go to `Recordings/*.wav` next to it (for example `MySong/Ballad.mydaw` + `MySong/Recordings/`). The project folder is the `.mydaw` file's parent and its name need not match (since v2.0; v1.9 projects named after their folder open unchanged).
 - Several `.mydaw` files in one folder share its `Recordings/`. Recording names take the next free number, so nothing is overwritten, and moving unused recordings treats clips of every `.mydaw` in the folder as in use. Optimizing recordings is refused while other `.mydaw` files are there. Save Project As saves only into the same folder, so no recordings need copying and the relative paths stay valid.
 - `.mydaw` is JSON (`ProjectDocument` version 5). Audio is referenced by relative WAV paths, never embedded.
+- The sample rate (`sampleRate`, v3.1) is saved too. Older files lack it; they open at the current rate, which the next save records.
 - Folders (v2.1, version 5) are saved as `folders` (name, colour, open state, M/S and `position`, the index among all rows of tracks and folders) plus each track's `folderID`. Loading inserts the folders into the track list in increasing position to rebuild the rows. Version 4 and older files open without folders. Opened in v2.0, a v2.1 file loses its folders (the tracks stay).
 - AU state is stored as a binary plist of `fullStateForDocument`; VST3 state is the `getState` byte stream with `format: "vst3-state"`.
 - The master export's file name, format (`masterExportSettings`) and folder (`masterExportFolderPath`, relative when inside the project folder) are saved in the `.mydaw` as well.
@@ -302,8 +309,11 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 ### 4.6 Device changes and restart
 
 1. Changing the input/output device, sample rate or language and clicking Apply → devices and sample rate go through `applyAudioDevices` (sets the device sample rate and switches the macOS default input/output); the language through `AppLanguage.select`.
-2. On success `ProjectState.promptRestartForAudioSettings` asks Save and Restart / Restart Without Saving / Cancel.
-3. The restart runs `/bin/sh`, which waits for the current process to exit and then runs `open -n MyDAW.app --args <project.mydaw>`; the app then quits. The new process opens the project passed on the command line.
+2. On success `ProjectState.promptRestartForAudioSettings` asks Save and Restart / Restart Without Saving. There is no Cancel: the new settings are already on the devices and the engine after Apply, and MyDAW does not work properly with them until it restarts.
+3. `relaunch(projectURL:sampleRate:)` first stops its own audio (`shutdown(restoresDevices: false)`), then starts a new process with `open -n MyDAW.app --args <project.mydaw> --sample-rate <Hz> --original-default-devices … --original-sample-rates … --parent-pid <pid>`. The original default devices and rates are not put back but handed over in the arguments; the process that quits last puts them back.
+4. The old window stays until the new process shows its window and posts a distributed notification (`com.tokada.MyDAW.relaunched`), at most 15 seconds, so the screen does not go blank in between.
+5. The new process sets the rate from the arguments (else the one saved in the project passed) on the devices before building the engine, then opens the project.
+6. Opening a project (`loadProject(from:)`) whose saved rate differs from the current one relaunches the same way when the devices support it; otherwise it warns and opens at the current rate.
 
 ### 4.7 Input monitoring and send wiring
 
@@ -352,6 +362,12 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 
 - **First click**: AppKit delivers a click on a window that is not key (or while MyDAW is inactive) only when the clicked view's `acceptsFirstMouse` returns true; SwiftUI's hosting views and many plug-in views return false, so the first click only brought the window forward. The `leftMouseDown` local monitor in `MainDAWView` (`SpacebarHandler`) runs before the window dispatches the click: for the main window and plug-in windows it hit-tests the clicked view and, when that view declines the first mouse, replaces `acceptsFirstMouse` on its class with one returning true (`FirstMouse`, once per class).
 - **Shortcuts in plug-in windows**: plug-in windows carry the identifier `AudioEngineManager.pluginWindowIdentifier`. The `keyDown` monitor already handled R and ← for every window; Space was only the play button's SwiftUI `keyboardShortcut`, which needs the main window to be key, so the monitor now handles Space itself in plug-in windows. Keys go to text instead only while an editable text field or text view is first responder (`isEditingText`).
+
+### 4.13 Recording state display (v3.1)
+
+- An armed track has a light red background in its header and lane, and its R is lit red; while the track records, R blinks.
+- From the Record button until stop (the engine's `isRecordPass`, true also while waiting for punch-in), P cannot be pressed. With punch on, P blinks meanwhile, and the punch range on the ruler blinks outside the range and stays lit while recording inside it.
+- All blinking goes through one `Blinking` view (`TimelineView`). Its updates fall on half-second boundaries counted from a fixed reference date and the lit phase is read from the clock, so every blinking element switches together, even one that starts later.
 
 ## 5. Design decisions and lessons learned
 
@@ -410,8 +426,8 @@ AVAudioEngine and plug-in pitfalls found while building v1.4–1.9, and how they
 - **Build**: `Package.swift` is out of date; use `./scripts/build.sh` or `MyDAW.xcodeproj`. `MyDAW.xcodeproj` lists each source file, so a new Swift file must also be added to `project.pbxproj` (eight files were missing between v1.6 and v2.1, which broke the Xcode build).
 - **Xcode project and built-in effects**: `project.pbxproj` does not list `Sources/BuiltIn/MyPlugIn` or `BuiltInPlugins.swift` yet, so an Xcode build fails; build v3.0 with `./scripts/build.sh`. Files that MyPlugIn adds would have to be added to the Xcode project after every sync.
 - **First-click handling**: `FirstMouse` changes `acceptsFirstMouse` for the whole class of a clicked view (app-wide, until quit), not for that view alone.
-- **Device and sample-rate changes**: the engine and VST3 instances are built for the device and rate at launch, so changes apply after a restart (MyDAW offers one when you change them).
-- **macOS default devices**: while MyDAW runs, the chosen devices are the macOS default input/output and affect other apps too. They are not restored after a crash.
+- **Device and sample-rate changes**: the engine and VST3 instances are built for the device and rate at launch, so changes apply after a restart (MyDAW offers one when you change them). Opening a project at another rate also takes one restart.
+- **macOS default devices**: while MyDAW runs, the chosen devices are the macOS default input/output and run at the project's sample rate, which affects other apps too. Neither is restored after a crash.
 - **Shaped pieces of mismatched-rate audio**: imports are converted, but audio at a rate different from the device (for example clips recorded before a sample-rate change) has shaped and plain pieces converted separately, which can leave a tiny step at the join.
 - **Export time**: the master export captures in real time, so it takes as long as the song (then converts). MP3 files get no ID3 tag (title etc.).
 - **Heavy work on the main thread**: import conversion and Reverse run synchronously on the main thread, so long files briefly pause the UI.

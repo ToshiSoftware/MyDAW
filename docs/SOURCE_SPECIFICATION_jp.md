@@ -1,6 +1,6 @@
-# MyDAW ソースコード仕様書（v3.0）
+# MyDAW ソースコード仕様書（v3.1）
 
-> 対象バージョン: **3.0** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
+> 対象バージョン: **3.1** ／ 英語版: [SOURCE_SPECIFICATION_en.md](SOURCE_SPECIFICATION_en.md)
 > システム全体の構成・信号経路・設計判断: [PROJECT_ANALYSIS_jp.md](PROJECT_ANALYSIS_jp.md)
 
 本書は `Sources/` と `VST3Host/` の各ファイル（MyPlugIn からコピーした `Sources/BuiltIn` の内蔵エフェクトは 3 章で概要のみ）について、責務、型、主要なプロパティとメソッドの契約、スレッド上の前提、副作用を記載します。private なメソッドは、処理の流れを理解するのに必要なものだけを掲載します。
@@ -26,7 +26,7 @@
 - **`init()`**: 最初に `raiseOpenFileLimit()` で同時に開けるファイル数の上限（RLIMIT_NOFILE の soft 値、既定 256）を `kern.maxfilesperproc` と hard 値の範囲で最大 65,536 まで上げる（再生用にクリップごとに WAV を開いたままにするため、クリップが数百になると上限を超え、AppKit がメニューの部品を読めずにクラッシュした）。次に `PluginManager.runVST3ScanChildIfRequested()` を呼ぶ。起動引数に `--scan-vst3 <path>` があれば VST3 を列挙して JSON を標準出力へ書き、`exit(0)` する（子プロセスモード）。通常起動時はマイク権限を要求する。
 - **`body`**: `WindowGroup` に `MainDAWView` を置き、メニューを構成する。ウィンドウは `.hiddenTitleBar`（タイトルバーは透明で、内容がその下に広がる）と `.windowResizability(.contentMinSize)`（内容の最小サイズより小さくできない）。`.handlesExternalEvents(matching: [])` で、Finder から開いたファイルごとに SwiftUI が新しいウィンドウを作るのを防ぐ。
 - **Finder から開く**: Info.plist の `CFBundleDocumentTypes`／`UTExportedTypeDeclarations` で `.mydaw`（`com.tokada.mydaw.project`、`public.data`／`public.content` に準拠。`public.json` にすると Finder が中身のテキストをサムネイルにしてアイコンが出ない）を宣言し、`MyDAWApplicationDelegate.application(_:open:)` が受け取る（複数なら最後の 1 つ）。ウィンドウの `onAppear` で `openProjectFile` が設定されるまでは `pendingProjectURL` に保持し、設定後に `ProjectState.openProjectFile(_:)` を呼ぶ。`build.sh` は署名後に `lsregister -f` でビルドを LaunchServices に登録する。書類のアイコンは `DocumentIcon.icns`（`scripts/make-document-icon.swift` が `AppIcon.iconset` から、折り返し付きの白い書類の中央にアプリアイコンを角丸で描いて作る。アプリアイコンを変えたら再実行する）。
-  - About（バージョン表示。Info.plist が無い場合の既定値は `3.0`）
+  - About（バージョン表示。Info.plist が無い場合の既定値は `3.1`）
   - File: New Project…（⌘N）、Open Project…（⌘O）、Save Project…（⌘S）、Save Project As…（⇧⌘S）、区切り線、Export Master Mix…、区切り線、Optimize Recordings to Minimum Size、Move Unused Recordings to Unused Folder
   - Edit: Undo Clip Edit（⌘Z）、Redo Clip Edit（⇧⌘Z／⌘Y）
   - Help: MyDAW Help（⌘?）。`AppLanguage.current` に応じて `https://toshi.life.coocan.jp/note/OperationManual_{jp,en}.pdf` を `NSWorkspace.open` で開く（開くアプリはシステム任せ）
@@ -133,7 +133,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 ### `ProjectDocument.swift`（`.mydaw` JSON）
 | 型 | 主な内容 |
 | --- | --- |
-| `ProjectDocument` | `version`（現行 5）、ズーム、スクロール、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、フォルダ（`folders`、v2.1）、FX、マスタープラグイン、プラグイン状態、パンチ範囲、曲の範囲、マスター書き出しの設定（ファイル名・形式・保存先） |
+| `ProjectDocument` | `version`（現行 5）、ズーム、スクロール、プレイヘッド、BPM、メトロノーム、マスター音量、表示倍率、トラック、フォルダ（`folders`、v2.1）、FX、マスタープラグイン、プラグイン状態、パンチ範囲、曲の範囲、マスター書き出しの設定（ファイル名・形式・保存先）、サンプルレート |
 | `TrackDocument` | 名前、チャンネル、入力、R/M/S、**I（`isInputMonitoring`）**、音量、パン、高さ、色、所属フォルダ（`folderID`、v2.1）、クリップ、プラグイン、Send |
 | `TrackFolderDocument` | フォルダの ID・名前・色・開閉（`isOpen`）・M／S と、トラックとフォルダを合わせた行の中の位置 `position`。`makeFolder()` で `TrackFolder` に戻す。読み込みでは位置の小さい順にトラック列へ差し込む |
 | `ClipDocument` | ID、開始位置、ソース位置、長さ、元の長さ、ゲイン、ミュート、フェード、フェードカーブ（`fadeInCurve`／`fadeOutCurve`、読めない場合は `.auto`）、ファイルパス（プロジェクトからの相対） |
@@ -143,6 +143,7 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 | `SongRangeDocument` | 曲の開始・終了フラグ。`startBeat`、`endBeat`（どちらも省略可） |
 | `ProjectDocument.masterExportFileName` | マスター書き出しで最後に使ったファイル名（拡張子付き、省略可）。ダイアログには拡張子を除いて表示。無ければ `<プロジェクト名>_Master_Mix` |
 | `ProjectDocument.masterExportSettings` | （v2.2）マスター書き出しで最後に使った `ExportSettings`（省略可。最初の書き出しまでは無く、そのときダイアログはハードウェアのレートが 44.1／48／96 kHz ならそれで始まる） |
+| `ProjectDocument.sampleRate` | （v3.1）プロジェクトのサンプルレート（省略可。無ければ今のレートで開き、次の保存で記録）。保存時は `AudioEngineManager.deviceSampleRate` |
 | `ProjectDocument.masterExportFolderPath` | （v2.2）書き出し先フォルダ（省略可。nil はプロジェクトのフォルダ）。プロジェクトのフォルダ内なら相対パス、フォルダ自体は `.`、外なら絶対パス。存在しないフォルダはプロジェクトのフォルダに戻す |
 | `ColorDocument` | RGBA |
 
@@ -160,13 +161,14 @@ L/R のピーク値。`init(buffer:)` は PCM バッファから各チャンネ�
 - **パンチ**: `setPunchRange`、`setPunchStartBeat`、`setPunchEndBeat`、`setPunchEnabled`。
 - **録音時のロールバック**: `recordRollbackEnabled`（UserDefaults `MyDAW.recordRollback`）と `recordRollbackBars`（`MyDAW.recordRollbackBars`、初期値 2、`recordRollbackBarsRange` 1...16）。`toggleTransport` が「小節数 × 4 × 1 拍の秒数」（OFF なら 0）をエンジンの `recordRollbackDuration` に渡す。
 - **未使用の録音ファイル**: `moveUnusedRecordings()`（ファイルメニュー。`canMoveUnusedRecordings` はプロジェクトが開いていて、停止中で、録音の確定処理中でないこと）。まず保存の確認（プロジェクトを保存して実行／キャンセル）を出して保存し、そのあと Recordings 直下の WAV のうち、クリップとクリップボードのどちらからも参照されていないものを `Recordings/Unused` へ移動し（同名は番号付き）、NSAlert で一覧を表示します。同じフォルダーのほかの `.mydaw`（`clipPathsOfOtherProjects()` で `ProjectDocument` をデコード）のクリップも使用中として扱い、読めないファイルがあれば何も移動せずにエラーを表示します。移動したファイルが Undo／Redo のスナップショットに含まれていた場合は、両方の履歴を消去します。
-- **録音ファイルの最適化**: `optimizeRecordings()`（ファイルメニュー。`canOptimizeRecordings` は `canMoveUnusedRecordings` と同じ）。同じフォルダーにほかの `.mydaw` があれば（`otherProjectFileNames()`）、Recordings を共有しているため何もせずに警告します。確認（実行／キャンセル）のあと保存し、全トラックのクリップについて、`ClipAudioProcessing.extractDecision()`（`.nothing`／`.keep`／`.extract(ExtractPlan)`）で、元ファイルの再生範囲（`sourceStartTime` の切り捨て〜終端の切り上げのフレーム）、チャンネル数（モノラルトラックは 1、ステレオトラックは元ファイルの数で最大 2）、サンプルレート（`hardwareSampleRate` より高いときだけ下げる）、ビット数（16-bit 以下の整数は 16、それ以外は 24）を決めます。これらが元ファイルと同じでファイル全体を使うクリップはそのまま残し、ほかは `RecordingExtract`（元ファイル・範囲・チャンネル数が同じなら共有）ごとに `ClipAudioProcessing.writeExtract()` で `Optimized_NNN.wav` を書きます。モノラル化は再生と同じ (L+R)/2、SRC は `AVAudioConverter`（品質 max）。書き込みはバックグラウンドで行い、キャンセルできる進捗パネル（`RecordingOptimizeProgress`、`NSApp.runModal`）を表示します。失敗・キャンセル時は書いたファイルをすべて消して何も変えません。成功したら各クリップの `sourceStartTime` を 1 サンプル未満の端数にしてファイルを差し替え、Undo／Redo とクリップボードを消去し、`syncTracks` して保存します。そのあと、使われなくなった元ファイル（Recordings 直下のもの）を `moveToUnusedFolder()` で `Recordings/Unused` へ移動し、生成数と処理前後の合計サイズを表示します。
+- **録音ファイルの最適化**: `optimizeRecordings()`（ファイルメニュー。`canOptimizeRecordings` は `canMoveUnusedRecordings` と同じ）。同じフォルダーにほかの `.mydaw` があれば（`otherProjectFileNames()`）、Recordings を共有しているため何もせずに警告します。確認（実行／キャンセル。アクセサリにチェックボックス 3 つ — サンプリング周波数、ビット数、CH 数。毎回すべて ON から始まる — と、アップコンバートしない旨の注記）のあと保存し、全トラックのクリップについて、`ClipAudioProcessing.extractDecision()`（`.nothing`／`.keep`／`.extract(ExtractPlan)`）で、元ファイルの再生範囲（`sourceStartTime` の切り捨て〜終端の切り上げのフレーム）、チャンネル数（モノラルトラックは 1、ステレオトラックは元ファイルの数で最大 2）、サンプルレート（`hardwareSampleRate` より高いときだけ下げる）、ビット数（24-bit 以下の整数はそのまま、それ以外は 24-bit 整数）を決めます。チェックを外した項目（`reducesSampleRate`／`reducesBitDepth`／`reducesChannels`）は元ファイルの値を保ちます（ビット数は浮動小数点も含めて元の形式のまま。`writeExtract` の `isFloat`）。どの項目もアップコンバートはしません。これらが元ファイルと同じでファイル全体を使うクリップはそのまま残し、ほかは `RecordingExtract`（元ファイル・範囲・チャンネル数が同じなら共有）ごとに `ClipAudioProcessing.writeExtract()` で `Optimized_NNN.wav` を書きます。モノラル化は再生と同じ (L+R)/2、SRC は `AVAudioConverter`（品質 max）。書き込みはバックグラウンドで行い、キャンセルできる進捗パネル（`RecordingOptimizeProgress`、`NSApp.runModal`）を表示します。失敗・キャンセル時は書いたファイルをすべて消して何も変えません。成功したら各クリップの `sourceStartTime` を 1 サンプル未満の端数にしてファイルを差し替え、Undo／Redo とクリップボードを消去し、`syncTracks` して保存します。そのあと、使われなくなった元ファイル（Recordings 直下のもの）を `moveToUnusedFolder()` で `Recordings/Unused` へ移動し、生成数と処理前後の合計サイズを表示します。
 - **開始・終了フラグ**: `songRange`（変更時にエンジンの `songEndTime` を更新）、`songStartTime`／`songEndTime`（秒）、`setSongStart(time:)`／`setSongEnd(time:)`（nil で削除。`minimumSongLengthBeats` 以上離す）、`canPlaceSongStart(at:)`／`canPlaceSongEnd(at:)`。`toggleTransport(recordArmedTracks:)` はパンチ範囲・ロールバック・終了位置をエンジンに渡して再生／録音を開始・一時停止します（再生・録音ボタン、Space、R から）。`rewindToSongStart()` は開始フラグへ、フラグ上かそれより前なら 0 へ戻ります。エンジンの `onReachSongEnd` から `stop(tracks:)` を呼びます。
 - **プラグイン**: トラック用 `insertPlugin(_:into:)`／`removePlugin(_:from:)`／`togglePlugin(_:on:)`、FX 用 `…intoFX:`／`…fromFX:`／`…onFX:`、マスター用 `insertMasterPlugin`／`removeMasterPlugin`／`toggleMasterPlugin`、`openPluginUI`。
 - **プラグインの移動とコピー**（v3.0。`movePlugin`／`moveMasterPlugin` を置き換え）: `dropPlugin(_:before:on:)` は、ドラッグされたプラグインの ID、その前に入れるプラグイン（nil は末尾）、落とした先の `PluginChain`（`.track(UUID)`、`.fx(UUID)`、`.master`）を受け取る。`pluginChain(containing:)` で元のチェーンを探し、同じチェーンなら移動、別のチェーンなら `audioEngine.copyPluginStates([元: コピー])` の後に `newInstance()` のコピーを挿入して元は残す。最後に `setPlugins(_:on:)` と `syncTracks`。再生中・録音中は何もしない。
 - **FX**: `addFXChannel()`（名前は既存の "FX 数字" の最大値 + 1、色は最初の FX と同じ）、`renameFXChannel(id:to:)`（空欄は無視）、`removeFXChannel(id:)`（UI からは `confirmRemoveFXChannel(id:)` 経由。確認は NSAlert で、Return／Esc はキャンセル側）、`setSend(trackID:fxChannelID:level:)`。
 - **ファイル**: `createNewProject`（NSSavePanel で保存先と名前を指定。`canCreateDirectories`、展開表示、拡張子 `.mydaw`。選んだフォルダーに `.mydaw` と `Recordings/` を作成）、`loadProject`（NSOpenPanel で `.mydaw` ファイルを選び、その親フォルダーをプロジェクトフォルダーとする）。両パネルの初期位置は直前のプロジェクトのフォルダーの 1 つ上（`projectPanelStartDirectory`）。`openRecentProject(_:)`（ファイルの存在を確認し、そのフォルダーで `loadProject(from:projectFolderURL:)`）、`saveProject`（書き込みに成功すると `RecentProjects.noteSaved`。`loadProject(from:)` は成功時に `noteOpened`）、`saveProjectAndShowConfirmation`、`openProjectFile(_:)`（Finder から開く。アプリを前面に出し、同じファイルが開いていれば何もしない。再生・録音中はエラー。プロジェクトが開いていれば保存／保存しない／キャンセルを確認してから `loadProject(from:projectFolderURL:)`）、`saveProjectAs()`（NSAlert のテキスト欄で名前だけを入力し、同じフォルダーの `<名前>.mydaw` へ保存して `currentProjectURL` を切り替える。空・「.」始まり・「/」「:」を含む名前は拒否、既存ファイルは置き換えを確認、失敗時は元の URL に戻す）、`importAudioFile(_:intoTrackId:)`（今のサンプルレートの 24-bit 整数 PCM ならそのままコピー、それ以外は `ClipAudioProcessing.writeConverted` で変換して `Recordings/` へ保存）、`locateClipFile`（サンプルレートが一致するファイルのみ）。
-- **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving／Cancel を確認）、`relaunch()`（`/bin/sh` で現プロセスの終了を待ち、`open -n` でプロジェクトを引数に再起動）。
+- **再起動**: `promptRestartForAudioSettings()`（デバイス・サンプルレート・言語の変更後に Save and Restart／Restart Without Saving を確認。Cancel は無い。保存に失敗したら再度確認）、`relaunch(projectURL:sampleRate:)`（オーディオを `shutdown(restoresDevices: false)` で止め、`/usr/bin/open -n` でプロジェクト・`--sample-rate`・元のデバイス設定・`--parent-pid` を引数に新しいプロセスを起動。新しいプロセスの分散通知 `com.tokada.MyDAW.relaunched` か 15 秒で終了。その間ウィンドウはクリックを受けない）、`notifyRelaunchingProcess()`（`MainDAWView` の初回 `onAppear` から。`--parent-pid` があれば 0.3 秒後に通知）。
+- **プロジェクトのサンプルレート**: `launchArguments()` が起動引数の `.mydaw` と `--sample-rate`（無ければその `.mydaw` の `sampleRate`）を読み、`AudioEngineManager` の生成時に渡す。`loadProject(from:)` は読み込んだ直後に `prepareSampleRate(for:at:)` を呼び、保存されたレートが今のレートと違えば、デバイスが対応していれば（`supportsSampleRate`）そのレートで再起動して `false`（読み込み中止）、対応していなければ警告して今のレートで続ける。起動引数のプロジェクト（パスは合成済みの正規化で比較）は 1 回だけ再起動の対象外で、起動時に指定されたレートへの再起動もしない（デバイスが切り替わらないときのループ防止）。再起動を始めたあとは `isRelaunching` でプロジェクトの読み込みを止め、ローカルのイベントモニターでキーとクリックを捨て、エンジンは `shutdown()` 後の再生開始を拒否する（`isShutDown`）。
 - **書き出し**: `beginMasterExportDialog`（保存パネルを出さず、ダイアログを直接開く）、`masterExportSettings`／`masterExportBaseName`／`masterExportFolder`（ダイアログの選択内容）、`chooseMasterExportFolder`（NSOpenPanel、フォルダのみ）、`exportMasterMix(startTime:endTime:)`、`cancelMasterExport`。`exportMasterMix` は名前を確認し（「別名で保存」と同じ規則。入力された .wav／.mp3 は除く）、形式の拡張子を付け、同名ファイルがあれば置き換えを確認してから、(1) `AudioEngineManager.exportMasterMix` でマスターを一時ファイル（`NSTemporaryDirectory` の 32-bit float CAF）へリアルタイムで取り込み、(2) 切り離したタスクで `ExportEncoder.encode` を実行する。`masterExportStage`（`.capturing`／`.converting`）と `masterExportProgress`（0〜1）がダイアログの進捗バーに使われる。キャンセル・失敗時は書きかけの出力を削除し、一時ファイルは常に削除する。
 - **表示**: `zoomIn`、`zoomOut`、`setPixelsPerSecond(_:)`（再生位置を基準）、`setPixelsPerSecond(_:anchorOffset:)`（ポインター位置を基準、ホイール・ピンチ用。どちらもスクロール時刻が変わらなくても `setScrollTimeAfterZoom` でトラックをスクロールする）、`minimumPixelsPerSecond`／`maximumPixelsPerSecond`（5／3200）、`snappedTimelineTime`（1 拍単位）。
 
@@ -241,7 +243,7 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター、プラグイン生成と GUI、書き出しを管理する中心クラス（@MainActor、`NSWindowDelegate`）。
 
 #### 公開状態（抜粋）
-`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`currentTime`（値は別オブジェクト `transportClock`（`TransportClock`）が持つ。再生中は毎秒 60 回変わり、エンジンから通知するとエンジンを監視する全ビュー（アレンジ・ミキサー・トランスポート）が再描画されるため。監視するのは `PlayheadLine`、`PlayheadBall`、`TransportTimeText`、録音中のテイク（`LiveRecordingClipView`）だけで、自動スクロールは `onReceive` で受け取る）、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`（値は別オブジェクト `masterVolumeState`。ドラッグのたびにエンジン全体を通知しないため。`MasterFaderColumn` だけが監視）、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
+`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`isRecordPass`（v3.1。録音を始めてから停止するまで true。パンチインを待つ間も含む）、`currentTime`（値は別オブジェクト `transportClock`（`TransportClock`）が持つ。再生中は毎秒 60 回変わり、エンジンから通知するとエンジンを監視する全ビュー（アレンジ・ミキサー・トランスポート）が再描画されるため。監視するのは `PlayheadLine`、`PlayheadBall`、`TransportTimeText`、録音中のテイク（`LiveRecordingClipView`）だけで、自動スクロールは `onReceive` で受け取る）、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`（値は別オブジェクト `masterVolumeState`。ドラッグのたびにエンジン全体を通知しないため。`MasterFaderColumn` だけが監視）、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
 
 #### ノード構成（トラックごと）
 | 辞書 | 役割 |
@@ -263,7 +265,7 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 #### 主な公開メソッド
 - **グラフ同期**: `syncTracks(_:fxChannels:)`（トラック・FX・マスター・Send・インプットモニターを差分更新）、`syncTracks(_:fxChannels:masterPlugins:)`、`syncMasterPlugins`、`syncAfterClipEdit`（再生中は `rescheduleEditedClips` で、`ClipScheduleSignature` が変わったクリップと、それに重なるクリップだけを、再開時刻の再生位置から予約し直します。先に全トラックで「なくなったクリップ」のプレイヤーを止めてから予約するため、上のトラックへ移したクリップも止められません。ほかのクリップは鳴り続けます）、`updateMixerLevels`（音量・PAN・Send・FX）、`updateSendLevel`、`setClipMuted`、`setPluginEnabled`。
 - **トランスポート**: `startPlayOrRecord(tracks:fxChannels:recordArmedTracks:)`（再生／録音開始。再生中なら停止）、`stop(tracks:)`、`rewind(tracks:to:)`、`seek(to:)`、`setPunchRange`（ロールバックの回の間は無視）。`recordRollbackDuration`（秒。`toggleTransport` が設定）: armed トラックがありパンチ範囲がない録音のとき、`beginPlayOrRecord` がその回を「再生位置でパンチイン、パンチアウト +∞」の録音にし（`isRollbackPass`）、再生位置をその分戻す。`stop` で一時的な範囲を消す。`recordingTakePunchIn`／`recordingTakePunchOut`: 録音中のテイクのパンチ範囲（`recordingTakePunchTrim`）。ファイル確定まで保持し、波形レーンはその範囲内だけを描く。`songEndTime`: 再生位置タイマーがこれをまたぐと `onReachSongEnd` を呼びます（それより前から再生を始めた場合のみ）。この停止では、録音したクリップを終了位置で切り揃え、再生位置を終了位置に置きます。
-- **デバイス**: `applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（デバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
+- **デバイス**: `init(inputDeviceID:outputDeviceID:sampleRate:)`（`--original-*` 引数で前のプロセスの元設定を引き継ぎ、`bindIODevice` のあと、ノードに触れる前にサンプルレートを設定）、`applyAudioDevices(inputDeviceID:outputDeviceID:sampleRate:)`（`setDeviceSampleRate` でデバイスのサンプルレートを設定し、デバイスが変わった場合は `bindIODevice`。成功したレートを `requestedSampleRate` に記録）、`deviceSampleRate`（最後にデバイスへ設定したレート。無ければ `hardwareSampleRate`。動作中のエンジンは変更後もしばらく古いレートを返すため、保存・再起動・設定画面はこちらを使う）、`supportsSampleRate`（`kAudioDevicePropertyAvailableNominalSampleRates`）、`applyInputBufferFrameSize`、`applyAutomaticTimingCompensation`。
 - **プラグイン**: `openPluginUI(pluginID:)`、`isPluginUnavailable`、`capturePluginStates`、`setSavedPluginStates`、`prepareForPluginGraphRestore`、`copyPluginStates(_:)`（元の現在の状態（動いているインスタンスを優先、無ければ保存済みのもの）を、コピーの ID で `savedPluginStates` に入れる。コピーのインスタンスは生成時にこれを読み込む）。
 - **`pluginWindowIdentifier`**（static、v3.0）: すべてのプラグインのウインドウに付ける `NSUserInterfaceItemIdentifier`。`MainDAWView` のモニターが見分けるのに使う。
 - **その他**: `exportMasterMix(to:startTime:endTime:tracks:fxChannels:progress:)`（マスター経路を実時間でハードウェアのレートの 32-bit float ファイルへ。取り込んだ割合を通知し、レートを返す）、`shutdown()`（エンジン停止、VST3 解放、macOS 既定入出力デバイスの復元）、録音フォルダ関連。
@@ -274,6 +276,8 @@ AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター
 | `startMetronome(at:)` | クリックを 256 拍分予約し、最後のクリックで続きを予約。トランスポート開始時はその開始時刻と位置から、再生中の ON・BPM 変更・続きの予約では、頭が欠けずに鳴らせる最も早い時刻（`earliestPlayerStartHostTime`）とその時刻のトランスポート位置（`transportPosition(atHostTime:)`）から、次の拍に合わせる |
 | `setupEngine()` | 入力フォーマット取得、マスター経路と最終メーターの構築（2 回目以降はマスター用ミキサーと最終メーターを作り直さずに使い、マスターのプラグインのチェーンを `reconnectPluginChain` でつなぎ直す。バッファサイズの変更などで呼ばれる）、クリック、入力タップ、インプットモニター接続、スライス上限引上げ、エンジン開始 |
 | `bindIODevice(inputDeviceID:outputDeviceID:)` | 選択デバイスを macOS の既定入力・既定出力に設定する（入力を使う AVAudioEngine は既定入出力の集約デバイスで動作するため）。初回に元の既定を記録し、`restoreOriginalDefaultDevices()` が `shutdown()` で戻す |
+| `setDeviceSampleRate(_:deviceIDs:)` | デバイスの公称レートを設定し、デバイスごとに最初に変える前のレートを `originalNominalSampleRates` に記録する。変更は非同期なので、読み返して一致するまで最大 2 秒待つ。`restoreOriginalSampleRates()` が `shutdown()` で戻す |
+| `originalDeviceSettingsArguments()`／`restoreOriginalDeviceSettings()` | 再起動先へ渡す元の既定デバイスとレート（`--original-default-devices`、`--original-sample-rates`）／その両方を戻す（再起動に失敗したとき）。`shutdown(restoresDevices: false)` は戻さずに忘れる |
 | `startMeterTimer` | 30 Hz でピークを集計し通知。マスターのレベルは別オブジェクト `masterMeter`（`TrackMeter`）が持ち、変わったときだけ通知する（`MasterFaderColumn` だけが監視）。`masterPeak` は通知しない内部値 |
 | `checkTrackMeters`、`noteGraphEvent`、`writeMeterRecoveryLog` | トラックメーターの監視。30 Hz タイマーで、再生・録音中かつエンジンが動作中で、マスターのタップ回数が直近 0.5 秒以内に増えているときに、`RenderPeakMeter` の描画回数（無音でも増える）が 1 秒以上増えないトラックがあれば、状態と直近 60 件のエンジン・配線のイベント（エンジンの停止／開始、`AVAudioEngineConfigurationChange`、`setupEngine`、`syncTracks`、分岐の配線のやり直し・延期など）を `~/Library/Logs/MyDAW/MeterRecovery.log` に追記する（記録のみ。1 回の再生でトラックごとに 1 回。1 MB を超えたら古い分を捨てて約 0.5 MB に） |
 | `wireSend` | Send のゲインミキサーを FX 入力へ接続。`wiredSendTargets` で接続先を覚え、変わったときだけつなぎ直す（毎回の再接続はインプットモニター有効時に `mixingDest` 例外になるため） |
@@ -390,7 +394,7 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 `VST3HostBridge.enumerate(bundleURL:)` は C++ の `MyDAWVST3EnumerateAudioEffects` を呼び、UID・名前・ベンダー・バージョンを返す（子プロセスでのみ使用）。`VST3Host.swift` はホスト抽象のプロトコルと未対応実装。
 
 ### `AudioDeviceManager.swift`
-Core Audio HAL から入出力デバイス、入力チャンネル（モノ／ステレオ候補）、サンプルレート、バッファサイズを取得・設定。選択デバイスは UID で UserDefaults に保存。エンジンへの実際の割り当ては `AudioEngineManager.bindIODevice`（macOS 既定デバイスの切り替え）が行う。
+Core Audio HAL から入出力デバイス、入力チャンネル（モノ／ステレオ候補）、サンプルレート、バッファサイズを取得・設定。選択デバイスは UID で UserDefaults に保存。バッファサイズはプロセスごとの要求で終了とともに消えるため、`setBufferFrameSize` が成功したら UserDefaults（`MyDAW.bufferFrameSize`）に保存し、`ProjectState` の初期化で `restoreSavedBufferFrameSize()` が設定し直す。エンジンへの実際の割り当ては `AudioEngineManager.bindIODevice`（macOS 既定デバイスの切り替え）が行う。
 
 ### `AudioDiskWriter.swift`
 録音バッファをコピーしてシリアルキューで 24-bit WAV へ書き込む。ファイル名（`RecordingFileName`）は `<トラック名>_<テイク番号>.wav`（例 `Bass_001.wav`）。トラック名は、どの言語の文字も残し（NFC に正規化）、空白と `_` の連続は `_` 1つにまとめ、その他の記号は取り除き、40 文字で切ります（何も残らなければ `Track`）。テイク番号は、Recordings と Recordings/Unused で使われている最大の番号 ＋ 1。ファイルは `init` で作られるので、同じ名前のトラックを同時に録音しても番号は重なりません。逆再生は `Reverse_<トラック名>`、取り込みは `Import` を元にした名前（`Import_001.wav`）。（v1.8 より前は `Rec_<トラック名>_<ID6桁>_<ch>ch_<rate>_24bit_<日時>.wav`、`Import_<名前>_<16進8桁>.wav`、`Reverse_<ファイル名>_<16進8桁>.wav`）`finalize()` で確定して URL を返す。
@@ -419,14 +423,14 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 ステータスバーの「CPU [バー] 34% ●音飛び」。`AudioLoadMonitor` を監視（再描画はこのビューだけで最大 10 Hz）。バー（64 × 7 pt のカプセル、0.1 秒のリニアアニメーション）の色は緑（0）→黄（0.6）→オレンジ（0.8）→赤（1.0）を補間。数値は 100% を超えることもある。音飛びマークは非表示でも場所を確保（opacity）し、表示がずれない。ツールチップは表示時に文字列を作る AppKit のツールチップ（`DynamicToolTip`、`NSViewToolTipOwner`）で、頻繁な再描画でも表示される。
 
 ### `TransportBarView.swift`
-- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音。R キー）、P（パンチ有効化）、ロールバック（↺ と小節数。`recordRollbackEnabled` を切り替え。パンチ ON の間は薄く表示、再生中は無効。ツールチップは `rollbackHelp`）、メトロノーム（再生・録音中も切り替え可。右クリック（`RightClickCatcher`：ローカルイベントモニター）でクリックの音量の縦フェーダー `ClickVolumeFader` をポップオーバーで開き、`metronomeVolume` を再生中も即時変更）、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。
+- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音。R キー）、P（パンチ有効化）、ロールバック（↺ と小節数。`recordRollbackEnabled` を切り替え。パンチ ON の間は薄く表示、再生中は無効。ツールチップは `rollbackHelp`）、メトロノーム（再生・録音中も切り替え可。右クリック（`RightClickCatcher`：ローカルイベントモニター）でクリックの音量の縦フェーダー `ClickVolumeFader` をポップオーバーで開き、`metronomeVolume` を再生中も即時変更）、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。 P は `isRecordPass` の間は無効で、パンチが ON ならその間 `Blinking` で点滅する（v3.1）。
 - 表示: TIME（時間／小節・拍）、TEMPO（BPM 入力 20〜400）、FORMAT（24-bit WAV とサンプルレート）。幅は中身に合わせる。
 - バー全体は左寄せで、ウィンドウより幅が広いときは右端から切れる（`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` と `clipped()`）。
 - 右側: 時間軸ズーム、トラック高さ倍率、波形縦倍率、ルーラー切替（v2.1 でマスター音量のスライダーは削除。マスター音量はミキサーの MASTER フェーダーで操作）。
 - **`BufferSettingsView`**（歯車、見出し「Settings」。`projectState` も受け取る）: `Divider` で区切った大項目ごとに `sectionHeader` と説明文（`note`）— 環境（言語、`AppLanguage`）、オーディオ（録音フォルダ、入力／出力デバイス、サンプルレート 44.1〜96 kHz、バッファサイズ）、補正（録音遅延（オプション）、クリックタイミング）、その他（クリックの音量、録音時のロールバックの小節数。`commitRollbackBars` が Return か適用で 1〜16 に収める）。言語・デバイス・サンプルレートの変更が適用されると `onAudioDevicesChanged` で再起動の確認を呼ぶ。
 
 ### `ArrangerView.swift`
-トラックヘッダーと波形レーンの並び（`visibleRows`。フォルダの行は `FolderHeaderView` と空のレーン `FolderLaneView`。フォルダ内のトラックは `folderIndent` だけ右へずらし、左にフォルダ色の線 `FolderIndentGuide`）、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、＋メニュー（トラックを追加／フォルダを追加）、自動スクロール（`autoScrollEnabled` が ON のときだけ、再生位置が右端 10% に入ると先へ送る）、Delete キー、枠選択の矩形と範囲選択の帯の表示。
+トラックヘッダーと波形レーンの並び（`visibleRows`。フォルダの行は `FolderHeaderView` と空のレーン `FolderLaneView`。フォルダ内のトラックは `folderIndent` だけ右へずらし、左にフォルダ色の線 `FolderIndentGuide`）、ルーラー（秒または小節・拍、クリックでシーク）、プレイヘッド、パンチ範囲（ルーラー上の左右ハンドルを拍単位でドラッグ）、＋メニュー（トラックを追加／フォルダを追加）、自動スクロール（`autoScrollEnabled` が ON のときだけ、再生位置が右端 10% に入ると先へ送る）、Delete キー、枠選択の矩形と範囲選択の帯の表示。 パンチ範囲のバー（`PunchRangeOverlay`）は、`isRecordPass` の間、パンチイン前・パンチアウト後は点滅し、範囲内で録音中（`isPunchRecording`）は点灯する（v3.1）。R が ON のトラックの波形レーン（`WaveformLaneView`）は背景を赤みのある色にする。
 - **ヘッダのツールチップ（`TrackRowsPointer`、`trackRowHelp`）**: SwiftUI は、縦スクロールでミキサーの下に隠れたヘッダの `.help` を、ミキサーの上にポインタがあるときにも出す。トラック行のスクロールビューの `onHover` で `TrackRowsPointer.isInside` を設定し、環境値 `trackRowsPointer` で渡す。`TrackHeaderView`／`FolderHeaderView` のツールチップは `.trackRowHelp` で付け、ポインタが行の中にある間だけ出す（外では空文字）。`TrackRowsPointer` は `ObservableObject` で `@State` に保持し、出入りで更新されるのはツールチップの部分だけ（アレンジャー全体は作り直さない）。
 - **座標空間 `timelineScroll`**: 波形レーン全体の ZStack に付ける。`trackTopY`、`trackID(atTimelineY:)`、枠選択、範囲選択、クリップのドラッグはこの座標で測る。
 - **クリップのドラッグ表示**: `clipDragPreviews` が `clipDragPreview` の全クリップを、自分のトラックの位置から縦の移動量だけずらして描く（波形・フェードは移動先の重なりで表示）。
@@ -439,7 +443,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 - **`ArrangerWheelMonitor`**: アレンジャー全体（ルーラー含む）でのスクロールホイールとピンチをローカルイベントモニターで受ける。ルーラー上のホイールとピンチはポインター位置を基準に時間方向ズーム、⌥＋ホイールはトラック高さ（ポインター位置を中心）、⌥⇧＋ホイールは波形縦倍率（shift による横スクロール変換にも対応）。処理したイベントはスクロールビューへ渡さない。
 
 ### `TrackHeaderView.swift`
-幅は `ArrangerLayout.headerWidth`。左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム。フォルダとミキサーの線でも使う）、名前（ダブルクリックで編集。カレントトラックは白地に黒で反転表示、編集中は通常表示）、モノ／ステレオ切替（1／2）、削除、R／M／S／I（M／S の表示は `HeaderToggleLabel`：フォルダで有効な間はグレーで点灯し、ボタンは無効）、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更（`VerticalResizeHandle`。画面座標で測り、倍率で割って `trackHeight` に反映。表示の高さは `minimumRowHeight` 56pt 以上）。中身は上詰めで、低いときはメーターから下が不透明な下端の帯の裏に隠れる。それ以外の所のドラッグはトラックの並べ替え（ジェスチャーは `ArrangerView` が付ける）。
+幅は `ArrangerLayout.headerWidth`。左端のカラーバー（クリックで `TrackColorPalette`：16 色プリセット＋カスタム。フォルダとミキサーの線でも使う）、名前（ダブルクリックで編集。カレントトラックは白地に黒で反転表示、編集中は通常表示）、モノ／ステレオ切替（1／2）、削除、R／M／S／I（M／S の表示は `HeaderToggleLabel`：フォルダで有効な間はグレーで点灯し、ボタンは無効）、入力チャンネル選択、メーター（録音待機時は入力、それ以外は出力）、下端ドラッグで高さ変更（`VerticalResizeHandle`。画面座標で測り、倍率で割って `trackHeight` に反映。表示の高さは `minimumRowHeight` 56pt 以上）。中身は上詰めで、低いときはメーターから下が不透明な下端の帯の裏に隠れる。それ以外の所のドラッグはトラックの並べ替え（ジェスチャーは `ArrangerView` が付ける）。（v3.1）R が ON のトラックは背景を赤みのある色にし（選択中は少し明るく）、R のボタン面（`RecordArmLabel`）は赤く点灯、そのトラックの録音中は `Blinking` で点滅する（録音中も半透明にしない）。`Blinking` は表示の時刻ではなく基準時刻からの 0.5 秒の区切りで更新し、点灯・消灯も時計から決めるため、R・P・パンチ範囲の点滅はすべて同時に切り替わる。
 
 ### `FolderHeaderView.swift`（v2.1 新規）
 フォルダの行（幅 230pt、高さ `TrackFolder.rowHeight` 固定）。左端のカラーバー（`TrackColorPalette`）、▼／▶（`toggleFolderOpen`、幅は `folderIndent`）、フォルダアイコン、名前（ダブルクリックで編集）、M／S（`HeaderToggleLabel`、空のフォルダでは無効）、✕（`confirmDeleteFolder`）。背景にフォルダの色を薄く重ねる。クリックしてもカレントにならない。ドラッグと右クリックは `ArrangerView` が付ける。
@@ -448,7 +452,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 1 トラック分のレーン。
 - **レーン**: 空き領域のドラッグで枠選択（⌘ で範囲選択）、クリックで選択解除、Finder からの WAV ドロップで取り込み。
 - **`AudioClipView`**: クリック（⇧／⌘ で追加・解除）、ドラッグで選択クリップをまとめて移動（⌥ で複製、⌘ で範囲選択）、左右トリム（左端はファイルの先頭で止まる。開始位置は「元の開始位置＋制限後の移動量」なので、クリップ自体は動かない）、ゲイン（上辺中央）、フェードイン／アウト（左上・右上）、フェードカーブ（フェード線中央のひし形。上下ドラッグで `FadeCurve.withMidpoint`、ダブルクリックで `.auto`）。ゲイン・フェード・カーブのハンドルは押した時点からドラッグとして扱い、値を `EditValueTooltip` で表示。トリムのハンドルは描かず、クリップ左右の幅 10 pt の透明な帯で受け、ポインタを矢印にする（開始側は右向き、終了側は左向きのみ）。フェードの点はその点を中心とした 16 pt 四方だけで受け、ポインタを指の形にする（カーブのひし形も同じ。ゲインの線は 24×13 pt で受け、上下矢印。ファイル末尾の `hoverCursor`。macOS 15 以降は `pointerStyle`（`.columnResize(directions: .trailing／.leading)`／`.link`／`.rowResize`）、それより前は `onContinuousHover` で移動のたびに `NSCursor.set()`（`resizeRight`／`resizeLeft`／`pointingHand`／`resizeUpDown`）。`onHover` で push した形はホストビューにすぐ矢印へ戻される）。
-- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター。`ClosureMenuItem` とともにトラックヘッダーのメニューでも使う）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名と形式・サイズ（`fileDescription()`。例 `Guitar_001.wav, mono 24bit 7.8MB`。ファイルが無い・読めないときは名前のみ。複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、Strip Silence、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
+- **右クリックメニュー**: `LaneMenuMonitor`（右クリック／Control クリックのローカルモニター。`ClosureMenuItem` とともにトラックヘッダーのメニューでも使う）がクリック位置で AppKit の `NSMenu` を組み立てる（SwiftUI のメニューは開く前に作られ、直前の選択変更を反映できないため）。範囲選択の内側なら範囲メニュー、クリップ上なら `selectForMenu` で選択してからクリップメニュー、それ以外は Cut／Copy／Paste のメニュー（`LaneMenu`）。クリップメニュー: ファイル名と形式・サイズ（`fileDescription()`。例 `Guitar_001.wav, mono 24bit 44.1kHz 7.8MB`。サンプルレートは kHz で、端数の 0 は省く。ファイルが無い・読めないときは名前のみ。複数なら個数）、Cut／Copy／Paste、Normalize、Reverse、Strip Silence、ファイル選択（1 つのときのみ）、ミュート、複製、分割、削除。複数のときは項目名に個数を付ける。
 - **表示**: 波形は `ClipLayering.envelope` の音量で描画し、上位クリップに完全に隠れた区間だけを暗くする。覆われた端のフェードハンドルは非表示。
 
 ### `PreviewStretch.swift`（v2.0 新規）
@@ -520,9 +524,10 @@ CMake（`VST3Host/CMakeLists.txt`）で `MyDAWVST3Bridge` 静的ライブラリ�
 2. `loadProject(from:)` → DTO 復元 → `AudioClip.loadMetadata` → `setSavedPluginStates` → `syncTracks` でグラフ再構築（AU は非同期で状態復元、VST3 はインスタンス生成時に復元）。
 
 ### 6.3 終了
-`applicationShouldTerminate` → `ProjectState.confirmQuit()`（プロジェクトを開いていれば Save／Don't Save／Cancel を確認。確認済みの `relaunch()` からはスキップ）→ `applicationWillTerminate` → `shutdown()` → エンジン停止 → `releaseVST3Instances`（エディタを閉じる → ラッパーから参照を外す → インスタンス破棄 → `bundleExit`）→ `restoreOriginalDefaultDevices`（macOS 既定入出力を起動前に戻す）。
+`applicationShouldTerminate` → `ProjectState.confirmQuit()`（プロジェクトを開いていれば Save／Don't Save／Cancel を確認。確認済みの `relaunch()` からはスキップ）→ `applicationWillTerminate` → `shutdown()` → エンジン停止 → `releaseVST3Instances`（エディタを閉じる → ラッパーから参照を外す → インスタンス破棄 → `bundleExit`）→ `restoreOriginalSampleRates`（デバイスのサンプルレートを戻す）→ `restoreOriginalDefaultDevices`（macOS 既定入出力を起動前に戻す）。再起動のときは、これらを戻さずに新しいプロセスへ引き継ぐ。
 
 ### 6.4 デバイス変更と再起動
 1. `BufferSettingsView` の Apply → 言語が変わっていれば `AppLanguage.select`、デバイスかサンプルレートが変わっていれば `AudioEngineManager.applyAudioDevices`（サンプルレート設定、`bindIODevice`）→ 成功時 `AudioDeviceManager.setSelectedDeviceIDs`。
-2. シートを閉じた後、`ProjectState.promptRestartForAudioSettings` が保存と再起動を確認。
-3. `relaunch()` が待機用のシェルを起動して `NSApp.terminate` → 終了時に既定デバイスを復元 → シェルが `open -n` で新しいプロセスを起動し、`MainDAWView` が引数の `.mydaw` を開く → 新しいプロセスが再び既定デバイスを切り替えてエンジンを構築。
+2. シートを閉じた後、`ProjectState.promptRestartForAudioSettings` が保存と再起動を確認（キャンセル無し）。
+3. `relaunch(projectURL:sampleRate:)` がオーディオを止め（デバイスは戻さない）、`open -n` で新しいプロセスを起動 → 新しいプロセスが元の設定を引き継ぎ、既定デバイスとサンプルレートを設定してからエンジンを構築 → `MainDAWView` が通知を送り、引数の `.mydaw` を開く → 旧プロセスが通知を受けて終了。
+4. レートの違うプロジェクトを開いたときも、`prepareSampleRate` から同じ手順で再起動する。

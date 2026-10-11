@@ -1,5 +1,61 @@
 import SwiftUI
 
+/// Draws `content` lit, or, while `isActive`, alternately lit and unlit
+/// every half second (the R and P buttons and the punch bar while recording).
+/// Every blinking view switches together: the updates fall on the same
+/// half-second boundaries of the clock, and the phase is read from it.
+struct Blinking<Content: View>: View {
+    let isActive: Bool
+    @ViewBuilder let content: (_ isLit: Bool) -> Content
+
+    private static var schedule: PeriodicTimelineSchedule {
+        .periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: 0.5)
+    }
+
+    var body: some View {
+        if isActive {
+            TimelineView(Self.schedule) { context in
+                // The small margin keeps an update that lands a hair before
+                // a boundary in the new phase.
+                let halfSeconds = Int((context.date.timeIntervalSinceReferenceDate * 2.0 + 0.01).rounded(.down))
+                content(halfSeconds % 2 == 0)
+            }
+        } else {
+            content(true)
+        }
+    }
+}
+
+/// The R button face: red while armed (standing by, or playing), and
+/// blinking while this track records.
+private struct RecordArmLabel: View {
+    let isArmed: Bool
+    let isRecording: Bool
+
+    var body: some View {
+        Blinking(isActive: isRecording) { isLit in
+            face(redOpacity: isLit ? 1.0 : 0.35)
+        }
+    }
+
+    private func face(redOpacity: Double) -> some View {
+        Text("R")
+            .font(.system(size: 11, weight: .black))
+            .foregroundColor(isArmed ? .white : .red.opacity(0.7))
+            .frame(width: 22, height: 20)
+            .background(
+                isArmed
+                    ? Color.red.opacity(redOpacity)
+                    : Color.white.opacity(0.08)
+            )
+            .cornerRadius(3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.red.opacity(isArmed ? 1.0 : 0.4), lineWidth: 1)
+            )
+    }
+}
+
 public struct TrackHeaderView: View {
     /// Zoom and track height: observed so this view follows them (see
     /// `ProjectState.timelineGeometry`).
@@ -126,24 +182,15 @@ public struct TrackHeaderView: View {
                     Button(action: {
                         projectState.toggleRecordArm(for: track)
                     }) {
-                        Text("R")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundColor(track.isRecordArmed ? .white : .red.opacity(0.7))
-                            .frame(width: 22, height: 20)
-                            .background(
-                                track.isRecordArmed
-                                    ? Color.red
-                                    : Color.white.opacity(0.08)
-                            )
-                            .cornerRadius(3)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 3)
-                                    .stroke(Color.red.opacity(track.isRecordArmed ? 1.0 : 0.4), lineWidth: 1)
-                            )
+                        RecordArmLabel(
+                            isArmed: track.isRecordArmed,
+                            isRecording: isRecording && track.isRecordArmed
+                        )
                     }
                     .buttonStyle(PlainButtonStyle())
                     .disabled(isRecordLocked)
-                    .opacity(isRecordLocked ? 0.5 : 1.0)
+                    // An armed track keeps its red light while it records.
+                    .opacity(isRecordLocked && !track.isRecordArmed ? 0.5 : 1.0)
                     .trackRowHelp(track.isRecordArmed ? "Recording Mode (Armed)" : "Playback Mode (Click to Arm Record)")
 
                     // Mute [M]
@@ -240,10 +287,15 @@ public struct TrackHeaderView: View {
         }
         .frame(width: ArrangerLayout.headerWidth, height: Self.rowHeight(for: track) * projectState.trackHeightScale)
         .clipped()
+        // An armed track (standing by to record) is tinted red.
         .background(
-            isSelected
-                ? Color(red: 0.18, green: 0.20, blue: 0.24)
-                : Color(red: 0.13, green: 0.14, blue: 0.16)
+            track.isRecordArmed
+                ? (isSelected
+                    ? Color(red: 0.30, green: 0.15, blue: 0.17)
+                    : Color(red: 0.24, green: 0.11, blue: 0.12))
+                : (isSelected
+                    ? Color(red: 0.18, green: 0.20, blue: 0.24)
+                    : Color(red: 0.13, green: 0.14, blue: 0.16))
         )
         .overlay(
             Rectangle()

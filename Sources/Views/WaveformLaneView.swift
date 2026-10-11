@@ -29,9 +29,11 @@ public struct WaveformLaneView: View {
     public var body: some View {
         let rowHeight = TrackHeaderView.rowHeight(for: track) * projectState.trackHeightScale
         ZStack(alignment: .leading) {
-            // Background lane
+            // Background lane, tinted red while the track is armed.
             Rectangle()
-                .fill(Color(red: 0.10, green: 0.11, blue: 0.13))
+                .fill(track.isRecordArmed
+                    ? Color(red: 0.20, green: 0.09, blue: 0.10)
+                    : Color(red: 0.10, green: 0.11, blue: 0.13))
                 .frame(width: timelineWidth, height: rowHeight)
 
             // Grid Lines (every second or every 5 seconds depending on zoom),
@@ -252,8 +254,8 @@ private enum LaneMenu {
         })
     }
 
-    /// "Guitar_001.wav, mono 24bit 7.8MB": the name, then the format and
-    /// size when the file can be read.
+    /// "Guitar_001.wav, mono 24bit 44.1kHz 7.8MB": the name, then the format
+    /// and size when the file can be read.
     private static func fileDescription(_ url: URL) -> String {
         guard let info = try? ClipAudioProcessing.fileInfo(url) else { return url.lastPathComponent }
         let channels: String
@@ -263,7 +265,9 @@ private enum LaneMenu {
         default: channels = "\(info.channelCount)ch"
         }
         let bits = info.isFloat ? "\(info.bitDepth)bit float" : "\(info.bitDepth)bit"
-        var parts = [channels, bits]
+        // 44100 → "44.1kHz", 48000 → "48kHz".
+        let rate = String(format: "%gkHz", (info.sampleRate / 100.0).rounded() / 10.0)
+        var parts = [channels, bits, rate]
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
             let formatter = ByteCountFormatter()
             formatter.countStyle = .file
