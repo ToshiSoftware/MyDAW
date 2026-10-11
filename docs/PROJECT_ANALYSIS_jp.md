@@ -35,7 +35,7 @@ MyDAW は Apple Silicon Mac 向けのマルチトラック・オーディオ録�
 - **表示**: 波形はフェード・クロスフェード・上位クリップによる隠れを反映した音量で、512／64 サンプル単位のピーク（強く拡大したときはサンプルそのもの）から 1pt ごとの最小〜最大の棒で描画。ホイール／ピンチで拡大縮小（5〜3200 px/秒）。再生中の自動スクロールは ON／OFF 可能。タイムラインは曲の長さ（クリップと終了フラグ、最低 60 秒）で、それより先は暗く表示。ルーラーは常に画面の右端まで描く。
 - **重なり処理（レイヤー）**: クリップが重なると後から追加したクリップが優先。境界はクロスフェード（既定は等パワー、形は上位クリップのフェードカーブ）。
 - **ミキサー**: Studio One 風の 3 区画ストリップ（INSERT／SEND／コントロール）、dB フェーダー（最大 +6 dB）、ステレオ・ピークメーター、PAN、M／S（FX チャンネルにも。FX のソロはそのリターンだけを再生）、数値直接入力。フォルダと FX チャンネルの始まりに色の縦線（クリックで色変更。FX は全チャンネル共通の色）、カレントトラックの名前欄の反転表示、たたむボタン（v2.1）。⇧／⌘クリックで追加したチャンネルを、カレントトラックと一緒に操作（フェーダーは dB の差、パン・センドは値の差を保って動かし、M／S は同じ状態にする）。使用不可のプラグインは赤く表示し、ツールチップで「使用できません」「見つかりません」を区別。
-- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。内蔵エフェクト MyReverb・MyDelay・MyChorusPan・MyChannelStrip・MyMaximizer（v3.0、3.6）。プラグインをほかのチャンネルのインサートへドラッグすると、同じ設定のコピーを挿入（v3.0）。OFF にしたプラグインは、プラグイン自身のバイパスに頼らず入力を素通しする（`PluginSwitchAudioUnit`、v3.0、3.2）。
+- **エフェクト**: トラック・FX チャンネル・マスターへ AU／VST3 を挿入。ポストインサート・ポストパンの Send。トラックのインサートと FX チャンネルのプラグイン遅延補正。トランスポートの先読みで、再生位置以降の音は欠けない（3.2、4.1）。内蔵エフェクト MyReverb・MyDelay・MyChorusPan・MyChannelStrip・MyMaximizer（v3.0、3.6）。トランスポートバーから開くチューナー（MyTuner）。グラフではなく入力のタップから音を渡す（v3.1）。プラグインをほかのチャンネルのインサートへドラッグすると、同じ設定のコピーを挿入（v3.0）。OFF にしたプラグインは、プラグイン自身のバイパスに頼らず入力を素通しする（`PluginSwitchAudioUnit`、v3.0、3.2）。
 - **デバイス**: 入力と出力に別々のデバイスを選択可能。起動中は macOS の既定入出力を切り替え、終了時に復元。サンプルレートはプロジェクトごとに保存し、起動中はデバイスをそのレートにして終了時に復元。バッファサイズは UserDefaults に保存し、起動時に設定し直す。デバイス・サンプルレート変更時は保存と再起動を確認（キャンセルは無し）。
 - **ウインドウとキー操作**（v3.0）: メインウインドウとプラグインのウインドウは、別のウインドウ（別のアプリ）が前にあっても 1 回目のクリックで操作できる。プラグインのウインドウがキーのときも Space・R・← が効く（4.12）。
 - **表示言語**: GUI は日本語・英語に対応（初期値は macOS の言語）。設定画面で切り替え、再起動後に反映。
@@ -75,6 +75,7 @@ MyDAW/
 │   │   ├── AudioLoadMonitor.swift    オーディオ処理負荷の計測と音飛びの検出
 │   │   ├── PluginManager.swift       AU／VST3 検出（VST3 は子プロセス＋キャッシュ）
 │   │   ├── BuiltInPlugins.swift      起動時に内蔵エフェクト（MyPlugInCatalog）を登録
+│   │   ├── TunerHost.swift           チューナーのウィンドウと入力（MyTuner を入力のタップから描画）
 │   │   ├── VST3AudioUnit.swift       VST3 を包むアプリ内 AUv3
 │   │   ├── InputMonitorAudioUnit.swift 入力チャンネル抽出用アプリ内 AUv3
 │   │   ├── MonoDownmixAudioUnit.swift モノラルのトラックを L/R 加算するアプリ内 AUv3
@@ -101,7 +102,7 @@ MyDAW/
 │       ├── MixerControls.swift       フェーダー、PAN、メーター、dB スケール
 │       └── WindowCloseHandler.swift  ウィンドウを閉じたらアプリを終了（保存確認は終了処理側）、タイトルバーのダブルクリックでズーム
 │   └── BuiltIn/MyPlugIn/       内蔵エフェクト。../MyPlugIn/Sources のコピー（MyPlugInCore、MyReverb、MyDelay、
-│                               MyChorusPan、MyChannelStrip、MyMaximizer、MyPlugInCatalog）。修正は MyPlugIn 側で行う
+│                               MyChorusPan、MyChannelStrip、MyMaximizer、MyTuner、MyPlugInCatalog）。修正は MyPlugIn 側で行う
 ├── VST3Host/                   C++ VST3 ホストブリッジ（CMake で静的ライブラリ化）
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  翻訳（en.lproj・ja.lproj の Localizable.strings、InfoPlist.strings）
@@ -199,6 +200,7 @@ mainMixer → マスターボリュームミキサー → マスタープラグ�
 ```
 inputNode（デバイスの全入力チャンネル）
   ├──► 入力タップ → チャンネル抽出 → AudioDiskWriter（WAV、原音）
+  ├──► 入力タップ → TunerFeed → MyTuner の render block（チューナーを開いている間。グラフには入れない）
   └──► InputMonitorAudioUnit（トラックごと、I ボタン ON 時）→ トラック出力ミキサー
 ```
 
@@ -230,7 +232,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 | --- | --- | --- |
 | メイン（@MainActor） | UI、`ProjectState`、`AudioEngineManager` の公開 API、グラフ変更 | — |
 | オーディオ描画スレッド | AVAudioEngine の描画、`VST3AudioUnit`／`InputMonitorAudioUnit` の render block | ロックなし（事前確保バッファ）、VST3 側のみ `std::mutex`（競合なし） |
-| 入力タップスレッド | `processInputAudioBuffer`（ピーク計算、録音データ切り出し） | `captureLock`、`recordingTimingLock`、`peakLock` |
+| 入力タップスレッド | `processInputAudioBuffer`（ピーク計算、録音データ切り出し、`TunerFeed` 経由のチューナーの描画） | `captureLock`、`recordingTimingLock`、`peakLock`、`TunerFeed` のロック（`try` のみ） |
 | 書き込みキュー | `AudioDiskWriter` の WAV 書き込み | シリアル `DispatchQueue` |
 | 書き出しの変換タスク | `ExportEncoder`（サンプルレート変換、WAV／MP3 の書き込み） | `Task.detached`。進捗はメインへ渡す。取り込みの一時ファイルを読むだけで共有状態なし |
 | 負荷モニター Timer（10 Hz） | `AudioLoadMonitor`: 出力ユニットの render notify（描画スレッド上で処理時間を計測）の集計、音飛びの判定、CPU 表示の更新 | 描画スレッドは整列した 64 bit 値を書くだけ（ロックなし）。メイン側が累計の差分を取る |
@@ -255,7 +257,7 @@ VST3 は「アプリ内 AUv3」として AVAudioEngine のグラフへ組み込�
 - **ソースの置き場所**: エフェクトは別プロジェクト MyPlugIn（`../MyPlugIn`。独自のテストとホストアプリを持つ Swift パッケージ）で開発します。`scripts/sync-myplugin.sh` がその Swift ソースを `Sources/BuiltIn/MyPlugIn` に一方向でコピーし（古いコピーは先に削除）、`build.sh` がほかのソースと一緒に MyDAW の実行ファイルへコンパイルします。MyDAW 側のコピーだけを直しても、次の同期で消えます。
 - **登録**: 起動時に `BuiltInPlugins.registration` が `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")` を呼び、カタログの全エフェクトを `AUAudioUnit.registerSubclass` で登録します。プラグイン一覧には「MyDAW: MyReverb」などとして表示され、ほかのプロセス内 AU と同じように挿入・保存（`fullStateForDocument`）・遅延補正されます。MyPlugIn のカタログに追加したエフェクトは、MyDAW を変更しなくても次の同期とビルドで入ります。コンポーネントのコードはプロジェクトに保存されるため変更不可です。メーカーコード 'MyDW' は MyDAW の内部ユニット用で、`PluginManager` が一覧から隠します。
 - **チャンネル名**: `AudioEngineManager` は各 AU の `contextName` に、挿さっているトラック・FX チャンネルの名前か「MASTER」を設定し、名前の変更とインサートの変更に Combine で追従します（`observeChannelNames`）。内蔵エフェクトの画面は、これをエフェクト名の下に表示します。
-- **エフェクト**: MyReverb（プレートリバーブ。Relab LX480 Essentials の Plate のインパルス応答と比べて調整：立ち上がり約 40 ms でピーク、パンした音源は最初の 50〜100 ms その側に残る、200 Hz 以下の Side を 1.3 倍、WIDTH で残響の左右の広がり。詳細は MyPlugIn の Docs/MyReverb.md）、MyDelay、MyChorusPan（Chorus Pedal・Dimension・Flanger Pedal・Auto Pan の 4 モード。パラメーターはモードごとに別に持ち、INIT でそのモードを推奨値に戻す。Dimension は Arturia「Chorus DIMENSION-D」の説明書にあるシグナルフロー（左右別のディレイと逆相のクロスミックス、1〜3 と BOOST）に合わせた。詳細は MyPlugIn の Docs/MyChorusPan.md）、MyChannelStrip（4 バンド EQ とコンプレッサー。順番は切り替え可）、MyMaximizer（10 ms 先読みのマキシマイザー。先読みは遅延として報告）。画面とパラメーターは操作マニュアル第 11 章で説明しています。
+- **エフェクト**: MyReverb（プレートリバーブ。Relab LX480 Essentials の Plate のインパルス応答と比べて調整：立ち上がり約 40 ms でピーク、パンした音源は最初の 50〜100 ms その側に残る、200 Hz 以下の Side を 1.3 倍、WIDTH で残響の左右の広がり。詳細は MyPlugIn の Docs/MyReverb.md）、MyDelay、MyChorusPan（Chorus Pedal・Dimension・Flanger Pedal・Auto Pan の 4 モード。パラメーターはモードごとに別に持ち、INIT でそのモードを推奨値に戻す。Dimension は Arturia「Chorus DIMENSION-D」の説明書にあるシグナルフロー（左右別のディレイと逆相のクロスミックス、1〜3 と BOOST）に合わせた。詳細は MyPlugIn の Docs/MyChorusPan.md）、MyChannelStrip（4 バンド EQ とコンプレッサー。順番は切り替え可）、MyMaximizer（10 ms 先読みのマキシマイザー。先読みは遅延として報告）。MyTuner（Chromatic／ギターのチューナー。針またはストロボ表示。12 kHz に間引いた信号に対し、エディタ側で YIN 法のピッチ検出。詳細は MyPlugIn の Docs/MyTuner.md）はインサートの一覧に出さず、トランスポートバーの音叉ボタンで開く。`TunerHost` が入力のタップから描画するので、開いても動作中のエンジンをつなぎ替えない。画面とパラメーターは操作マニュアル第 11 章で説明しています。
 
 ---
 

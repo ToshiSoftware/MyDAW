@@ -11,6 +11,13 @@ enum BuiltInPlugins {
 
     /// Must run before the plug-in scan and before a project instantiates
     /// its inserts.
+    /// MyTuner opens from the transport bar, not as a channel insert, so
+    /// the plug-in list leaves it out.
+    static func isHiddenFromInserts(_ description: AudioComponentDescription) -> Bool {
+        description.componentManufacturer == manufacturer
+            && description.componentSubType == MyTunerAudioUnit.componentDescription.componentSubType
+    }
+
     static let registration: Void = {
         MyPlugInCatalog.registerAll(manufacturer: manufacturer, vendorName: "MyDAW")
     }()

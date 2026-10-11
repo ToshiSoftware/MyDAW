@@ -50,6 +50,7 @@
 		DAWB00270000000000000001 /* MixerControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00270000000000000001 /* MixerControls.swift */; };
 		DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00280000000000000001 /* VST3AudioUnit.swift */; };
 		DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */; };
+		DAWB00AA0000000000000001 /* TunerHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00AA0000000000000001 /* TunerHost.swift */; };
 		DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */; };
 		DAWB0F010000000000000001 /* PluginSwitchAudioUnit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */; };
 		DAWB0F020000000000000001 /* ObjCExceptionCatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */; };
@@ -103,6 +104,7 @@
 		DAWF00270000000000000001 /* MixerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixerControls.swift; sourceTree = "<group>"; };
 		DAWF00280000000000000001 /* VST3AudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VST3AudioUnit.swift; sourceTree = "<group>"; };
 		DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMonitorAudioUnit.swift; sourceTree = "<group>"; };
+		DAWF00AA0000000000000001 /* TunerHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunerHost.swift; sourceTree = "<group>"; };
 		DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonoDownmixAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginSwitchAudioUnit.swift; sourceTree = "<group>"; };
 		DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjCExceptionCatcher.swift; sourceTree = "<group>"; };
@@ -180,6 +182,7 @@
 				DAWF00070000000000000001 /* AudioEngineManager.swift */,
 				DAWF00240000000000000001 /* GenericAUParameterView.swift */,
 				DAWF00290000000000000001 /* InputMonitorAudioUnit.swift */,
+				DAWF00AA0000000000000001 /* TunerHost.swift */,
 				DAWF00930000000000000001 /* MonoDownmixAudioUnit.swift */,
 				DAWF0F010000000000000001 /* PluginSwitchAudioUnit.swift */,
 				DAWF0F020000000000000001 /* ObjCExceptionCatcher.swift */,
@@ -372,6 +375,7 @@
 				DAWB00270000000000000001 /* MixerControls.swift in Sources */,
 				DAWB00280000000000000001 /* VST3AudioUnit.swift in Sources */,
 				DAWB00290000000000000001 /* InputMonitorAudioUnit.swift in Sources */,
+				DAWB00AA0000000000000001 /* TunerHost.swift in Sources */,
 				DAWB00930000000000000001 /* MonoDownmixAudioUnit.swift in Sources */,
 				DAWB0F010000000000000001 /* PluginSwitchAudioUnit.swift in Sources */,
 				DAWB0F020000000000000001 /* ObjCExceptionCatcher.swift in Sources */,

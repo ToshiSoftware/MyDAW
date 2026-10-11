@@ -243,7 +243,7 @@ GUI 言語（`english = "en"`／`japanese = "ja"`）。`displayName` は各言�
 AVAudioEngine のグラフ、再生、録音、メトロノーム、メーター、プラグイン生成と GUI、書き出しを管理する中心クラス（@MainActor、`NSWindowDelegate`）。
 
 #### 公開状態（抜粋）
-`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`isRecordPass`（v3.1。録音を始めてから停止するまで true。パンチインを待つ間も含む）、`currentTime`（値は別オブジェクト `transportClock`（`TransportClock`）が持つ。再生中は毎秒 60 回変わり、エンジンから通知するとエンジンを監視する全ビュー（アレンジ・ミキサー・トランスポート）が再描画されるため。監視するのは `PlayheadLine`、`PlayheadBall`、`TransportTimeText`、録音中のテイク（`LiveRecordingClipView`）だけで、自動スクロールは `onReceive` で受け取る）、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`masterVolume`（値は別オブジェクト `masterVolumeState`。ドラッグのたびにエンジン全体を通知しないため。`MasterFaderColumn` だけが監視）、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
+`engine`、`isPlaying`、`isRecording`、`isPunchRecording`、`isRecordPass`（v3.1。録音を始めてから停止するまで true。パンチインを待つ間も含む）、`currentTime`（値は別オブジェクト `transportClock`（`TransportClock`）が持つ。再生中は毎秒 60 回変わり、エンジンから通知するとエンジンを監視する全ビュー（アレンジ・ミキサー・トランスポート）が再描画されるため。監視するのは `PlayheadLine`、`PlayheadBall`、`TransportTimeText`、録音中のテイク（`LiveRecordingClipView`）だけで、自動スクロールは `onReceive` で受け取る）、`bpm`、メトロノーム（有効・発音タイミング補正・音量）、`hardwareSampleRate`、`isTunerVisible`（v3.1。`tunerHost` でチューナーを表示／非表示）、`masterVolume`（値は別オブジェクト `masterVolumeState`。ドラッグのたびにエンジン全体を通知しないため。`MasterFaderColumn` だけが監視）、`masterPeak`、`masterStereoPeak`（どちらも値が変わったときだけ更新）、`recordingsDirectory`、`inputBufferFrameSize`、`manualRecordingCompensationMs`、選択中の入出力デバイス。`loadMonitor`（`AudioLoadMonitor`。更新がエンジン全体の再通知にならないよう別の `ObservableObject`）。
 
 #### ノード構成（トラックごと）
 | 辞書 | 役割 |
@@ -330,6 +330,11 @@ VST3 インスタンスを AVAudioEngine グラフへ組み込むアプリ内 AU
 ### `InputMonitorAudioUnit.swift`
 多チャンネル入力から、トラックの入力チャンネル（モノは L/R 両方へ複製）を抽出するアプリ内 AUv3（`aufx`/`inmn`/`MyDW`）。`configure(channelOffset:isStereo:)` は停止中に設定。入力バス数はデバイスのチャンネル数に合わせて確保します。
 
+### `TunerHost.swift`（v3.1 新規）
+トランスポートバーの音叉ボタンで開くチューナー（設計は MyPlugIn の `Docs/MyTuner.md` §4）。
+- **`TunerHost`**（@MainActor、`NSWindowDelegate`）: 最初に開いたときに `MyTunerAudioUnit` を 1 つ作って保持する。ウィンドウ（タイトル「Tuner」、手前に浮く、MyDAW が非アクティブの間は隠れる、プラグインウィンドウの識別子なので Space でトランスポートが動く、位置は自動保存）には、AU 自身のエディタの上に `TunerInputRow`（マイクのマークとハードウェア入力の `MyFXMenuPicker`、入力がなければ「入力なし」）を置く。閉じるボタンはウィンドウを隠して `onClose` を呼ぶだけ（`AudioEngineManager.isTunerVisible` を false に戻す）。`select(channel:)` で入力を設定。入力（`TunerInputChannel`）とパラメーターの値（`TunerParameters`）は UserDefaults に保存し、プロジェクトには保存しない。
+- **`TunerFeed`**: AU はエンジンにアタッチしない。`processInputAudioBuffer`（入力タップのスレッド）が `process(_:)` を呼び、ウィンドウが開いている間、選んだチャンネルを最大 1,024 フレームずつコピーして、それを返す pull ブロックとともに AU の `renderBlock` を呼ぶ。最初のバッファと、タップのレートが変わったときに、両バスをそのレートのモノラルにして描画リソースを確保する。設定はメインスレッドから `NSLock` の下で変え、タップは `try()` だけを使い、ロック中はそのバッファを飛ばす。
+
 ### `TrackRenderer.swift`（v2.0 新規）
 トラックのクリップを再生する仕組み。以前はクリップ 1 つにつき 1 つの `AVAudioPlayerNode` を使っていたが、`play(at:)` は 1 回ごとにレンダー 1 回分待たされ、その間エンジンのロックを握るため、クリップが多いと再生開始時に UI 全体（カーソル・メーター）が止まった。
 
@@ -376,18 +381,19 @@ C++ ブリッジのハンドルを保持する Swift ラッパー（`@unchecked 
 
 ### `PluginManager.swift`
 - **`TrackPluginDescriptor`**: ID、名前、種類（AU／VST3）、bundle パス、VST3 UID、AU コンポーネント記述、有効状態、UI 互換性。`isInstalled` はプラグインがこの Mac にあるか（AU は `AudioComponentFindNext` で登録を確認、VST3 は保存した bundle パスの存在）。使用不可のインサートのツールチップで「見つかりません」と「使用できません」を分けるのに使う。
-- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。MyDAW 自身が登録する内部 AU（メーカーコード `MyDW`：Mono Downmix、VST3 Host、Delay Compensation、Input Monitor）は一覧に出さない。内蔵エフェクト（メーカーコード `MyDA`）は通常の AU と同じく一覧に出す。
+- **`discoverAvailablePlugins(onLog:completion:)`**: バックグラウンドで AU（`AudioComponentFindNext`）と VST3 を検出。**同名の AU がある VST3 は除外**。MyDAW 自身が登録する内部 AU（メーカーコード `MyDW`：Mono Downmix、VST3 Host、Delay Compensation、Input Monitor）は一覧に出さない。内蔵エフェクト（メーカーコード `MyDA`）は通常の AU と同じく一覧に出す。ただし MyTuner は出さない（`BuiltInPlugins.isHiddenFromInserts`、v3.1）。
 - **VST3 検出**: `scanVST3Bundle` → キャッシュ（パスと更新日時）を確認 → なければ `runScanChild`（`MyDAW --scan-vst3 <path>`、60 秒でタイムアウト、クラッシュ時は空結果をキャッシュ）。
 - **`runVST3ScanChildIfRequested()`**: 子プロセス側の処理（列挙して `MYDAW_VST3_SCAN_RESULT:` 付き JSON を出力）。
 
 ### `BuiltInPlugins.swift`（v3.0 で追加）
 - **`BuiltInPlugins.manufacturer`**: 内蔵エフェクト（「MyDAW: MyReverb」など）のメーカーコード `'MyDA'`。プロジェクトに保存されるため変更不可。`PluginManager` が隠す `'MyDW'` にしてはいけない。
 - **`BuiltInPlugins.registration`**: 最初に参照されたときに一度だけ `MyPlugInCatalog.registerAll(manufacturer:vendorName: "MyDAW")` を呼ぶ static。`MyPlugInCatalog.plugIns` の全エフェクトを `AUAudioUnit.registerSubclass` でプロセス内に登録する。
+- **`BuiltInPlugins.isHiddenFromInserts(_:)`**（v3.1）: MyTuner（`MyDA`/`MTun`）なら true。トランスポートバーから開くため。
 
 ### `Sources/BuiltIn/MyPlugIn/`（v3.0 で追加）
 `scripts/sync-myplugin.sh` が作る `../MyPlugIn/Sources` のコピー（Swift ファイルのみ。同期のたびにフォルダを削除して作り直す）。ここでは編集しないこと。詳しい仕様は MyPlugIn 側（`Docs/My*.md`）にある。
 - **`MyPlugInCore`**: `MyFXAudioUnit`（共通の `AUAudioUnit` 基底クラス。パラメーター、状態、遅延、エディタ）、`MyFXParameter`、`MyFXExtensionViewController`（MyPlugIn の AUv3 アプリ拡張の principal class。MyDAW のプロセス内では使わない）、共通エディタ（`MyFXEditor`。`MyFXEditorViewController` が SwiftUI のエディタを `NSHostingView` で表示。`contextName` から取ったチャンネル名のヘッダー、IN／OUT メーター、フェーダー、つまみ、`MyFXEditableValue`）、描画まわりの補助。
-- **エフェクト**: `MyReverb`、`MyDelay`、`MyChorusPan`、`MyChannelStrip`、`MyMaximizer`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。MyReverb のパラメーターは HPF・LPF・RT・PD・MIX・WIDTH（アドレス 0〜5。WIDTH は後から追加したアドレスで、WIDTH を含まない保存データでは 100 %）。MyChorusPan のパラメーターはモードごとに 10 番台（Chorus Pedal 10〜、Dimension 20〜、Flanger Pedal 30〜、Auto Pan 40〜。0 はモード）。カーネルは `ChorusPanKernel`、LFO は `ChorusPanLFO`、エディタは INIT・ボタンの行・SPEED ランプ（`ChorusPanLampModel` が 60 Hz でカーネルの LFO 位相を読む）を持つ。
+- **エフェクト**: `MyReverb`、`MyDelay`、`MyChorusPan`、`MyChannelStrip`、`MyMaximizer`、`MyTuner`。それぞれ `…AudioUnit`、カーネル（DSP）、パラメーター、エディタからなる。MyReverb のパラメーターは HPF・LPF・RT・PD・MIX・WIDTH（アドレス 0〜5。WIDTH は後から追加したアドレスで、WIDTH を含まない保存データでは 100 %）。MyChorusPan のパラメーターはモードごとに 10 番台（Chorus Pedal 10〜、Dimension 20〜、Flanger Pedal 30〜、Auto Pan 40〜。0 はモード）。カーネルは `ChorusPanKernel`、LFO は `ChorusPanLFO`、エディタは INIT・ボタンの行・SPEED ランプ（`ChorusPanLampModel` が 60 Hz でカーネルの LFO 位相を読む）を持つ。MyTuner（v3.1。calibration 0、mode 1、strobe 2）は音を素通しする。`TunerKernel` はエディタが見えている間だけ、モノラルの和をローパスして約 12 kHz に間引き、リングに書く。エディタの `TunerDisplayModel` が 60 Hz で `TunerAnalyzer`（`TunerPitchDetector` の YIN 法）を動かし、`TunerDisplayState`（針・保持・フェード・ストロボの位相）を持つ。
 - **`MyPlugInCatalog`**: `plugIns`（メニュー順のエフェクト一覧）と `registerAll(manufacturer:vendorName:)`。エフェクトは `#if canImport(…)` で import するので、同じファイルが MyPlugIn のパッケージでも MyDAW の単一モジュールでもビルドできる。
 
 ### `VST3HostBridge.swift` / `VST3Host.swift`
@@ -423,7 +429,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 ステータスバーの「CPU [バー] 34% ●音飛び」。`AudioLoadMonitor` を監視（再描画はこのビューだけで最大 10 Hz）。バー（64 × 7 pt のカプセル、0.1 秒のリニアアニメーション）の色は緑（0）→黄（0.6）→オレンジ（0.8）→赤（1.0）を補間。数値は 100% を超えることもある。音飛びマークは非表示でも場所を確保（opacity）し、表示がずれない。ツールチップは表示時に文字列を作る AppKit のツールチップ（`DynamicToolTip`、`NSViewToolTipOwner`）で、頻繁な再描画でも表示される。
 
 ### `TransportBarView.swift`
-- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音。R キー）、P（パンチ有効化）、ロールバック（↺ と小節数。`recordRollbackEnabled` を切り替え。パンチ ON の間は薄く表示、再生中は無効。ツールチップは `rollbackHelp`）、メトロノーム（再生・録音中も切り替え可。右クリック（`RightClickCatcher`：ローカルイベントモニター）でクリックの音量の縦フェーダー `ClickVolumeFader` をポップオーバーで開き、`metronomeVolume` を再生中も即時変更）、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。 P は `isRecordPass` の間は無効で、パンチが ON ならその間 `Blinking` で点滅する（v3.1）。
+- ボタン（左から）: 設定、Undo、Redo、Rewind、Play／Pause（Space）、Record（armed トラックを録音。R キー）、P（パンチ有効化）、ロールバック（↺ と小節数。`recordRollbackEnabled` を切り替え。パンチ ON の間は薄く表示、再生中は無効。ツールチップは `rollbackHelp`）、メトロノーム（再生・録音中も切り替え可。右クリック（`RightClickCatcher`：ローカルイベントモニター）でクリックの音量の縦フェーダー `ClickVolumeFader` をポップオーバーで開き、`metronomeVolume` を再生中も即時変更）、チューナー（v3.1。音叉。`isTunerVisible` を切り替え。開くとき、選択中のトラックが録音待機ならその入力をチューナーの入力にする）、保存、開く、スナップ、自動スクロール（`ProjectState.autoScrollEnabled`。UserDefaults `MyDAW.autoScroll` に保存）。ツールチップは標準 `.help`。 P は `isRecordPass` の間は無効で、パンチが ON ならその間 `Blinking` で点滅する（v3.1）。
 - 表示: TIME（時間／小節・拍）、TEMPO（BPM 入力 20〜400）、FORMAT（24-bit WAV とサンプルレート）。幅は中身に合わせる。
 - バー全体は左寄せで、ウィンドウより幅が広いときは右端から切れる（`frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)` と `clipped()`）。
 - 右側: 時間軸ズーム、トラック高さ倍率、波形縦倍率、ルーラー切替（v2.1 でマスター音量のスライダーは削除。マスター音量はミキサーの MASTER フェーダーで操作）。

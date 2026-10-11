@@ -34,6 +34,22 @@ public struct TransportBarView: View {
         return "Enable Rollback Recording (\(bars) bars)"
     }
 
+    /// The tuner window; opening it listens to the selected track's input
+    /// when that track is armed, otherwise to the last chosen input.
+    private var tunerVisibility: Binding<Bool> {
+        Binding(
+            get: { audioEngine.isTunerVisible },
+            set: { isVisible in
+                if isVisible,
+                   let track = projectState.tracks.first(where: { $0.id == projectState.selectedTrackId }),
+                   track.isRecordArmed {
+                    audioEngine.tunerHost.select(channel: track.inputChannelIndex)
+                }
+                audioEngine.isTunerVisible = isVisible
+            }
+        )
+    }
+
     private func commitBPMText() {
         let parsedValue = Double(bpmText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? audioEngine.bpm
         let clamped = max(20.0, min(400.0, parsedValue))
@@ -194,6 +210,15 @@ public struct TransportBarView: View {
                 .popover(isPresented: $isShowingClickVolume, arrowEdge: .bottom) {
                     ClickVolumeFader(audioEngine: audioEngine)
                 }
+
+                Toggle(isOn: tunerVisibility) {
+                    Image(systemName: "tuningfork")
+                        .font(.system(size: 13, weight: .bold))
+                }
+                .toggleStyle(.button)
+                .tint(audioEngine.isTunerVisible ? .cyan : .white.opacity(0.35))
+                .frame(width: 34, height: 28)
+                .help("Show/Hide Tuner")
 
                 Button(action: { projectState.saveProjectAndShowConfirmation() }) {
                     Image(systemName: "square.and.arrow.down")

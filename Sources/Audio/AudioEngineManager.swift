@@ -53,6 +53,16 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             }
         }
     }
+    /// The tuner window (transport bar's tuning-fork button).
+    @Published public var isTunerVisible: Bool = false {
+        didSet {
+            guard isTunerVisible != oldValue else { return }
+            if isTunerVisible { tunerHost.show() } else { tunerHost.hide() }
+        }
+    }
+    let tunerHost = TunerHost()
+    /// The tuner's input, rendered from the input tap (TunerHost).
+    private nonisolated let tunerFeed: TunerFeed
     @Published public var metronomeTimingOffsetMs: Double = 0.0 {
         didSet {
             guard metronomeTimingOffsetMs.isFinite else {
@@ -499,7 +509,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     /// (the rate of the project MyDAW is launched with).
     public init(inputDeviceID: AudioDeviceID = 0, outputDeviceID: AudioDeviceID = 0, sampleRate: Double? = nil) {
         self.recordingsDirectory = Self.resolveRecordingsDirectory()
+        tunerFeed = tunerHost.feed
         super.init()
+        tunerHost.onClose = { [weak self] in self?.isTunerVisible = false }
         adoptInheritedOriginalDeviceSettings()
         if inputDeviceID != 0 || outputDeviceID != 0 {
             bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID)
@@ -691,6 +703,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
 
         inputCaptureFormat = hasInput ? inputFormat : nil
+        tunerHost.setInputChannelCount(hwChannels, hasInput: hasInput)
         connectInputMonitors()
 
         // Install tap BEFORE engine.start()
@@ -1422,6 +1435,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         let format = buffer.format
         let hwChannels = Int(format.channelCount)
+
+        // The tuner, when its window is open.
+        tunerFeed.process(buffer)
 
         // 1. Compute peak level for each hardware channel
         var currentBufferPeaks = [Float](repeating: 0.0, count: max(hwChannels, 8))

@@ -35,7 +35,7 @@ MyDAW is a multitrack audio recording, editing and mixing DAW for Apple Silicon 
 - **Display**: waveforms are drawn at the level heard, including fades, crossfades and parts hidden by upper clips, one min–max bar per point from 512- and 64-sample peaks and, zoomed in far, the samples themselves. Wheel / pinch zoom (5–3200 px/s). Auto-scroll during playback can be turned on/off. The timeline is the song's length (clips and end flag, at least 60 s) and is darkened past it; the ruler always fills the view.
 - **Overlap layering**: when clips overlap, the most recently added clip wins; boundaries get crossfades (equal power by default, shaped by the upper clip's fade curve).
 - **Mixer**: Studio One-style three-section strips (INSERT / SEND / controls), dB faders (up to +6 dB), stereo peak meters, pan, M/S (FX channels too; soloing an FX channel plays only its return), direct numeric entry. Coloured vertical lines where folders and the FX channels start (click to change the colour; one colour for all FX channels), the current track's name shown reversed, and a fold button (v2.1). Channels ⇧/⌘-clicked are operated together with the current track (faders keep their dB differences, pan and sends their value differences; M/S take the same state). Unavailable plug-ins are shown in red, with a tooltip telling "cannot be used" from "not found".
-- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChorusPan, MyChannelStrip and MyMaximizer (v3.0, 3.6). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0). A plug-in turned off passes its input through without relying on the plug-in's own bypass (`PluginSwitchAudioUnit`, v3.0, 3.2).
+- **Effects**: AU/VST3 on tracks, FX channels and master. Sends are post-insert and post-pan. Plug-in latency compensation for track inserts and FX channels, with a transport pre-roll so nothing after the play position is lost (3.2, 4.1). Built-in effects MyReverb, MyDelay, MyChorusPan, MyChannelStrip and MyMaximizer (v3.0, 3.6). A tuner (MyTuner) opened from the transport bar, fed from the input tap rather than the graph (v3.1). Dragging a plug-in to another channel's insert list inserts a copy with the same settings (v3.0). A plug-in turned off passes its input through without relying on the plug-in's own bypass (`PluginSwitchAudioUnit`, v3.0, 3.2).
 - **Windows and keys** (v3.0): the main window and plug-in windows act on the first click even when another window (or another app) is in front; Space / R / ← work while a plug-in window is key (4.12).
 - **Languages**: the GUI is available in English and Japanese (default: the macOS language), switched in Settings and applied after a restart.
 - **Devices**: separate input and output devices. While running, MyDAW switches the macOS default input/output and restores them on quit. The sample rate is saved per project; while running the devices are set to it and restored on quit. The buffer size is kept in UserDefaults and set again at launch. Device or sample-rate changes ask to save and restart (no Cancel).
@@ -75,6 +75,7 @@ MyDAW/
 │   │   ├── AudioLoadMonitor.swift    Audio processing load and dropout detection
 │   │   ├── PluginManager.swift       AU / VST3 discovery (VST3 via child process + cache)
 │   │   ├── BuiltInPlugins.swift      Registers the built-in effects (MyPlugInCatalog) at launch
+│   │   ├── TunerHost.swift           Tuner window and input (MyTuner rendered from the input tap)
 │   │   ├── VST3AudioUnit.swift       In-app AUv3 wrapping a VST3
 │   │   ├── InputMonitorAudioUnit.swift In-app AUv3 that picks input channels
 │   │   ├── MonoDownmixAudioUnit.swift In-app AUv3 that downmixes mono tracks
@@ -101,7 +102,7 @@ MyDAW/
 │       ├── MixerControls.swift       Fader, pan, meter, dB scale
 │       └── WindowCloseHandler.swift  Closing the window quits (the save prompt is in the quit handler); title-bar double-click zooms
 │   └── BuiltIn/MyPlugIn/       Built-in effects: a copy of ../MyPlugIn/Sources (MyPlugInCore, MyReverb, MyDelay,
-│                               MyChorusPan, MyChannelStrip, MyMaximizer, MyPlugInCatalog); edit them in MyPlugIn, not here
+│                               MyChorusPan, MyChannelStrip, MyMaximizer, MyTuner, MyPlugInCatalog); edit them in MyPlugIn, not here
 ├── VST3Host/                   C++ VST3 host bridge (static library via CMake)
 ├── ThirdParty/vst3sdk/         Steinberg VST3 SDK
 ├── Resources/                  Translations (Localizable.strings and InfoPlist.strings in en.lproj / ja.lproj)
@@ -199,6 +200,7 @@ mainMixer → master volume mixer → master plug-ins (POST) → meter mixer (�
 ```
 inputNode (all device input channels)
   ├──► input tap → channel extraction → AudioDiskWriter (WAV, dry)
+  ├──► input tap → TunerFeed → MyTuner render block (while the tuner is open; not in the graph)
   └──► InputMonitorAudioUnit (per track, when I is on) → track output mixer
 ```
 
@@ -230,7 +232,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 | --- | --- | --- |
 | Main (@MainActor) | UI, `ProjectState`, public `AudioEngineManager` API, graph changes | — |
 | Audio render thread | AVAudioEngine rendering, `VST3AudioUnit` / `InputMonitorAudioUnit` render blocks | Lock-free (preallocated buffers); a `std::mutex` inside the VST3 bridge only (uncontended) |
-| Input tap thread | `processInputAudioBuffer` (peaks, recording extraction) | `captureLock`, `recordingTimingLock`, `peakLock` |
+| Input tap thread | `processInputAudioBuffer` (peaks, recording extraction, the tuner's render through `TunerFeed`) | `captureLock`, `recordingTimingLock`, `peakLock`, `TunerFeed`'s lock (`try` only) |
 | Writer queue | `AudioDiskWriter` WAV writes | Serial `DispatchQueue` |
 | Export conversion task | `ExportEncoder` (sample-rate conversion, WAV / MP3 writing) | `Task.detached`; progress is handed to the main thread. It only reads the capture's temporary file, no shared state |
 | Load monitor timer (10 Hz) | `AudioLoadMonitor`: collects the output unit's render notify timings (measured on the render thread), detects dropouts, updates the CPU meter | The render thread only writes aligned 64-bit values (no locks); the main thread takes differences of running totals |
@@ -255,7 +257,7 @@ VST3s are inserted into the AVAudioEngine graph as in-app AUv3 units.
 - **Where the code lives**: the effects are developed in the separate MyPlugIn project (`../MyPlugIn`, a Swift package with its own tests and host apps). `scripts/sync-myplugin.sh` copies its Swift sources one way into `Sources/BuiltIn/MyPlugIn` (deleting the old copy first), and `build.sh` compiles them into the MyDAW executable with the rest of the sources. Changes made only in MyDAW's copy are lost at the next sync.
 - **Registration**: at launch `BuiltInPlugins.registration` calls `MyPlugInCatalog.registerAll(manufacturer: 'MyDA', vendorName: "MyDAW")`, which registers every effect of the catalog with `AUAudioUnit.registerSubclass`. They then appear in the plug-in list as "MyDAW: MyReverb" etc. and are inserted, saved (`fullStateForDocument`) and latency-compensated like any in-process AU. An effect added to MyPlugIn's catalog comes along with the next sync and build, with no change in MyDAW. The component codes are stored in projects, so they must not change; vendor 'MyDW' is reserved for MyDAW's internal units, which `PluginManager` hides.
 - **Channel name**: `AudioEngineManager` sets each AU's `contextName` to the name of its track or FX channel, or "MASTER", and follows renames and insert changes through Combine (`observeChannelNames`); the built-in editors show it under the effect name.
-- **Effects**: MyReverb (plate reverb, tuned against impulse responses of Relab LX480 Essentials' Plate: the tail peaks about 40 ms in, a panned source stays on its side for the first 50 to 100 ms, the side signal below 200 Hz is raised x1.3, WIDTH sets the stereo width of the reverb; details in MyPlugIn's Docs/MyReverb.md), MyDelay, MyChorusPan (Chorus Pedal, Dimension, Flanger Pedal and Auto Pan modes; each mode has its own parameters and INIT resets it to the recommended ones; Dimension follows the signal flow in Arturia's Chorus DIMENSION-D manual: separate left and right delays, inverted cross-mix, buttons 1 to 3 and BOOST; details in MyPlugIn's Docs/MyChorusPan.md), MyChannelStrip (4-band EQ and compressor, either order) and MyMaximizer (maximizer with a 10 ms look-ahead, reported as latency). Their screens and parameters are described in chapter 11 of the operation manual.
+- **Effects**: MyReverb (plate reverb, tuned against impulse responses of Relab LX480 Essentials' Plate: the tail peaks about 40 ms in, a panned source stays on its side for the first 50 to 100 ms, the side signal below 200 Hz is raised x1.3, WIDTH sets the stereo width of the reverb; details in MyPlugIn's Docs/MyReverb.md), MyDelay, MyChorusPan (Chorus Pedal, Dimension, Flanger Pedal and Auto Pan modes; each mode has its own parameters and INIT resets it to the recommended ones; Dimension follows the signal flow in Arturia's Chorus DIMENSION-D manual: separate left and right delays, inverted cross-mix, buttons 1 to 3 and BOOST; details in MyPlugIn's Docs/MyChorusPan.md), MyChannelStrip (4-band EQ and compressor, either order) and MyMaximizer (maximizer with a 10 ms look-ahead, reported as latency). MyTuner (chromatic / guitar tuner, needle or strobe; YIN pitch detection in the editor on a 12 kHz decimated signal; details in MyPlugIn's Docs/MyTuner.md) is not in the insert list: the transport bar's tuning-fork button opens it, and `TunerHost` renders it from the input tap, so opening it never rewires the running engine. Their screens and parameters are described in chapter 11 of the operation manual.
 
 ---
 

@@ -240,7 +240,8 @@ public final class PluginManager: ObservableObject {
             // MyDAW's own processing units (mono downmix, VST3 host, delay
             // compensation, input monitor) are registered in-process as
             // effects; they are not for the user to insert.
-            guard desc.componentManufacturer != Self.internalAUManufacturer else {
+            guard desc.componentManufacturer != Self.internalAUManufacturer,
+                  !BuiltInPlugins.isHiddenFromInserts(desc) else {
                 component = AudioComponentFindNext(validComponent, &effectDescription)
                 continue
             }

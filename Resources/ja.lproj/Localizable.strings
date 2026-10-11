@@ -323,3 +323,7 @@
 "Creating recording files… (%lld / %lld)" = "録音ファイルを生成しています…（%lld / %lld）";
 "%@-This plug-in cannot be used" = "%@-このプラグインは使用できません";
 "%@-This plug-in was not found" = "%@-このプラグインは見つかりません";
+"Show/Hide Tuner" = "チューナーの表示／非表示";
+"Tuner" = "チューナー";
+"No Input" = "入力なし";
+"The input channel the tuner listens to" = "チューナーが聴く入力チャンネル";
