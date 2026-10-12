@@ -20,6 +20,9 @@ import MyChorusPan
 #if canImport(MyTuner)
 import MyTuner
 #endif
+#if canImport(MyDeEsser)
+import MyDeEsser
+#endif
 // new-plugin.sh: imports
 
 /// Every MyPlugIn effect, in menu order. A host registers them all with
@@ -33,6 +36,7 @@ public enum MyPlugInCatalog {
         MyMaximizerAudioUnit.self,
         MyChorusPanAudioUnit.self,
         MyTunerAudioUnit.self,
+        MyDeEsserAudioUnit.self,
         // new-plugin.sh: catalog
     ]
 

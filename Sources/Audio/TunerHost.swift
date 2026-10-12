@@ -95,10 +95,10 @@ final class TunerHost: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         // Same as plug-in windows: Space runs the transport, floats above
-        // the main window, hides while MyDAW is in the background.
+        // the main window, stays visible (at the normal level, above
+        // MyDAW) while MyDAW is in the background.
         window.identifier = AudioEngineManager.pluginWindowIdentifier
-        window.level = .floating
-        window.hidesOnDeactivate = true
+        window.level = NSApp.isActive ? .floating : .normal
         window.collectionBehavior.insert(.moveToActiveSpace)
         window.center()
         window.setFrameAutosaveName(Self.windowAutosaveName)

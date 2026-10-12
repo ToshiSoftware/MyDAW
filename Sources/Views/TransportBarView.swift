@@ -157,12 +157,13 @@ public struct TransportBarView: View {
                 .help(anyArmed ? "Record Armed Tracks (R)" : "No Tracks Armed for Recording")
 
                 // Fixed from the Record button until stop; an enabled punch
-                // blinks meanwhile, standing by or recording.
+                // blinks meanwhile while standing by and is lit while
+                // recording inside the range (like the punch range).
                 Button {
                     projectState.setPunchEnabled(!projectState.punchRange.enabled)
                 } label: {
                     let isOn = projectState.punchRange.enabled
-                    Blinking(isActive: isOn && audioEngine.isRecordPass) { isLit in
+                    Blinking(isActive: isOn && audioEngine.isRecordPass && !audioEngine.isPunchRecording) { isLit in
                         Text("P")
                             .font(.system(size: 11, weight: .black))
                             .foregroundColor(isOn ? .black : .red.opacity(0.75))

@@ -26,14 +26,14 @@ struct Blinking<Content: View>: View {
     }
 }
 
-/// The R button face: red while armed (standing by, or playing), and
-/// blinking while this track records.
+/// The R button face: blinking red while armed and standing by, lit red
+/// while this track records.
 private struct RecordArmLabel: View {
     let isArmed: Bool
     let isRecording: Bool
 
     var body: some View {
-        Blinking(isActive: isRecording) { isLit in
+        Blinking(isActive: isArmed && !isRecording) { isLit in
             face(redOpacity: isLit ? 1.0 : 0.35)
         }
     }

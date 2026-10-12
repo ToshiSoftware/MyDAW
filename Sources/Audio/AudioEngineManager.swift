@@ -533,6 +533,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         // プラグインウィンドウは .floating レベルを使用するため、
         // メインウィンドウのアクティブ化に応じて orderFront する処理は不要になった。
+        // 他のアプリに切り替えたときは通常レベルに下げて表示したままにする。
+        observeAppActivationForPluginWindows()
     }
 
     private static func resolveRecordingsDirectory() -> URL {
@@ -3858,12 +3860,43 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // プラグインウィンドウが後ろに回らないようにする。
         // プラグイン同士は同じ .floating レベルにあるため、
         // クリックで互いの重なり順を変えることは引き続き可能。
-        window.level = .floating
-        // アプリが非アクティブになったとき（他のアプリに切り替えたとき）は
-        // プラグインウィンドウを自動的に隠す。
-        // MyDAW に戻ると自動的に再表示される。Logic Pro 等と同じ挙動。
-        window.hidesOnDeactivate = true
+        // 他のアプリに切り替えたときは隠さず、通常レベルに下げて
+        // MyDAW のウィンドウのすぐ上に置く（setPluginWindowsFloating）。
+        window.level = NSApp.isActive ? .floating : .normal
         window.collectionBehavior.insert(.moveToActiveSpace)
+    }
+
+    /// Plug-in windows (and the tuner) float above MyDAW's windows while
+    /// MyDAW is active. When another app comes forward they stay visible
+    /// but drop to the normal level, just above MyDAW's front window, so
+    /// the stack is: the other app, the plug-ins, MyDAW. They float again
+    /// when MyDAW comes back.
+    private func observeAppActivationForPluginWindows() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Self.setPluginWindowsFloating(false) }
+        }
+        center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Self.setPluginWindowsFloating(true) }
+        }
+    }
+
+    static func setPluginWindowsFloating(_ floating: Bool) {
+        let windows = NSApp.orderedWindows // front to back
+        let pluginWindows = windows.filter { $0.identifier == pluginWindowIdentifier && $0.isVisible }
+        guard floating else {
+            let mainWindow = windows.first {
+                $0.identifier != pluginWindowIdentifier && $0.isVisible && $0.level == .normal
+            }
+            // Front to back, each straight above the main window: the
+            // plug-ins keep their order among themselves.
+            for window in pluginWindows {
+                window.level = .normal
+                if let mainWindow { window.order(.above, relativeTo: mainWindow.windowNumber) }
+            }
+            return
+        }
+        for window in pluginWindows { window.level = .floating }
     }
 
     private func restorePluginWindowFrame(_ window: NSWindow, pluginID: UUID) {
