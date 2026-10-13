@@ -245,6 +245,11 @@ public final class ReverbKernel: MyFXKernel {
                 }
             }
             tank.renormalizeModulation()
+            stereoImage.flushDenormals()
+            highPassLeft.flushDenormals()
+            highPassRight.flushDenormals()
+            lowPassLeft.flushDenormals()
+            lowPassRight.flushDenormals()
             offset += count
 
         }

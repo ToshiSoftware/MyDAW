@@ -10,6 +10,11 @@ private func nextPowerOfTwo(_ value: Int) -> Int {
     return size
 }
 
+/// Float states below this (-400 dB) are set to zero once per chunk: far
+/// below hearing, and far above the denormal range (1e-38), which a state
+/// cannot reach within one chunk.
+let reverbFlushThreshold: Float = 1e-20
+
 // MARK: - Pre-delay
 
 /// Stereo delay of 0 to `maximumSeconds`. A new delay time is reached by
@@ -152,6 +157,12 @@ struct ReverbStereoImage {
         sideLow = 0
     }
 
+    /// Once the tail is silent the one-pole would settle on the smallest
+    /// denormal, not zero; call once per chunk.
+    mutating func flushDenormals() {
+        if abs(sideLow) < reverbFlushThreshold { sideLow = 0 }
+    }
+
     @inline(__always)
     mutating func process(left: Float, right: Float, width: Float) -> (Float, Float) {
         let mid = 0.5 * (left + right)
@@ -176,6 +187,12 @@ struct ReverbStereoImage {
 /// so the tail starts within a few milliseconds instead of after the
 /// shortest line; each side taps only the lines its own input feeds, so a
 /// panned source stays on its side for the first 50 to 100 ms.
+/// Diffusion is kept light so the first 200 ms stay grainy, as on the
+/// LX480 plate (echo density 0.43 / 0.66 at 50 / 100 ms; there 0.48 / 0.63),
+/// which keeps a low reverb level audible. Like 1980s fixed-point
+/// hardware, the line memories hold 18-bit words and the absorbent filters
+/// 22-bit products (both truncated toward zero), so quiet tails fade out
+/// a little sooner than a float tail would.
 final class ReverbTank {
     static let lineCount = 8
     /// Line lengths in samples at 44.1 kHz (primes, 31 to 97 ms, irregular
@@ -193,19 +210,23 @@ final class ReverbTank {
     /// Lengths of the all-passes inside the feedback loop, at 44.1 kHz
     /// (primes, 2.6 to 9.5 ms; none shares a factor with a line length).
     private static let loopAllpassLengths: [Double] = [241, 113, 373, 167, 421, 199, 331, 283]
+    /// Fixed-point grids, steps per unit: 18-bit memory, 22-bit products.
+    private static let memorySteps: Float = 131_072
+    private static let productSteps: Float = 2_097_152
 
     /// Nyquist RT as a fraction of the set RT. 1 disables damping (tests).
-    /// 0.7 matches the LX480 plate's treble in the tail (0.5 was 2 dB darker).
-    var highFrequencyRatio: Double = 0.7 {
+    /// 0.85 chosen by ear against the LX480 plate, whose treble decays
+    /// almost as slowly as its mids (0.7 was darker, 1.0 too bright).
+    var highFrequencyRatio: Double = 0.85 {
         didSet { configuredRT = -1 }
     }
 
     /// Gain of the all-pass in each line's feedback path; 0 leaves it out.
     /// Each pass through the loop then smears every echo into a burst, so
-    /// echo density keeps rising with each reflection, as in a room. 0.5
-    /// cut the time to full density from 152 to 116 ms (RT 2 s); higher
-    /// gains added no density, only longer ringing at multiples of 1/length.
-    var loopDiffusion: Float = 0.5 {
+    /// echo density keeps rising with each reflection, as in a room. 0.3
+    /// (with input diffusers at 0.45 / 0.375) chosen by ear against the
+    /// LX480 plate over 0.5 (dense within 100 ms) and sparser settings.
+    var loopDiffusion: Float = 0.3 {
         didSet { configuredRT = -1 }
     }
 
@@ -232,10 +253,10 @@ final class ReverbTank {
     private var loopAllpassMask = 0
     private var loopAllpassIndex = 0
     // Separate properties, not an array: no retain or bounds check per sample.
-    private let diffuserLeft1 = ReverbAllpass(gain: 0.75)
-    private let diffuserLeft2 = ReverbAllpass(gain: 0.625)
-    private let diffuserRight1 = ReverbAllpass(gain: 0.75)
-    private let diffuserRight2 = ReverbAllpass(gain: 0.625)
+    private let diffuserLeft1 = ReverbAllpass(gain: 0.45)
+    private let diffuserLeft2 = ReverbAllpass(gain: 0.375)
+    private let diffuserRight1 = ReverbAllpass(gain: 0.45)
+    private let diffuserRight2 = ReverbAllpass(gain: 0.375)
     /// Keeps long tails from growing louder than a 2 s tail (<= 1).
     private(set) var loudnessCompensation: Float = 1
     private var configuredRT = -1.0
@@ -323,6 +344,12 @@ final class ReverbTank {
         loudnessCompensation = Float(min(1, ((1 - gain * gain) / (1 - referenceGain * referenceGain)).squareRoot()))
     }
 
+    /// Rounds toward zero to a grid of `steps` per unit.
+    @inline(__always)
+    private static func truncate(_ value: Float, steps: Float) -> Float {
+        (value * steps).rounded(.towardZero) / steps
+    }
+
     /// Keeps the quadrature oscillators on the unit circle (call per chunk).
     func renormalizeModulation() {
         for index in 0..<Self.lineCount {
@@ -372,14 +399,17 @@ final class ReverbTank {
             let base = index * lineSize
             let newer = buffer[base + ((writeIndex - whole) & lineMask)]
             let older = buffer[base + ((writeIndex - whole - 1) & lineMask)]
-            let read = coefficient * (newer - interpolatorState[index]) + older
+            // A product too: truncated, so it settles at zero after the tail.
+            let read = Self.truncate(coefficient * (newer - interpolatorState[index]) + older,
+                                     steps: Self.productSteps)
             interpolatorState[index] = read
-            let filtered = feedbackA[index] * read + feedbackB[index] * filterState[index]
+            let filtered = Self.truncate(feedbackA[index] * read + feedbackB[index] * filterState[index],
+                                         steps: Self.productSteps)
             filterState[index] = filtered
             if loopDiffusion != 0 {
                 let slot = index * loopAllpassSize
                 let delayed = loopAllpassBuffer[slot + ((loopAllpassIndex - loopAllpassDelays[index]) & loopAllpassMask)]
-                let v = filtered - loopDiffusion * delayed
+                let v = Self.truncate(filtered - loopDiffusion * delayed, steps: Self.memorySteps)
                 loopAllpassBuffer[slot + loopAllpassIndex] = v
                 lines[index] = delayed + loopDiffusion * v
             } else {
@@ -406,14 +436,15 @@ final class ReverbTank {
             half *= 2
         }
 
-        // A tiny DC bias keeps the decaying tail out of denormals.
+        // Truncation flushes the decaying tail to zero, so the lines never
+        // reach denormals. (The float stages after the tank flush their own
+        // state; see flushDenormals.)
         let scale: Float = 0.353_553_39
-        let inputLeft = diffusedLeft + 1e-18
-        let inputRight = diffusedRight + 1e-18
         for index in 0..<Self.lineCount {
-            let input = index & 1 == 0 ? inputLeft : inputRight
+            let input = index & 1 == 0 ? diffusedLeft : diffusedRight
             let signed = index & 2 == 0 ? input : -input
-            buffer[index * lineSize + writeIndex] = scale * lines[index] + signed
+            buffer[index * lineSize + writeIndex] = Self.truncate(scale * lines[index] + signed,
+                                                                  steps: Self.memorySteps)
         }
         writeIndex = (writeIndex + 1) & lineMask
         loopAllpassIndex = (loopAllpassIndex + 1) & loopAllpassMask
@@ -460,6 +491,13 @@ struct Butterworth3State {
     private var onePole: Float = 0
     private var ic1: Float = 0
     private var ic2: Float = 0
+
+    /// Silent input would leave the states on denormals; call once per chunk.
+    mutating func flushDenormals() {
+        if abs(onePole) < reverbFlushThreshold { onePole = 0 }
+        if abs(ic1) < reverbFlushThreshold { ic1 = 0 }
+        if abs(ic2) < reverbFlushThreshold { ic2 = 0 }
+    }
 
     @inline(__always)
     mutating func process(_ input: Float, _ c: Butterworth3Coefficients, highPass: Bool) -> Float {
