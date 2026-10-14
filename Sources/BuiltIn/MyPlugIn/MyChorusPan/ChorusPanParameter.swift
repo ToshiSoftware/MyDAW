@@ -92,9 +92,13 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
     case panType = 40
     case panSpeed = 41
     case panWidth = 42
+    /// Tempo sync: SPEED follows the host's tempo, one cycle per note length.
+    case panSync = 43
+    case panSyncNote = 44
+    case panSyncType = 45
 
     /// One more than the largest address, for arrays indexed by address.
-    public static let addressCount = 43
+    public static let addressCount = 46
 
     /// The mode this parameter belongs to (nil: MODE itself).
     public var mode: ChorusPanMode? {
@@ -108,7 +112,7 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
     }
 
     private enum Kind {
-        case mode, delay, depth, feedback, wave, speed, percent, dimensionMode, toggle
+        case mode, delay, depth, feedback, wave, speed, percent, dimensionMode, toggle, syncNote, syncType
     }
 
     private var kind: Kind {
@@ -120,7 +124,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .chorusLFOType, .flangerLFOType, .panType: return .wave
         case .chorusSpeed, .flangerSpeed, .panSpeed: return .speed
         case .dimensionMode: return .dimensionMode
-        case .dimensionBoost: return .toggle
+        case .dimensionBoost, .panSync: return .toggle
+        case .panSyncNote: return .syncNote
+        case .panSyncType: return .syncType
         default: return .percent
         }
     }
@@ -150,6 +156,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .panType: return "pan_type"
         case .panSpeed: return "pan_speed"
         case .panWidth: return "pan_width"
+        case .panSync: return "pan_sync"
+        case .panSyncNote: return "pan_sync_note"
+        case .panSyncType: return "pan_sync_type"
         }
     }
 
@@ -169,6 +178,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .dimensionBoost: return "BOOST"
         case .panType: return "PAN"
         case .panWidth: return "WIDTH"
+        case .panSync: return "SYNC"
+        case .panSyncNote: return "NOTE"
+        case .panSyncType: return "TYPE"
         }
     }
 
@@ -183,7 +195,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .wave: control = self == .panType ? "Type" : "LFO Type"
         case .speed: control = "Speed"
         case .dimensionMode: control = "Mode"
-        case .toggle: control = "Boost"
+        case .toggle: control = self == .panSync ? "Tempo Sync" : "Boost"
+        case .syncNote: control = "Sync Note"
+        case .syncType: control = "Sync Note Type"
         case .percent:
             switch self {
             case .chorusLFOWidth, .flangerLFOWidth: control = "LFO Width"
@@ -207,7 +221,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .flangerSpeed: return 0.02...5
         case .panSpeed: return 0.05...10
         case .dimensionMode: return 0...Float(ChorusPanDimensionSetting.delaysMilliseconds.count - 1)
-        case .dimensionBoost: return 0...1
+        case .dimensionBoost, .panSync: return 0...1
+        case .panSyncNote: return 0...Float(MyFXNoteLength.allCases.count - 1)
+        case .panSyncType: return 0...Float(MyFXNoteType.allCases.count - 1)
         default: return 0...100
         }
     }
@@ -222,7 +238,9 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .chorusSpeed: return 0.6
         case .chorusLFOWidth: return 100
         case .chorusMix, .dimensionMix, .flangerMix: return 50
-        case .dimensionMode, .dimensionBoost: return 0
+        case .dimensionMode, .dimensionBoost, .panSync: return 0
+        case .panSyncNote: return Float(MyFXNoteLength.quarter.rawValue)
+        case .panSyncType: return Float(MyFXNoteType.normal.rawValue)
         case .flangerDelay: return 2
         case .flangerDepth: return 80
         case .flangerFeedback: return 60
@@ -236,7 +254,7 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
 
     public var unit: AudioUnitParameterUnit {
         switch kind {
-        case .mode, .wave, .dimensionMode: return .indexed
+        case .mode, .wave, .dimensionMode, .syncNote, .syncType: return .indexed
         case .toggle: return .boolean
         case .delay: return .milliseconds
         case .speed: return .hertz
@@ -246,7 +264,7 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
 
     public var flags: AudioUnitParameterOptions {
         switch kind {
-        case .mode, .wave, .dimensionMode, .toggle: return []
+        case .mode, .wave, .dimensionMode, .toggle, .syncNote, .syncType: return []
         case .delay, .speed: return [.flag_CanRamp, .flag_DisplayLogarithmic]
         default: return [.flag_CanRamp]
         }
@@ -254,6 +272,7 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
 
     public var isIndexed: Bool {
         kind == .mode || kind == .wave || kind == .dimensionMode || kind == .toggle
+            || kind == .syncNote || kind == .syncType
     }
 
     public var isLogarithmic: Bool {
@@ -266,6 +285,8 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .wave: return ChorusPanWave.allCases.map(\.displayName)
         case .dimensionMode: return ChorusPanDimensionSetting.delaysMilliseconds.indices.map { "\($0 + 1)" }
         case .toggle: return ["Off", "On"]
+        case .syncNote: return MyFXNoteLength.allCases.map(\.displayName)
+        case .syncType: return MyFXNoteType.allCases.map(\.displayName)
         default: return nil
         }
     }
@@ -279,7 +300,7 @@ public enum ChorusPanParameter: Int, CaseIterable, Sendable, MyFXParameter {
     public func displayString(for value: Float) -> String {
         let value = clamped(value)
         switch kind {
-        case .mode, .wave, .dimensionMode, .toggle:
+        case .mode, .wave, .dimensionMode, .toggle, .syncNote, .syncType:
             return valueStrings?[Int(value)] ?? ""
         // At most 6 characters: seven faders share 300 px.
         case .delay:

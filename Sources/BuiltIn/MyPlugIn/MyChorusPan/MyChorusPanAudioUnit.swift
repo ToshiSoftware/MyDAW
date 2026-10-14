@@ -42,6 +42,6 @@ public final class MyChorusPanAudioUnit: MyFXAudioUnit, @unchecked Sendable {
         let lamp = ChorusPanLampModel(kernel: chorusPanKernel, isVisible: { [weak model] in
             model?.isVisible() ?? false
         })
-        return AnyView(ChorusPanEditorView(model: model, lamp: lamp))
+        return AnyView(ChorusPanEditorView(model: model, lamp: lamp, tempo: chorusPanKernel.hostTempo))
     }
 }

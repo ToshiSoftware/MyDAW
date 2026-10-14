@@ -97,6 +97,10 @@ public final class DelayKernel: MyFXKernel {
     private var wasBypassed = false
     private var isPrepared = false
 
+    /// The host's tempo, for SYNC.
+    public let hostTempo = MyFXTempo()
+    public var tempo: MyFXTempo? { hostTempo }
+
     private let left = DelayLine()
     private let right = DelayLine()
 
@@ -161,10 +165,20 @@ public final class DelayKernel: MyFXKernel {
         meterPeaks.take()
     }
 
+    /// TIME in seconds: the TIME fader, or with SYNC the note length at
+    /// the host's tempo (within TIME's range).
+    public var effectiveTime: Double {
+        guard target(.sync) >= 0.5 else { return Double(target(.time)) }
+        let length = MyFXNoteLength(rawValue: Int(target(.syncNote))) ?? .quarter
+        let type = MyFXNoteType(rawValue: Int(target(.syncType))) ?? .normal
+        let range = DelayParameter.time.range
+        return min(max(hostTempo.seconds(length, type), Double(range.lowerBound)), Double(range.upperBound))
+    }
+
     /// Until the echoes fall 60 dB (capped at 60 s past the longest delay).
     public var tailTime: Double {
         let mode = targetMode
-        let time = Double(target(.time)) * (mode == .doubler ? DelayMode.doublerRightRatio : 1)
+        let time = effectiveTime * (mode == .doubler ? DelayMode.doublerRightRatio : 1)
         let feedback = mode.usesFeedback ? Double(target(.feedback)) / 100 : 0
         guard feedback > 0.001 else { return time }
         guard feedback < 0.999 else { return time + 60 }
@@ -316,7 +330,7 @@ public final class DelayKernel: MyFXKernel {
     // MARK: Private
 
     private func delays(for mode: DelayMode) -> (Int, Int) {
-        let time = Double(target(.time)) * sampleRate
+        let time = effectiveTime * sampleRate
         let leftDelay = Int(time.rounded())
         let rightDelay = mode == .doubler ? Int((time * DelayMode.doublerRightRatio).rounded()) : leftDelay
         return (leftDelay, rightDelay)

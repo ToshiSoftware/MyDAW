@@ -39,6 +39,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     }
     @Published public var bpm: Double = 120.0 {
         didSet {
+            HostMusicalContext.shared.beatsPerMinute = bpm
             if isPlaying || isRecording {
                 startMetronome()
             }
@@ -511,6 +512,8 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         self.recordingsDirectory = Self.resolveRecordingsDirectory()
         tunerFeed = tunerHost.feed
         super.init()
+        // Before any plug-in is allocated: MyFX units take its blocks then.
+        HostMusicalContext.shared.beatsPerMinute = bpm
         tunerHost.onClose = { [weak self] in self?.isTunerVisible = false }
         adoptInheritedOriginalDeviceSettings()
         if inputDeviceID != 0 || outputDeviceID != 0 {
@@ -718,7 +721,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         raiseMaximumFramesPerSlice()
         do {
-            try engine.start()
+            try startEngine()
             self.isAudioInputActive = true
             updateHardwareLatencyInfo()
             updateEstimatedRecordingLatency()
@@ -760,6 +763,18 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         node.play()
     }
 
+    /// Starts the engine, first giving every hosted plug-in MyDAW's tempo
+    /// and transport again: AVAudioEngine.stop() sets each unit's
+    /// musicalContextBlock and transportStateBlock to nil, and a unit takes
+    /// them when its render resources are allocated (at start). MyFX units
+    /// read MyFXHostContext instead; this is for the others.
+    private func startEngine() throws {
+        for audioUnit in pluginAudioUnits.values {
+            HostMusicalContext.shared.attach(to: audioUnit.auAudioUnit)
+        }
+        try engine.start()
+    }
+
     private func reconfigureEngine() {
         engine.stop()
         // Re-install tap and re-read hardware sample rate
@@ -788,7 +803,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         if !engine.isRunning {
             engine.prepare()
             do {
-                try engine.start()
+                try startEngine()
             } catch {
                 print("Failed to start audio engine before plugin restore: \(error)")
             }
@@ -914,7 +929,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                   currentAudioUnit === audioUnit else { return }
 
             if !self.engine.isRunning && !self.isMasterPluginGraphBuilding {
-                try? self.engine.start()
+                try? self.startEngine()
             }
             if !audioUnit.auAudioUnit.renderResourcesAllocated {
                 // A unit not wired yet still has its default bus format
@@ -927,6 +942,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         try? busses[0].setFormat(format)
                     }
                 }
+                HostMusicalContext.shared.attach(to: audioUnit.auAudioUnit)
                 try? audioUnit.auAudioUnit.allocateRenderResources()
             }
 
@@ -2203,7 +2219,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 format: format
             )
             if wasEngineRunning {
-                try? engine.start()
+                try? startEngine()
             }
             return
         }
@@ -2253,7 +2269,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             masterPluginSignature = signature
             isMasterPluginGraphBuilding = false
             if wasEngineRunning {
-                try? engine.start()
+                try? startEngine()
             }
             return
         }
@@ -2281,7 +2297,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         if auPlugins.isEmpty {
             connectMasterOutput(from: masterOutputNode, format: format)
             if wasEngineRunning {
-                try? engine.start()
+                try? startEngine()
             }
             finishMasterPluginGraphBuild()
         } else {
@@ -2445,7 +2461,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             engineConnect(source, to: destination, format: format)
         }
         if restart {
-            try? engine.start()
+            try? startEngine()
         }
     }
 
@@ -2571,7 +2587,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             } else {
                 connectMasterOutput(from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
-                    try? engine.start()
+                    try? startEngine()
                 }
                 finishMasterPluginGraphBuild()
             }
@@ -2588,6 +2604,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         let pluginID = plugin.id
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             AVAudioUnit.instantiate(with: componentDescription, options: []) { instantiatedUnit, error in
+                HostMusicalContext.shared.attach(to: instantiatedUnit?.auAudioUnit)
                 guard let self else { return }
                 DispatchQueue.main.async {
                     guard self.masterPluginGraphGeneration == generation else {
@@ -2624,7 +2641,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         } else {
                             self.connectMasterOutput(from: previousNode, format: format)
                             if !self.engine.isRunning {
-                                try? self.engine.start()
+                                try? self.startEngine()
                             }
                             self.finishMasterPluginGraphBuild()
                         }
@@ -2658,7 +2675,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     } else {
                         self.connectMasterOutput(from: chainTail, format: format)
                         if !self.engine.isRunning {
-                            try? self.engine.start()
+                            try? self.startEngine()
                         }
                         self.finishMasterPluginGraphBuild()
                     }
@@ -2959,7 +2976,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         engineConnect(splitter, to: points, fromBus: 0, format: format)
         detachRetiredSendGains(of: trackID)
         if wasRunning {
-            try? engine.start()
+            try? startEngine()
         }
     }
 
@@ -3123,7 +3140,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             )
         }
         if wasRunning {
-            try? engine.start()
+            try? startEngine()
         }
     }
 
@@ -3179,7 +3196,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         guard index < plugins.count else {
             connectFXOutput(channelID: channelID, from: previousNode, format: format)
             if resumeEngine && !engine.isRunning {
-                try? engine.start()
+                try? startEngine()
             }
             return
         }
@@ -3211,7 +3228,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             } else {
                 connectFXOutput(channelID: channelID, from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
-                    try? engine.start()
+                    try? startEngine()
                 }
             }
             return
@@ -3222,6 +3239,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             with: chainComponentDescription(for: plugin),
             options: [],
             completionHandler: { [weak self] audioUnit, _ in
+                HostMusicalContext.shared.attach(to: audioUnit?.auAudioUnit)
                 if let vst3Instance {
                     (audioUnit?.auAudioUnit as? VST3AudioUnit)?.attach(vst3Instance)
                 }
@@ -3280,7 +3298,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                     } else {
                         self.connectFXOutput(channelID: channelID, from: chainTail, format: format)
                         if wasEngineRunning && !self.engine.isRunning {
-                            try? self.engine.start()
+                            try? self.startEngine()
                         }
                     }
                 }
@@ -3360,7 +3378,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         guard index < plugins.count else {
             connectTrackChainTail(trackID, from: previousNode, format: format)
             if resumeEngine && !engine.isRunning {
-                try? engine.start()
+                try? startEngine()
             }
             return
         }
@@ -3406,7 +3424,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             } else {
                 connectTrackChainTail(trackID, from: chainTail, format: format)
                 if resumeEngine && !engine.isRunning {
-                    try? engine.start()
+                    try? startEngine()
                 }
             }
             return
@@ -3421,6 +3439,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                 with: componentDescription,
                 options: [],
                 completionHandler: { audioUnit, error in
+                    HostMusicalContext.shared.attach(to: audioUnit?.auAudioUnit)
                     if let vst3Instance {
                         (audioUnit?.auAudioUnit as? VST3AudioUnit)?.attach(vst3Instance)
                     }
@@ -3480,7 +3499,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
                         } else {
                             self.connectTrackChainTail(trackID, from: chainTail, format: format)
                             if wasEngineRunning && !self.engine.isRunning {
-                                try? self.engine.start()
+                                try? self.startEngine()
                             }
                         }
                     }
@@ -4026,7 +4045,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
 
         if !engine.isRunning {
             do {
-                try engine.start()
+                try startEngine()
             } catch {
                 print("Failed to start audio engine for playback: \(error)")
                 isStartingPlayback = false
@@ -4301,7 +4320,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         raiseMaximumFramesPerSlice()
         if wasRunning {
             do {
-                try engine.start()
+                try startEngine()
             } catch {
                 print("Input monitoring: engine restart failed: \(error)")
             }
@@ -4742,7 +4761,7 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         // The sync above may have restarted the engine; wait until it
         // renders again before scheduling.
         if !engine.isRunning {
-            try? engine.start()
+            try? startEngine()
         }
         let renderWaitStart = Date()
         let firstRenderTime = captureNode.lastRenderTime?.sampleTime
@@ -4992,6 +5011,85 @@ private final class ExportWindow: @unchecked Sendable {
 @MainActor
 public final class MasterVolumeState: ObservableObject {
     @Published public var value: Float = 1.0
+}
+
+/// The project tempo and song position for hosted Audio Units, so
+/// tempo-synced plug-ins (MyDelay, MyChorusPan's SYNC) follow the BPM and
+/// lock to the bars. MyDAW has no time signature setting, so it reports 4/4.
+///
+/// AVAudioEngine clears every unit's `musicalContextBlock` and
+/// `transportStateBlock` when it stops, and MyDAW stops and restarts it
+/// often. So the MyFX units take the blocks from `MyFXHostContext` (set
+/// here once); other units get them on instantiation and again before
+/// every engine start (`AudioEngineManager.startEngine`).
+///
+/// The song position comes from the track renderers: each render cycle
+/// they report the timeline time they play, before the plug-ins after them
+/// ask. The transport counts as moving while those reports keep coming.
+/// Values are single 64-bit words, read and written on the render thread.
+public final class HostMusicalContext: @unchecked Sendable {
+    public static let shared = HostMusicalContext()
+
+    private enum Field: Int {
+        case tempo, songSeconds, reportHostTicks
+    }
+    private let fields = UnsafeMutablePointer<Double>.allocate(capacity: 3)
+    private let ticksPerSecond: Double
+    /// Reports older than this mean the transport stopped.
+    private static let stoppedAfterSeconds = 0.25
+    private let musicalContextBlock: AUHostMusicalContextBlock
+    private let transportStateBlock: AUHostTransportStateBlock
+
+    private init() {
+        fields.initialize(repeating: 0, count: 3)
+        fields[Field.tempo.rawValue] = 120
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let ticksPerSecond = 1_000_000_000.0 * Double(timebase.denom) / Double(timebase.numer)
+        self.ticksPerSecond = ticksPerSecond
+        let fields = self.fields
+        let isMoving: () -> Bool = {
+            let age = (Double(mach_absolute_time()) - fields[Field.reportHostTicks.rawValue]) / ticksPerSecond
+            return age < Self.stoppedAfterSeconds
+        }
+        musicalContextBlock = { currentTempo, numerator, denominator, beatPosition, sampleOffset, downbeat in
+            let tempo = fields[Field.tempo.rawValue]
+            let beat = isMoving() ? fields[Field.songSeconds.rawValue] * tempo / 60 : 0
+            currentTempo?.pointee = tempo
+            numerator?.pointee = 4
+            denominator?.pointee = 4
+            beatPosition?.pointee = beat
+            sampleOffset?.pointee = 0
+            downbeat?.pointee = (beat / 4).rounded(.down) * 4
+            return true
+        }
+        transportStateBlock = { flags, samplePosition, cycleStart, cycleEnd in
+            flags?.pointee = isMoving() ? [.moving] : []
+            samplePosition?.pointee = 0
+            cycleStart?.pointee = 0
+            cycleEnd?.pointee = 0
+            return true
+        }
+        MyFXHostContext.musicalContextBlock = musicalContextBlock
+        MyFXHostContext.transportStateBlock = transportStateBlock
+    }
+
+    public var beatsPerMinute: Double {
+        get { fields[Field.tempo.rawValue] }
+        set { fields[Field.tempo.rawValue] = newValue }
+    }
+
+    /// Render thread (TrackRenderer, while playing): the timeline time this cycle plays.
+    func reportPlayhead(seconds: Double) {
+        fields[Field.songSeconds.rawValue] = seconds
+        fields[Field.reportHostTicks.rawValue] = Double(mach_absolute_time())
+    }
+
+    /// On instantiation, for units other than MyFX (they read MyFXHostContext).
+    public func attach(to unit: AUAudioUnit?) {
+        unit?.musicalContextBlock = musicalContextBlock
+        unit?.transportStateBlock = transportStateBlock
+    }
 }
 
 /// The engine's playhead position (see `AudioEngineManager.transportClock`).

@@ -166,6 +166,8 @@ open class MyFXAudioUnit: AUAudioUnit, MyFXMetering, @unchecked Sendable {
         try super.allocateRenderResources()
         let frames = Int(maximumFramesToRender)
         renderer.allocate(frames: frames, channelCount: Int(output.channelCount))
+        renderer.musicalContextBlock = MyFXHostContext.musicalContextBlock ?? musicalContextBlock
+        renderer.transportStateBlock = MyFXHostContext.transportStateBlock ?? transportStateBlock
         let oldLatency = latency
         kernel.prepare(sampleRate: output.sampleRate, maximumFrames: frames)
         if latency != oldLatency {

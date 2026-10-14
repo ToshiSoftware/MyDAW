@@ -30,6 +30,16 @@ struct ChorusPanLFO {
         self.speed = speed
     }
 
+    /// Tempo sync while the host plays: phase and speed from the song
+    /// position, so the cycles start on the bars. Called at each render's
+    /// start; at a steady tempo the phase arrives there by itself, so it
+    /// only jumps when the transport starts or moves (the corner smoother
+    /// softens that).
+    mutating func lock(phase: Double, speed: Double) {
+        self.phase = phase
+        self.speed = speed
+    }
+
     /// Advances one sample toward `targetSpeed`; the phase stays continuous.
     @inline(__always)
     mutating func advance(targetSpeed: Double) {
@@ -65,15 +75,22 @@ struct ChorusPanLFO {
 /// moving at full speed, a corner in the delay time that the read-back
 /// turns into a click). Short enough to leave Sine and Triangle all but
 /// unchanged at LFO rates (2 ms each: -0.13 dB and about 4 ms late at 10 Hz).
+///
+/// Square's switches get a longer time constant (`squareSeconds`, 10 ms a
+/// stage): at 2 to 5 ms the switch still sounded like a pop.
 struct ChorusPanCornerSmoother {
+    static let squareSeconds = 0.010
+
     private var first: Float = 0
     private var second: Float = 0
     private var coefficient: Float = 1
+    private var squareCoefficient: Float = 1
 
     init() {}
 
     init(sampleRate: Double, seconds: Double) {
         coefficient = Float(1 - exp(-1 / (seconds * sampleRate)))
+        squareCoefficient = Float(1 - exp(-1 / (Self.squareSeconds * sampleRate)))
     }
 
     mutating func reset(to value: Float) {
@@ -82,7 +99,8 @@ struct ChorusPanCornerSmoother {
     }
 
     @inline(__always)
-    mutating func process(_ value: Float) -> Float {
+    mutating func process(_ value: Float, wave: ChorusPanWave) -> Float {
+        let coefficient = wave == .square ? squareCoefficient : self.coefficient
         first += (value - first) * coefficient
         second += (first - second) * coefficient
         return second

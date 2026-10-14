@@ -5,7 +5,8 @@ import MyPlugInCore
 #endif
 
 // MyDelay's editor: the shared MyFX frame (meters, MyDAW mixer look) with a
-// mode menu in the header and the faders that mode uses. Type names start
+// mode menu in the header, the SYNC row, and the faders that mode uses
+// (with SYNC on, TIME steps through note lengths). Type names start
 // with "Delay" because MyDAW compiles this file into its own module.
 
 /// Fader travel (0 = bottom, 1 = top) for each parameter.
@@ -16,7 +17,7 @@ enum DelayFaderTaper {
         switch parameter {
         case .time:
             return log10(value / 0.001) / 4
-        case .mode:
+        case .mode, .sync, .syncNote, .syncType:
             return value / Double(parameter.range.upperBound)
         case .feedback, .width, .mix:
             return value / 100
@@ -28,7 +29,7 @@ enum DelayFaderTaper {
         switch parameter {
         case .time:
             return parameter.clamped(Float(0.001 * pow(10, 4 * fraction)))
-        case .mode:
+        case .mode, .sync, .syncNote, .syncType:
             return parameter.clamped(Float(fraction) * parameter.range.upperBound)
         case .feedback, .width, .mix:
             return parameter.clamped(Float(fraction * 100))
@@ -46,6 +47,7 @@ enum DelayFaderTaper {
 
 struct DelayEditorView: View {
     @ObservedObject var model: MyFXEditorModel
+    let tempo: MyFXTempo
 
     private var mode: DelayMode {
         DelayMode(rawValue: Int(model.value(DelayParameter.mode.address))) ?? .stereo
@@ -57,14 +59,26 @@ struct DelayEditorView: View {
                 model.setOnce(DelayParameter.mode.address, Float(index))
             }
         } faders: {
-            ForEach(DelayFaderTaper.faders(for: mode), id: \.self) { parameter in
-                fader(parameter)
+            VStack(spacing: 12) {
+                MyFXTempoSyncRow(model: model, tempo: tempo, syncAddress: DelayParameter.sync.address,
+                                 lengthAddress: DelayParameter.syncNote.address,
+                                 typeAddress: DelayParameter.syncType.address)
+                HStack(spacing: 0) {
+                    ForEach(DelayFaderTaper.faders(for: mode), id: \.self) { parameter in
+                        fader(parameter)
+                    }
+                }
             }
         }
     }
 
     private func fader(_ parameter: DelayParameter) -> MyFXFaderColumn {
-        MyFXFaderColumn(
+        if parameter == .time && model.value(DelayParameter.sync.address) >= 0.5 {
+            return MyFXFaderColumn(syncedName: parameter.displayName, model: model,
+                                   lengthAddress: DelayParameter.syncNote.address,
+                                   typeAddress: DelayParameter.syncType.address)
+        }
+        return MyFXFaderColumn(
             parameter: parameter,
             model: model,
             fraction: { DelayFaderTaper.fraction(for: parameter, value: $0) },

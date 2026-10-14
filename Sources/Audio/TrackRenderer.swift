@@ -273,6 +273,8 @@ final class TrackRenderer: @unchecked Sendable {
             renderAnchorSample = time.mSampleTime + ((anchorHost - hostNow) * secondsPerHostTick * sampleRate).rounded()
         }
         let firstFrame = load(.anchorFrame) + Int64((time.mSampleTime - renderAnchorSample).rounded())
+        // The song position for tempo-synced plug-ins after this track.
+        HostMusicalContext.shared.reportPlayhead(seconds: Double(firstFrame) / sampleRate)
         let renderFrom = load(.renderFrom)
 
         var index = 0

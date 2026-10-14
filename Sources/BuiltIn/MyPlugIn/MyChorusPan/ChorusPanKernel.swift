@@ -39,6 +39,11 @@ public final class ChorusPanKernel: MyFXKernel {
     private var handledResets: Int32 = 0
     private var isPrepared = false
     public private(set) var sampleRate = 48_000.0
+    /// The host's tempo, for Auto Pan's SYNC.
+    public let hostTempo = MyFXTempo()
+    public var tempo: MyFXTempo? { hostTempo }
+    /// The render whose song position the pan LFO last locked to.
+    private var lockedRenderCount = -1
 
     // Delay lines (allocated in prepare): L and R, or Dimension's A and B.
     private var left = UnsafeMutablePointer<Float>.allocate(capacity: 1)
@@ -238,6 +243,7 @@ public final class ChorusPanKernel: MyFXKernel {
 
         let wantedMode = targetMode
         var targets = settings(for: mode)
+        lockPanLFOToSong()
         let smoothing = self.smoothing
         let gateStep = self.gateStep
         let left = self.left
@@ -275,15 +281,18 @@ public final class ChorusPanKernel: MyFXKernel {
                 // Equal power: centre unchanged (1, 1), ends (0, sqrt 2), the
                 // two sides' power constant. Sine and cosine, not sqrt(1 -+ p),
                 // which turns steeply at the ends and clicks leaving them.
-                let position = panWidth * panCorner.process(ChorusPanLFO.value(targets.wave, at: panLFO.phase))
+                let position = panWidth * panCorner.process(ChorusPanLFO.value(targets.wave, at: panLFO.phase),
+                                                              wave: targets.wave)
                 let angle = Float.pi / 4 * (1 + position)
                 effectLeft = dryLeft * Self.squareRootTwo * cos(angle)
                 effectRight = dryRight * Self.squareRootTwo * sin(angle)
             } else {
                 modulationLFO.advance(targetSpeed: targets.speed)
-                let lfoLeft = cornerLeft.process(ChorusPanLFO.value(targets.wave, at: modulationLFO.phase))
+                let lfoLeft = cornerLeft.process(ChorusPanLFO.value(targets.wave, at: modulationLFO.phase),
+                                                 wave: targets.wave)
                 let lfoRight = cornerRight.process(
-                    ChorusPanLFO.value(targets.wave, at: modulationLFO.phase + 0.5 * Double(lfoWidth)))
+                    ChorusPanLFO.value(targets.wave, at: modulationLFO.phase + 0.5 * Double(lfoWidth)),
+                    wave: targets.wave)
                 let delayLeft = max(Self.minimumDelaySamples, delaySamples * (1 + depth * lfoLeft))
                 let delayRight = max(Self.minimumDelaySamples, delaySamples * (1 + depth * lfoRight))
                 let wetLeft = Self.read(left, mask: mask, writeIndex: writeIndex, delay: delayLeft)
@@ -341,6 +350,28 @@ public final class ChorusPanKernel: MyFXKernel {
         ChorusPanMode(rawValue: Int(target(.mode))) ?? .chorus
     }
 
+    /// Auto Pan with SYNC while the host plays: once per render, the pan
+    /// LFO's phase from the song position (a cycle starts on every multiple
+    /// of the note length from the song's start, so 1 bar starts on each bar).
+    private func lockPanLFOToSong() {
+        guard mode == .autoPan, target(.panSync) >= 0.5,
+              hostTempo.renderCount != lockedRenderCount else { return }
+        lockedRenderCount = hostTempo.renderCount
+        let length = MyFXNoteLength(rawValue: Int(target(.panSyncNote))) ?? .quarter
+        let type = MyFXNoteType(rawValue: Int(target(.panSyncType))) ?? .normal
+        guard let phase = hostTempo.cyclePhase(length, type) else { return }
+        panLFO.lock(phase: phase, speed: panSpeed)
+    }
+
+    /// Auto Pan's SPEED in Hz: the fader, or with SYNC one cycle per note
+    /// length at the host's tempo.
+    public var panSpeed: Double {
+        guard target(.panSync) >= 0.5 else { return Double(target(.panSpeed)) }
+        let length = MyFXNoteLength(rawValue: Int(target(.panSyncNote))) ?? .quarter
+        let type = MyFXNoteType(rawValue: Int(target(.panSyncType))) ?? .normal
+        return 1 / hostTempo.seconds(length, type)
+    }
+
     private func wave(_ parameter: ChorusPanParameter) -> ChorusPanWave {
         ChorusPanWave(rawValue: Int(target(parameter))) ?? .triangle
     }
@@ -387,7 +418,7 @@ public final class ChorusPanKernel: MyFXKernel {
             settings.mix = target(.flangerMix) / 100
         case .autoPan:
             settings.wave = wave(.panType)
-            settings.speed = Double(target(.panSpeed))
+            settings.speed = panSpeed
             settings.panWidth = target(.panWidth) / 100
         }
         return settings

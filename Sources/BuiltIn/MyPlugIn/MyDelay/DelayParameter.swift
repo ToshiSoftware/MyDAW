@@ -41,6 +41,15 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
     case feedback = 2
     case width = 3
     case mix = 4
+    /// Tempo sync: TIME follows the host's tempo as a note length.
+    case sync = 5
+    case syncNote = 6
+    case syncType = 7
+
+    /// Sync's switch, note length and note type: steps, not a level.
+    public var isIndexed: Bool {
+        self == .mode || self == .sync || self == .syncNote || self == .syncType
+    }
 
     public var identifier: String {
         switch self {
@@ -49,6 +58,9 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .feedback: return "feedback"
         case .width: return "width"
         case .mix: return "mix"
+        case .sync: return "sync"
+        case .syncNote: return "sync_note"
+        case .syncType: return "sync_type"
         }
     }
 
@@ -59,13 +71,19 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .feedback: return "FEEDBACK"
         case .width: return "WIDTH"
         case .mix: return "MIX"
+        case .sync: return "SYNC"
+        case .syncNote: return "NOTE"
+        case .syncType: return "TYPE"
         }
     }
 
-    /// Mode is an index; time in seconds (1 ms to 10 s); the rest in percent.
+    /// Mode and sync are indexes; time in seconds (1 ms to 10 s); the rest in percent.
     public var range: ClosedRange<Float> {
         switch self {
         case .mode: return 0...Float(DelayMode.allCases.count - 1)
+        case .sync: return 0...1
+        case .syncNote: return 0...Float(MyFXNoteLength.allCases.count - 1)
+        case .syncType: return 0...Float(MyFXNoteType.allCases.count - 1)
         case .time: return 0.001...10
         case .feedback, .width, .mix: return 0...100
         }
@@ -78,14 +96,25 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
         case .feedback: return 30
         case .width: return 100
         case .mix: return 100
+        case .sync: return 0
+        case .syncNote: return Float(MyFXNoteLength.quarter.rawValue)
+        case .syncType: return Float(MyFXNoteType.normal.rawValue)
         }
     }
 
-    public var hostName: String { displayName.capitalized }
+    public var hostName: String {
+        switch self {
+        case .sync: return "Tempo Sync"
+        case .syncNote: return "Sync Note"
+        case .syncType: return "Sync Note Type"
+        default: return displayName.capitalized
+        }
+    }
 
     public var unit: AudioUnitParameterUnit {
         switch self {
-        case .mode: return .indexed
+        case .mode, .syncNote, .syncType: return .indexed
+        case .sync: return .boolean
         case .time: return .seconds
         case .feedback, .width, .mix: return .percent
         }
@@ -93,26 +122,32 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
 
     public var flags: AudioUnitParameterOptions {
         switch self {
-        case .mode: return []
+        case .mode, .sync, .syncNote, .syncType: return []
         case .time: return [.flag_CanRamp, .flag_DisplayLogarithmic]
         case .feedback, .width, .mix: return [.flag_CanRamp]
         }
     }
 
     public var valueStrings: [String]? {
-        self == .mode ? DelayMode.allCases.map(\.displayName) : nil
+        switch self {
+        case .mode: return DelayMode.allCases.map(\.displayName)
+        case .sync: return ["Off", "On"]
+        case .syncNote: return MyFXNoteLength.allCases.map(\.displayName)
+        case .syncType: return MyFXNoteType.allCases.map(\.displayName)
+        default: return nil
+        }
     }
 
     public func clamped(_ value: Float) -> Float {
         guard value.isFinite else { return defaultValue }
         let inRange = min(max(value, range.lowerBound), range.upperBound)
-        return self == .mode ? inRange.rounded() : inRange
+        return isIndexed ? inRange.rounded() : inRange
     }
 
     public func displayString(for value: Float) -> String {
         switch self {
-        case .mode:
-            return (DelayMode(rawValue: Int(clamped(value))) ?? .stereo).displayName
+        case .mode, .sync, .syncNote, .syncType:
+            return valueStrings?[Int(clamped(value))] ?? ""
         case .time:
             if value < 0.1 { return String(format: "%.1f ms", value * 1_000) }
             if value < 1 { return String(format: "%.0f ms", value * 1_000) }
@@ -123,12 +158,12 @@ public enum DelayParameter: Int, CaseIterable, Sendable, MyFXParameter {
     }
 
     /// Parses what `displayString` produces. Time is in ms unless the text
-    /// ends in "s" ("250", "250 ms", "1.5 s"); a mode by name or index.
+    /// ends in "s" ("250", "250 ms", "1.5 s"); an indexed value by name or index.
     public func value(fromDisplayString string: String) -> Float? {
         let trimmed = string.trimmingCharacters(in: .whitespaces)
-        if self == .mode {
-            if let mode = DelayMode.allCases.first(where: { $0.displayName.lowercased() == trimmed.lowercased() }) {
-                return Float(mode.rawValue)
+        if isIndexed {
+            if let index = valueStrings?.firstIndex(where: { $0.lowercased() == trimmed.lowercased() }) {
+                return Float(index)
             }
             return Float(trimmed).map(clamped)
         }

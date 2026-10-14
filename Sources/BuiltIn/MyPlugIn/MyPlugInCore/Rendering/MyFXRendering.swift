@@ -16,6 +16,14 @@ public protocol MyFXRenderKernel: AnyObject {
         outputRight: UnsafeMutablePointer<Float>?,
         frameCount: Int
     )
+
+    /// Where the renderer puts the host's tempo before each render (nil:
+    /// the effect has nothing synced to it).
+    var tempo: MyFXTempo? { get }
+}
+
+extension MyFXRenderKernel {
+    public var tempo: MyFXTempo? { nil }
 }
 
 /// Input buffers and the render block of a 1- or 2-channel MyFX effect
@@ -25,6 +33,9 @@ public protocol MyFXRenderKernel: AnyObject {
 /// is sample-accurate.
 public final class MyFXRenderer {
     public private(set) var capacity = 0
+    /// The host's, taken in allocateRenderResources (not while rendering).
+    public var musicalContextBlock: AUHostMusicalContextBlock?
+    public var transportStateBlock: AUHostTransportStateBlock?
     private var channelCount = 2
     private let list = AudioBufferList.allocate(maximumBuffers: 2)
     private var left = UnsafeMutablePointer<Float>.allocate(capacity: 1)
@@ -61,6 +72,28 @@ public final class MyFXRenderer {
             var pullFlags = AudioUnitRenderActionFlags()
             let status = pullInputBlock(&pullFlags, timestamp, frameCount, 0, inputData)
             guard status == noErr else { return status }
+
+            // After the pull: the host's sources have rendered this cycle,
+            // so its song position is this buffer's.
+            if let tempo = kernel.tempo {
+                var position: Double?
+                if let musicalContextBlock {
+                    var beatsPerMinute = 0.0
+                    var numerator = 0.0
+                    var denominator = 0
+                    var beatPosition = 0.0
+                    if musicalContextBlock(&beatsPerMinute, &numerator, &denominator, &beatPosition, nil, nil) {
+                        tempo.update(beatsPerMinute: beatsPerMinute, numerator: numerator, denominator: denominator)
+                        position = beatPosition
+                    }
+                }
+                var transport = AUHostTransportStateFlags()
+                if position != nil,
+                   !(transportStateBlock?(&transport, nil, nil, nil) == true && transport.contains(.moving)) {
+                    position = nil
+                }
+                tempo.updatePosition(beatPosition: position)
+            }
 
             let input = UnsafeMutableAudioBufferListPointer(inputData)
             let output = UnsafeMutableAudioBufferListPointer(outputData)

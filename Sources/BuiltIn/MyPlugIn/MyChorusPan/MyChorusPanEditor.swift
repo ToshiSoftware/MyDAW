@@ -6,7 +6,8 @@ import MyPlugInCore
 
 // MyChorusPan's editor (Docs/MyChorusPan.md §1): INIT and the mode menu in
 // the header, a row of buttons (LFO waveforms, or Dimension's 1 to 4) with
-// the SPEED lamp, then the faders of the current mode.
+// the SPEED lamp, Auto Pan's SYNC row, then the faders of the current mode
+// (with SYNC on, Auto Pan's SPEED steps through note lengths).
 
 // MARK: - Faders
 
@@ -184,6 +185,7 @@ struct ChorusPanInitButton: View {
 struct ChorusPanEditorView: View {
     @ObservedObject var model: MyFXEditorModel
     @ObservedObject var lamp: ChorusPanLampModel
+    let tempo: MyFXTempo
 
     private var mode: ChorusPanMode {
         ChorusPanMode(rawValue: Int(model.value(ChorusPanParameter.mode.address))) ?? .chorus
@@ -200,6 +202,12 @@ struct ChorusPanEditorView: View {
         } faders: {
             VStack(spacing: 12) {
                 buttonRow
+                if mode == .autoPan {
+                    MyFXTempoSyncRow(model: model, tempo: tempo, syncAddress: ChorusPanParameter.panSync.address,
+                                     lengthAddress: ChorusPanParameter.panSyncNote.address,
+                                     typeAddress: ChorusPanParameter.panSyncType.address,
+                                     readout: { String(format: $0 > 1 ? "%.2f Hz" : "%.1f Hz", 1 / $0) })
+                }
                 HStack(spacing: 0) {
                     ForEach(ChorusPanFaderTaper.faders(for: mode), id: \.self) { parameter in
                         fader(parameter)
@@ -272,7 +280,12 @@ struct ChorusPanEditorView: View {
     }
 
     private func fader(_ parameter: ChorusPanParameter) -> MyFXFaderColumn {
-        MyFXFaderColumn(
+        if parameter == .panSpeed && model.value(ChorusPanParameter.panSync.address) >= 0.5 {
+            return MyFXFaderColumn(syncedName: parameter.displayName, model: model,
+                                   lengthAddress: ChorusPanParameter.panSyncNote.address,
+                                   typeAddress: ChorusPanParameter.panSyncType.address)
+        }
+        return MyFXFaderColumn(
             parameter: parameter,
             model: model,
             fraction: { ChorusPanFaderTaper.fraction(for: parameter, value: $0) },

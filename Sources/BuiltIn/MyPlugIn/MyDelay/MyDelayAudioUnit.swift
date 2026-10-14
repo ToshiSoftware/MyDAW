@@ -32,6 +32,6 @@ public final class MyDelayAudioUnit: MyFXAudioUnit, @unchecked Sendable {
     }
 
     public override func makeEditorView(model: MyFXEditorModel) -> AnyView {
-        AnyView(DelayEditorView(model: model))
+        AnyView(DelayEditorView(model: model, tempo: (kernel as? DelayKernel)?.hostTempo ?? MyFXTempo()))
     }
 }
