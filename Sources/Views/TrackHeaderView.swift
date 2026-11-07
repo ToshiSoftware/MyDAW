@@ -1,0 +1,509 @@
+import SwiftUI
+
+/// Draws `content` lit, or, while `isActive`, alternately lit and unlit
+/// every half second (the R and P buttons and the punch bar while recording).
+/// Every blinking view switches together: the updates fall on the same
+/// half-second boundaries of the clock, and the phase is read from it.
+struct Blinking<Content: View>: View {
+    let isActive: Bool
+    @ViewBuilder let content: (_ isLit: Bool) -> Content
+
+    private static var schedule: PeriodicTimelineSchedule {
+        .periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: 0.5)
+    }
+
+    var body: some View {
+        if isActive {
+            TimelineView(Self.schedule) { context in
+                // The small margin keeps an update that lands a hair before
+                // a boundary in the new phase.
+                let halfSeconds = Int((context.date.timeIntervalSinceReferenceDate * 2.0 + 0.01).rounded(.down))
+                content(halfSeconds % 2 == 0)
+            }
+        } else {
+            content(true)
+        }
+    }
+}
+
+/// The R button face: blinking red while armed and standing by, lit red
+/// while this track records.
+private struct RecordArmLabel: View {
+    let isArmed: Bool
+    let isRecording: Bool
+
+    var body: some View {
+        Blinking(isActive: isArmed && !isRecording) { isLit in
+            face(redOpacity: isLit ? 1.0 : 0.35)
+        }
+    }
+
+    private func face(redOpacity: Double) -> some View {
+        Text("R")
+            .font(.system(size: 11, weight: .black))
+            .foregroundColor(isArmed ? .white : .red.opacity(0.7))
+            .frame(width: 22, height: 20)
+            .background(
+                isArmed
+                    ? Color.red.opacity(redOpacity)
+                    : Color.white.opacity(0.08)
+            )
+            .cornerRadius(3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.red.opacity(isArmed ? 1.0 : 0.4), lineWidth: 1)
+            )
+    }
+}
+
+public struct TrackHeaderView: View {
+    /// Zoom and track height: observed so this view follows them (see
+    /// `ProjectState.timelineGeometry`).
+    @EnvironmentObject var timelineGeometry: TimelineGeometry
+    @ObservedObject public var track: AudioTrack
+    @ObservedObject public var projectState: ProjectState
+    public let isSelected: Bool
+    /// True while the transport records; an armed track's channel mode is
+    /// then fixed, since it sets how many input channels are captured.
+    public let isRecording: Bool
+
+    @State private var isShowingColorPalette = false
+    @State private var isEditingName: Bool = false
+    @State private var resizeStartHeight: CGFloat?
+
+    public init(track: AudioTrack, projectState: ProjectState, isSelected: Bool, isRecording: Bool = false) {
+        self.track = track
+        self.projectState = projectState
+        self.isSelected = isSelected
+        self.isRecording = isRecording
+    }
+
+    private var isChannelModeLocked: Bool {
+        (isRecording || projectState.audioEngine.isRecordingLocked) && track.isRecordArmed
+    }
+
+    /// While a take is recorded (and finalized), R, the armed track's input
+    /// and its delete button cannot be used.
+    private var isRecordLocked: Bool {
+        projectState.audioEngine.isRecordingLocked
+    }
+
+    public static func rowHeight(for track: AudioTrack) -> CGFloat {
+        track.trackHeight
+    }
+
+    /// Shortest drawn row: top padding 6 + name row 16 + spacing 5 +
+    /// button row 22 + resize handle 4 + gap 3. The level meter below
+    /// them may be cut off.
+    public static let minimumRowHeight: CGFloat = 56.0
+
+    public var body: some View {
+        HStack(spacing: 0) {
+            // Track Color Bar: click to pick a colour
+            Rectangle()
+                .fill(track.color)
+                .frame(width: 6)
+                .padding(.trailing, 6)
+                .contentShape(Rectangle())
+                .onTapGesture { isShowingColorPalette = true }
+                .trackRowHelp("Change track color")
+                .popover(isPresented: $isShowingColorPalette, arrowEdge: .trailing) {
+                    TrackColorPalette(color: $track.color) {
+                        isShowingColorPalette = false
+                    }
+                }
+                .padding(.trailing, -6)
+
+            VStack(alignment: .leading, spacing: 5) {
+                // Top Row: Track Name & Channel Mode & Delete
+                HStack(spacing: 6) {
+                    if isEditingName {
+                        TextField("Track Name", text: $track.name, onCommit: {
+                            isEditingName = false
+                        })
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 4)
+                        .background(Color.black.opacity(0.3))
+                        .cornerRadius(3)
+                    } else {
+                        // The current track's name is shown reversed, as in the mixer.
+                        Text(track.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(isSelected ? .black : .white)
+                            .lineLimit(1)
+                            .padding(.horizontal, 4)
+                            .background(isSelected ? Color.white : Color.clear)
+                            .cornerRadius(3)
+                            .padding(.horizontal, -4)
+                            .onTapGesture(count: 2) {
+                                isEditingName = true
+                            }
+                    }
+
+                    Spacer()
+
+                    // Mono / Stereo Badge (instrument tracks are stereo)
+                    if track.kind == .audio {
+                    Menu {
+                        Button("Mono") { projectState.setInputRouting(for: track, channelMode: .mono) }
+                        Button("Stereo") { projectState.setInputRouting(for: track, channelMode: .stereo) }
+                    } label: {
+                        Text(track.channelMode == .mono ? LocalizedStringKey("Mono") : LocalizedStringKey("Stereo"))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(isChannelModeLocked ? 0.35 : 0.8))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 4)
+                            .frame(height: 16)
+                            .background(Color.white.opacity(isChannelModeLocked ? 0.06 : 0.15))
+                            .cornerRadius(3)
+                    }
+                    .menuStyle(BorderlessButtonMenuStyle())
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(isChannelModeLocked)
+                    }
+
+                    // Delete Track Button
+                    Button(action: {
+                        projectState.confirmDeleteTrack(id: track.id)
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(isRecordLocked && track.isRecordArmed)
+                }
+
+                // Middle Row: R / M / S buttons & Input Selector
+                HStack(spacing: 5) {
+                    // Record Arm [R] (Record Mode vs Playback Mode)
+                    Button(action: {
+                        projectState.toggleRecordArm(for: track)
+                    }) {
+                        RecordArmLabel(
+                            isArmed: track.isRecordArmed,
+                            isRecording: isRecording && track.isRecordArmed
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(isRecordLocked)
+                    // An armed track keeps its red light while it records.
+                    .opacity(isRecordLocked && !track.isRecordArmed ? 0.5 : 1.0)
+                    .trackRowHelp(track.isRecordArmed ? "Recording Mode (Armed)" : "Playback Mode (Click to Arm Record)")
+
+                    // Mute [M]
+                    Button(action: {
+                        projectState.toggleMute(for: track)
+                    }) {
+                        HeaderToggleLabel(
+                            title: "M",
+                            isOn: track.isMuted,
+                            isHeldByFolder: track.isMutedByFolder,
+                            color: .cyan
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(track.isMutedByFolder)
+                    .trackRowHelp(track.isMutedByFolder ? "Muted by the folder" : "Mute Track")
+
+                    // Solo [S]
+                    Button(action: {
+                        projectState.toggleSolo(for: track)
+                    }) {
+                        HeaderToggleLabel(
+                            title: "S",
+                            isOn: track.isSoloed,
+                            isHeldByFolder: track.isSoloedByFolder,
+                            color: .yellow
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(track.isSoloedByFolder)
+                    .trackRowHelp(track.isSoloedByFolder ? "Soloed by the folder" : "Solo Track")
+
+                    // Input Monitor [I]: live input through this track's mixer
+                    // while armed. An armed instrument track always plays the
+                    // keyboard, so it has no I.
+                    if track.kind == .audio {
+                    Button(action: {
+                        projectState.toggleInputMonitoring(for: track)
+                    }) {
+                        let isHearing = track.isInputMonitoring && track.isRecordArmed
+                        Text("I")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(isHearing ? .black : .green.opacity(track.isInputMonitoring ? 1.0 : 0.7))
+                            .frame(width: 22, height: 20)
+                            .background(
+                                isHearing
+                                    ? Color.green
+                                    : Color.white.opacity(0.08)
+                            )
+                            .cornerRadius(3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(Color.green.opacity(track.isInputMonitoring ? 1.0 : 0.0), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .trackRowHelp(track.isInputMonitoring
+                        ? (track.isRecordArmed ? "Input Monitoring (On)" : "Input Monitoring (active when Record is armed)")
+                        : "Input Monitoring (Off)")
+                    }
+
+                    // Volume Automation [A]: the blue line in this track's lane.
+                    Button(action: {
+                        projectState.toggleVolumeAutomation(for: track)
+                    }) {
+                        HeaderToggleLabel(
+                            title: "A",
+                            isOn: track.isVolumeAutomationEnabled,
+                            color: Color(red: 0.25, green: 0.62, blue: 1.0)
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .trackRowHelp("Volume Automation")
+
+                    VolumeAutomationReadout(clock: projectState.audioEngine.transportClock, owner: track)
+                        .trackRowHelp("Automation gain at the playhead")
+
+                    Spacer()
+
+                    if track.kind == .instrument {
+                        InstrumentSelector(track: track, projectState: projectState)
+                    } else {
+                    // Input Channel Selector Menu
+                    let channelOptions = projectState.deviceManager.channels(for: track.channelMode)
+                    Menu {
+                        ForEach(channelOptions) { opt in
+                            Button(opt.name) {
+                                projectState.setInputRouting(for: track, inputChannelIndex: opt.channelOffset)
+                            }
+                        }
+                    } label: {
+                        let selectedName = channelOptions.first(where: { $0.channelOffset == track.inputChannelIndex })?.name ?? String(localized: "In \(track.inputChannelIndex + 1)")
+                        HStack(spacing: 2) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 8))
+                            Text(selectedName)
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundColor(track.isRecordArmed ? .orange : .white.opacity(0.7))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(3)
+                    }
+                    .menuStyle(BorderlessButtonMenuStyle())
+                    .disabled(isRecordLocked && track.isRecordArmed)
+                    }
+                }
+
+                TrackHeaderMeter(meter: track.meter, isRecordArmed: track.isAudioRecordArmed)
+
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            // minHeight 0 lets the frame be shorter than its content, so the
+            // content stays pinned to the top and only the meter is cut off.
+            .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(width: ArrangerLayout.headerWidth, height: Self.rowHeight(for: track) * projectState.trackHeightScale)
+        .clipped()
+        // An armed track (standing by to record) is tinted red.
+        .background(
+            track.isRecordArmed
+                ? (isSelected
+                    ? Color(red: 0.30, green: 0.15, blue: 0.17)
+                    : Color(red: 0.24, green: 0.11, blue: 0.12))
+                : (isSelected
+                    ? Color(red: 0.18, green: 0.20, blue: 0.24)
+                    : Color(red: 0.13, green: 0.14, blue: 0.16))
+        )
+        .overlay(
+            Rectangle()
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .onTapGesture {
+            projectState.selectedTrackId = track.id
+        }
+        .overlay(alignment: .bottom) {
+            // Opaque, so a meter cut off at the row's bottom stays hidden
+            // under the border instead of showing through it.
+            Rectangle()
+                .fill(Color(white: 0.29))
+                .frame(height: 4)
+                .overlay(
+                    // AppKit handle: shows the resize cursor and measures the
+                    // drag in screen space, so the moving edge doesn't skew it.
+                    VerticalResizeHandle(
+                        onBegin: {
+                            resizeStartHeight = track.trackHeight
+                        },
+                        onDrag: { translation in
+                            // The row is drawn at trackHeight × scale, so undo
+                            // the scale to keep the edge under the pointer.
+                            let scale = max(projectState.trackHeightScale, 0.01)
+                            track.trackHeight = max(
+                                Self.minimumRowHeight / scale,
+                                (resizeStartHeight ?? track.trackHeight) + translation / scale
+                            )
+                        },
+                        onEnd: {
+                            resizeStartHeight = nil
+                        }
+                    )
+                )
+                .trackRowHelp("Resize track height")
+        }
+    }
+}
+
+
+
+/// Face of a header's M or S button: lit in its colour when on, and lit grey
+/// while the track's folder holds it on (when it cannot be pressed).
+/// The instrument of an instrument track: its name opens the plug-in's
+/// window, the arrow chooses another instrument (only while stopped).
+private struct InstrumentSelector: View {
+    @ObservedObject var track: AudioTrack
+    @ObservedObject var projectState: ProjectState
+    @ObservedObject private var pluginManager: PluginManager
+
+    init(track: AudioTrack, projectState: ProjectState) {
+        self.track = track
+        self.projectState = projectState
+        self.pluginManager = projectState.pluginManager
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            Button(action: { projectState.openInstrumentUI(for: track) }) {
+                HStack(spacing: 2) {
+                    Image(systemName: "pianokeys")
+                        .font(.system(size: 8))
+                    Text(label)
+                        .font(.system(size: 9, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundColor(track.isRecordArmed ? .orange : .white.opacity(0.7))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(3)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(track.instrument == nil)
+            .trackRowHelp("Show Instrument")
+
+            Menu {
+                ForEach(pluginManager.availableInstruments) { instrument in
+                    Button(instrument.name) { projectState.setInstrument(instrument, for: track) }
+                }
+                if track.instrument != nil {
+                    Divider()
+                    Button("No Instrument") { projectState.setInstrument(nil, for: track) }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .menuStyle(BorderlessButtonMenuStyle())
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(!projectState.canChangeInstrument)
+            .trackRowHelp("Choose Instrument")
+        }
+    }
+
+    private var label: String {
+        if track.isInstrumentLoading { return String(localized: "Loading…") }
+        guard let instrument = track.instrument else { return String(localized: "No Instrument") }
+        return projectState.audioEngine.isPluginUnavailable(instrument.id)
+            ? String(localized: "\(ProjectState.trackName(forInstrument: instrument)) (unavailable)")
+            : ProjectState.trackName(forInstrument: instrument)
+    }
+}
+
+struct HeaderToggleLabel: View {
+    let title: LocalizedStringKey
+    let isOn: Bool
+    var isHeldByFolder = false
+    let color: Color
+
+    var body: some View {
+        let isLit = isOn || isHeldByFolder
+        Text(title)
+            .font(.system(size: 11, weight: .black))
+            .foregroundColor(isLit ? .black : color.opacity(0.7))
+            .frame(width: 22, height: 20)
+            .background(
+                isHeldByFolder
+                    ? Color(white: 0.55)
+                    : (isOn ? color : Color.white.opacity(0.08))
+            )
+            .cornerRadius(3)
+    }
+}
+
+/// The header's level meter, observing only the meter levels.
+private struct TrackHeaderMeter: View {
+    @ObservedObject var meter: TrackMeter
+    let isRecordArmed: Bool
+
+    var body: some View {
+        MixerLevelMeter(
+            peak: isRecordArmed ? meter.inputPeak : meter.outputPeak.maximum,
+            label: isRecordArmed ? "REC IN" : "OUT"
+        )
+    }
+}
+
+/// Preset swatches plus the system picker for any other colour.
+struct TrackColorPalette: View {
+    @Binding var color: Color
+    let onDone: () -> Void
+
+    static let presets: [Color] = [
+        Color(red: 0.20, green: 0.60, blue: 1.00), Color(red: 0.35, green: 0.80, blue: 0.95),
+        Color(red: 0.25, green: 0.85, blue: 0.60), Color(red: 0.55, green: 0.85, blue: 0.25),
+        Color(red: 0.95, green: 0.85, blue: 0.25), Color(red: 1.00, green: 0.65, blue: 0.15),
+        Color(red: 1.00, green: 0.45, blue: 0.20), Color(red: 0.90, green: 0.35, blue: 0.45),
+        Color(red: 0.95, green: 0.30, blue: 0.70), Color(red: 0.70, green: 0.45, blue: 0.95),
+        Color(red: 0.45, green: 0.45, blue: 0.95), Color(red: 0.60, green: 0.40, blue: 0.25),
+        Color(red: 0.55, green: 0.65, blue: 0.70), Color(red: 0.80, green: 0.80, blue: 0.80),
+        Color(red: 0.40, green: 0.70, blue: 0.55), Color(red: 0.85, green: 0.55, blue: 0.55),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(22), spacing: 6), count: 4), spacing: 6) {
+                ForEach(Array(Self.presets.enumerated()), id: \.offset) { _, swatch in
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(swatch)
+                        .frame(width: 22, height: 22)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.white, lineWidth: isSelected(swatch) ? 2 : 0)
+                        )
+                        .onTapGesture {
+                            color = swatch
+                            onDone()
+                        }
+                }
+            }
+            ColorPicker("Custom…", selection: $color, supportsOpacity: false)
+                .font(.system(size: 11))
+        }
+        .padding(10)
+    }
+
+    private func isSelected(_ swatch: Color) -> Bool {
+        NSColor(swatch).usingColorSpace(.sRGB) == NSColor(color).usingColorSpace(.sRGB)
+    }
+}

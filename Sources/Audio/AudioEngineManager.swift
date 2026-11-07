@@ -1,0 +1,5928 @@
+import Foundation
+import AVFoundation
+import AppKit
+import Combine
+import CoreAudioKit
+
+public enum MyDAWNotificationCenter {
+    public static let shared = Foundation.NotificationCenter()
+}
+
+public struct TrackCaptureConfig: @unchecked Sendable {
+    public let trackId: UUID
+    public let isArmed: Bool
+    public let channelOffset: Int
+    public let isStereo: Bool
+}
+
+/// An output of an instrument beyond its main one.
+public struct InstrumentOutputBus: Identifiable, Equatable {
+    public let index: Int
+    public let name: String
+    /// Where its channel starts.
+    public let defaultPan: Float
+    public var id: Int { index }
+}
+
+/// An instrument output channel connected to its bus.
+private struct InstrumentOutputWire: Equatable {
+    let unit: ObjectIdentifier
+    let parent: UUID
+    let bus: Int
+}
+
+@MainActor
+public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDelegate {
+    public let engine = AVAudioEngine()
+    /// Processing load and dropouts for the status bar.
+    public let loadMonitor = AudioLoadMonitor()
+    /// MIDI devices and their receive lights for the status bar.
+    public let midiInputStatus = MIDIInputStatus()
+
+    @Published public var isPlaying: Bool = false
+    @Published public var isRecording: Bool = false
+    @Published public private(set) var isPunchRecording: Bool = false
+    /// True from the start of a recording pass until it stops, also while a
+    /// punch pass waits for its punch-in.
+    @Published public private(set) var isRecordPass: Bool = false
+    @Published public private(set) var hasPendingRecording: Bool = false
+    @Published public private(set) var isStartingPlayback: Bool = false
+    /// The playhead in seconds, kept in its own object: it changes 60 times
+    /// a second while playing, and publishing it from the engine redrew
+    /// every view observing the engine (arranger, mixer, transport) each time.
+    public let transportClock = TransportClock()
+    public var currentTime: Double {
+        get { transportClock.time }
+        set {
+            guard transportClock.time != newValue else { return }
+            transportClock.time = newValue
+            HostMusicalContext.shared.playheadSeconds = newValue
+            if !isVolumeAutomationRunning {
+                holdVolumeAutomation(at: newValue)
+            }
+        }
+    }
+    @Published public var bpm: Double = 120.0 {
+        didSet {
+            HostMusicalContext.shared.beatsPerMinute = bpm
+            if bpm != oldValue {
+                updateMIDIPlans()
+            }
+            if isPlaying || isRecording {
+                startMetronome()
+            }
+        }
+    }
+    /// The project's time signature.
+    @Published public var meter: MusicalMeter = .common {
+        didSet {
+            HostMusicalContext.shared.meter = meter
+            if meter != oldValue && (isPlaying || isRecording) {
+                startMetronome()
+            }
+        }
+    }
+    @Published public var metronomeEnabled: Bool = false {
+        didSet {
+            if metronomeEnabled && (isPlaying || isRecording) {
+                startMetronome()
+            } else if !metronomeEnabled {
+                stopMetronome()
+            }
+        }
+    }
+    /// The tuner window (transport bar's tuning-fork button).
+    @Published public var isTunerVisible: Bool = false {
+        didSet {
+            guard isTunerVisible != oldValue else { return }
+            if isTunerVisible { tunerHost.show() } else { tunerHost.hide() }
+        }
+    }
+    let tunerHost = TunerHost()
+    /// The tuner's input, rendered from the input tap (TunerHost).
+    private nonisolated let tunerFeed: TunerFeed
+    @Published public var metronomeTimingOffsetMs: Double = 0.0 {
+        didSet {
+            guard metronomeTimingOffsetMs.isFinite else {
+                metronomeTimingOffsetMs = 0.0
+                return
+            }
+            let clamped = min(500.0, max(-500.0, metronomeTimingOffsetMs))
+            if clamped != metronomeTimingOffsetMs {
+                metronomeTimingOffsetMs = clamped
+            }
+            if isPlaying || isRecording {
+                startMetronome()
+            }
+        }
+    }
+    @Published public var metronomeVolume: Double = 1.0 {
+        didSet {
+            guard metronomeVolume.isFinite else {
+                metronomeVolume = 1.0
+                return
+            }
+            let clamped = min(1.0, max(0.0, metronomeVolume))
+            if clamped != metronomeVolume {
+                metronomeVolume = clamped
+            }
+            clickMixerNode?.outputVolume = Float(metronomeVolume)
+        }
+    }
+
+    /// The actual sample rate the hardware is running at (read from AVAudioEngine inputNode).
+    /// This is what is used for recording and playback to avoid pitch shift.
+    @Published public var hardwareSampleRate: Double = 44100.0
+
+    /// UI display/preference only — the real rate is always hardwareSampleRate.
+    @Published public var sampleRate: Double = 44100.0
+
+    /// The master fader, kept in its own object: publishing it from the
+    /// engine redrew every view observing the engine on each step of a drag.
+    public let masterVolumeState = MasterVolumeState()
+    public var masterVolume: Float {
+        get { masterVolumeState.value }
+        set {
+            guard newValue != masterVolumeState.value else { return }
+            masterVolumeState.value = newValue
+            masterOutputNode?.outputVolume = newValue
+        }
+    }
+    /// The master's [A] line; its own object for the same reason as the fader.
+    public let masterAutomation = MasterVolumeAutomation()
+    /// Master output level; its own object for the same reason as
+    /// `transportClock` (30 Hz updates while audio plays).
+    public let masterMeter = TrackMeter()
+    public private(set) var masterPeak: Float = 0.0
+    public var masterStereoPeak: StereoPeak { masterMeter.outputPeak }
+    @Published public var recordingsDirectory: URL
+    @Published public var inputHardwareChannels: Int = 2
+    @Published public var isAudioInputActive: Bool = false
+    @Published public var inputBufferFrameSize: Int = 1024
+    @Published public private(set) var estimatedRecordingLatencyMs: Double = 0.0
+    @Published public private(set) var inputDeviceLatencyFrames: UInt32 = 0
+    @Published public private(set) var outputDeviceLatencyFrames: UInt32 = 0
+    @Published public private(set) var inputSafetyOffsetFrames: UInt32 = 0
+    @Published public private(set) var outputSafetyOffsetFrames: UInt32 = 0
+    @Published public var manualRecordingCompensationMs: Double = 0.0 {
+        didSet {
+            guard manualRecordingCompensationMs.isFinite else {
+                manualRecordingCompensationMs = 0.0
+                return
+            }
+            let clamped = min(5000.0, max(-5000.0, manualRecordingCompensationMs))
+            if clamped != manualRecordingCompensationMs {
+                manualRecordingCompensationMs = clamped
+            }
+        }
+    }
+    @Published public private(set) var selectedInputDeviceID: AudioDeviceID = 0
+    @Published public private(set) var selectedOutputDeviceID: AudioDeviceID = 0
+    @Published public private(set) var unavailablePluginIDs: Set<UUID> = []
+    /// macOS default input/output found before MyDAW replaced them.
+    private var originalDefaultDevices: (input: AudioDeviceID, output: AudioDeviceID)?
+    /// Device sample rates found before MyDAW first changed them, put back
+    /// by `shutdown()` like the default devices.
+    private var originalNominalSampleRates: [AudioDeviceID: Float64] = [:]
+    /// The rate last set on the devices. A running AVAudioEngine goes on
+    /// reporting the old rate for a while after the devices change, so
+    /// `hardwareSampleRate` lags until MyDAW restarts.
+    private var requestedSampleRate: Double?
+    /// Set by `shutdown()`; transport starts are refused from then on.
+    private var isShutDown = false
+    /// The rate the project runs at: the one last set on the devices, else
+    /// the rate the engine runs at. Saved with the project.
+    public var deviceSampleRate: Double { requestedSampleRate ?? hardwareSampleRate }
+
+    /// Each track's clips play through one renderer (see `TrackRenderer`)
+    /// into the track's output mixer.
+    private var trackRenderers: [UUID: TrackRenderer] = [:]
+    // Last node of each track's insert chain; fans out to the main mixer and
+    // to a send to every FX channel, so sends carry the post-insert signal.
+    private var trackChainTails: [UUID: AVAudioNode] = [:]
+    /// The FX channels each track's splitter feeds, in fan-out order.
+    private var trackSendFXIDs: [UUID: [UUID]] = [:]
+    private var trackSplitterNodes: [UUID: AVAudioMixerNode] = [:]
+    // AVAudioMixing pan only acts on a connection into a mixer, so pan gets
+    // its own mixer stage after the inserts (pan into an AU input is ignored).
+    private var trackPanNodes: [UUID: AVAudioMixerNode] = [:]
+    private var trackPanValues: [UUID: Float] = [:]
+    /// Each channel's volume automation gain, between its inserts and its pan.
+    private var trackAutomationNodes: [UUID: AVAudioUnitEffect] = [:]
+    /// How far ahead of the playhead the audio at each automation gain is:
+    /// the latency it still has to pass after that point.
+    private var trackAutomationLeads: [UUID: Double] = [:]
+    /// True from the renderers' start to their stop; the gains then follow
+    /// the audio instead of the playhead's stopped position.
+    private var isVolumeAutomationRunning = false
+    private var fxPanNodes: [UUID: AVAudioMixerNode] = [:]
+    private var pendingSplitterRewires: [UUID: AVAudioFormat] = [:]
+    /// Whether each track's direct (dry) path into the main mixer is heard;
+    /// off while an FX solo keeps only the track's sends.
+    private var trackDryAudible: [UUID: Bool] = [:]
+    /// Delay compensation for FX channel latency (see
+    /// `updateLatencyCompensation`): each track's dry path is delayed by
+    /// `fxCompensationLatency`, the largest FX channel latency, and each FX
+    /// return by that minus its own latency. Clip pre-roll adds it back.
+    private var trackDryDelayNodes: [UUID: AVAudioUnitEffect] = [:]
+    private var fxReturnDelayNodes: [UUID: AVAudioUnitEffect] = [:]
+    private var fxCompensationLatency: Double = 0.0
+    /// The largest track pre-roll (own inserts + FX compensation). The
+    /// transport starts at least this far ahead, so every renderer can play
+    /// its track this much early and no audio after the start is lost.
+    private var transportPreRoll: Double = 0.0
+    private var syncedTracks: [AudioTrack] = []
+    /// Plug-ins whose latency changes are listened to, retained until the
+    /// listener is removed.
+    private var latencyListenedUnits: [ObjectIdentifier: AVAudioUnit] = [:]
+    private var trackOutputNodes: [UUID: AVAudioMixerNode] = [:]
+    /// First node after each track's output mixer; downmixes mono tracks.
+    private var trackDownmixNodes: [UUID: AVAudioUnitEffect] = [:]
+    private var trackPluginNodes: [UUID: [AVAudioNode]] = [:]
+    private var trackPluginLatencies: [UUID: Double] = [:]
+    private var fxInputNodes: [UUID: AVAudioMixerNode] = [:]
+    // Last stage of each FX chain; feeds the main mixer and carries the meter tap.
+    private var fxOutputNodes: [UUID: AVAudioMixerNode] = [:]
+    private var fxPluginNodes: [UUID: [AVAudioNode]] = [:]
+    private var fxGraphSignatures: [UUID: [UUID]] = [:]
+    /// Every track sends to every FX channel, at volume 0 when its send is
+    /// off, so moving a send only changes a volume. Wiring a send on demand
+    /// meant changing the graph of a running engine, where connects are only
+    /// queued: a raised send stayed silent until some later engine stop, and
+    /// detaching it again at -inf froze the app.
+    private struct SendKey: Hashable {
+        let trackID: UUID
+        let fxChannelID: UUID
+    }
+    private var sendGainNodes: [SendKey: AVAudioMixerNode] = [:]
+    /// Gain mixers of removed sends, still in their track's splitter fan-out.
+    /// Detaching a fan-out destination leaves the splitter pointing at it and
+    /// AVAudioEngine then throws on any query of the splitter's outputs, so
+    /// they stay attached until connectTrackChainTail rewires the fan-out.
+    private var retiredSendGains: [UUID: [AVAudioMixerNode]] = [:]
+    private var pluginAudioUnits: [UUID: AVAudioUnit] = [:]
+    /// The channel each plug-in is on ("Vocal", "FX 1", "MASTER"), given to
+    /// its AU as contextName so its editor can show it.
+    private var pluginChannelNames: [UUID: String] = [:]
+    /// Follow track and FX channel renames, which do not re-sync the graph.
+    private var channelNameObservers: [AnyCancellable] = []
+    private var vst3Instances: [UUID: VST3NativeInstance] = [:]
+    private var syncedFXChannels: [FXChannel] = []
+    private var pluginWindows: [UUID: NSWindow] = [:]
+    /// Instrument plug-ins by track, with the plug-in ID each one is (or is
+    /// being) built for.
+    private var instrumentUnits: [UUID: AVAudioUnit] = [:]
+    private var instrumentPluginIDs: [UUID: UUID] = [:]
+    private var instrumentGenerations: [UUID: Int] = [:]
+    private var instrumentFeeders: [UUID: InstrumentMIDIFeeder] = [:]
+    /// Instrument output channels connected to their buses, by channel.
+    private var instrumentOutputWires: [UUID: InstrumentOutputWire] = [:]
+    /// Delays lining up an instrument's channels when their inserts' latencies
+    /// differ (see `updateLatencyCompensation`), between a channel's fader
+    /// and its downmix. Only the tracks of instruments with outputs have one.
+    private var trackAlignDelayNodes: [UUID: AVAudioUnitEffect] = [:]
+    /// The same for an instrument's main output, between it and its track's
+    /// fader, where its outputs' channels come in too. Also silences it while
+    /// a soloed output channel only passes through that fader.
+    private var instrumentMainDelayNodes: [UUID: AVAudioUnitEffect] = [:]
+    /// Channels wired to another channel's fader instead of MASTER.
+    private var trackDryDestinations: [UUID: UUID] = [:]
+    private let midiInput = MIDIInputManager()
+    /// Instruments the keyboard plays (those of armed instrument tracks),
+    /// read on the CoreMIDI thread.
+    private let liveMIDILock = NSLock()
+    nonisolated(unsafe) private var liveMIDIFeeders: [InstrumentMIDIFeeder] = []
+    /// Keyboard messages for the MIDI recording (host time, packed message),
+    /// collected on the CoreMIDI thread under `liveMIDILock`.
+    nonisolated(unsafe) private var isCapturingMIDI = false
+    nonisolated(unsafe) private var capturedMIDI: [(hostTime: UInt64, message: UInt32)] = []
+    /// What a MIDI recording does to the notes already in the recorded range.
+    public var midiRecordMode: MIDIRecordMode = .overdub
+    private var midiTakes: [MIDIRecordingTake] = []
+    private var midiTakeTimer: Timer?
+    /// Timeline seconds the MIDI recording keeps: from the start (or punch
+    /// in) to the punch out.
+    private var midiTakeRange: Range<Double> = 0..<0
+    private var pluginWindowFrames: [UUID: NSRect] = [:]
+    private var pluginViewControllers: [UUID: NSViewController] = [:]
+    private var pluginViewSizeObservers: [UUID: [Any]] = [:]
+    private weak var mainApplicationWindow: NSWindow?
+    private let masterChannelID = UUID()
+    private var masterOutputNode: AVAudioMixerNode?
+    // Final stage before the device: after master volume and master plug-ins,
+    // so the MASTER meter shows what is actually output.
+    private var masterMeterNode: AVAudioMixerNode?
+    /// The master's volume automation gain, after its plug-ins and before the
+    /// meter: a limiter cannot undo a fade, and the export (taken at the
+    /// meter) has it.
+    private var masterAutomationNode: AVAudioUnitEffect?
+    /// Where the master chain ends.
+    private var masterChainOutput: AVAudioNode { masterAutomationNode ?? masterMeterNode ?? engine.outputNode }
+    private var masterPluginNodes: [AVAudioNode] = []
+    private var masterPluginSignature: [UUID] = []
+    private var masterPluginGraphGeneration = 0
+    private var isMasterPluginGraphBuilding = false
+    private var pendingMasterPluginSync: [TrackPluginDescriptor]?
+    private var configuredMasterPlugins: [TrackPluginDescriptor] = []
+
+    private var masterPluginIDs: Set<UUID> = []
+    private var pluginDescriptors: [UUID: TrackPluginDescriptor] = [:]
+    private var savedPluginStates: [UUID: Data] = [:]
+    private var pluginStateRestoreTasks: [UUID: Task<Void, Never>] = [:]
+    private var restoredPluginStateIDs: Set<UUID> = []
+    private var pluginUIRequests: Set<UUID> = []
+    private var pendingPluginUIRequests: Set<UUID> = []
+    private var hasWarmedUpAudioGraph = false
+    private let pluginUIRequestQueue = DispatchQueue(
+        label: "MyDAW.plugin-ui-request",
+        qos: .userInitiated
+    )
+    private var pluginGraphGenerations: [UUID: Int] = [:]
+    private var pluginGraphSignatures: [UUID: [UUID]] = [:]
+    /// Capture and switch units around each wired chain plug-in, by plug-in node.
+    private var pluginSwitches: [ObjectIdentifier: (capture: AVAudioUnitEffect, output: AVAudioUnitEffect)] = [:]
+    /// On/off of each chain plug-in node, applied to its switch once wired.
+    private var pluginEnabledStates: [ObjectIdentifier: Bool] = [:]
+    private var fxPluginGraphGenerations: [UUID: Int] = [:]
+
+    public func isPluginUnavailable(_ pluginID: UUID) -> Bool {
+        unavailablePluginIDs.contains(pluginID)
+    }
+
+    private func safeDisconnectNodeOutput(_ node: AVAudioNode) {
+        guard node !== engine.outputNode else { return }
+        guard engine.attachedNodes.contains(node) else { return }
+        engineDisconnectOutput(node)
+    }
+
+    private func safeDisconnectNodeInput(_ node: AVAudioNode) {
+        guard node !== engine.mainMixerNode && node !== engine.outputNode else { return }
+        guard engine.attachedNodes.contains(node) else { return }
+        engineDisconnectInput(node)
+    }
+
+    private func safeDetach(_ node: AVAudioNode) {
+        detachPluginSwitch(of: node)
+        guard engine.attachedNodes.contains(node) else { return }
+        engineDetach(node)
+    }
+
+    // MARK: Guarded engine calls
+
+    // AVAudioEngine reports an impossible connection (unattached node,
+    // format it rejects, a tap already there...) by raising an Objective-C
+    // exception, which Swift cannot catch: the app ended. Every graph call
+    // goes through these, so a failed call is abandoned and logged instead.
+
+    @discardableResult
+    private func guardedEngineCall(_ what: @autoclosure () -> String, _ body: @escaping () -> Void) -> Bool {
+        guard let failure = ObjCExceptionCatcher.run(body) else { return true }
+        let text = "\(what()) failed: \(failure)"
+        print("[Engine] \(text)")
+        noteGraphEvent(text)
+        return false
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to destination: AVAudioNode, format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(type(of: destination))") {
+            engine.connect(source, to: destination, format: format)
+        }
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to destination: AVAudioNode, fromBus: AVAudioNodeBus,
+                               toBus: AVAudioNodeBus, format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(type(of: destination)) bus \(toBus)") {
+            engine.connect(source, to: destination, fromBus: fromBus, toBus: toBus, format: format)
+        }
+    }
+
+    private func engineConnect(_ source: AVAudioNode, to points: [AVAudioConnectionPoint], fromBus: AVAudioNodeBus,
+                               format: AVAudioFormat?) {
+        let engine = self.engine
+        guardedEngineCall("connect \(type(of: source)) → \(points.count) points") {
+            engine.connect(source, to: points, fromBus: fromBus, format: format)
+        }
+    }
+
+    private func engineDisconnectOutput(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("disconnect output of \(type(of: node))") { engine.disconnectNodeOutput(node) }
+    }
+
+    private func engineDisconnectInput(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("disconnect input of \(type(of: node))") { engine.disconnectNodeInput(node) }
+    }
+
+    private func engineAttach(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("attach \(type(of: node))") { engine.attach(node) }
+    }
+
+    private func engineDetach(_ node: AVAudioNode) {
+        let engine = self.engine
+        guardedEngineCall("detach \(type(of: node))") { engine.detach(node) }
+    }
+
+    /// Empty when the query raises (a fan-out still pointing at a detached node).
+    private func engineOutputPoints(for node: AVAudioNode, outputBus: AVAudioNodeBus) -> [AVAudioConnectionPoint] {
+        let engine = self.engine
+        let (points, failure) = ObjCExceptionCatcher.value([AVAudioConnectionPoint]()) {
+            engine.outputConnectionPoints(for: node, outputBus: outputBus)
+        }
+        if let failure {
+            print("[Engine] connection query of \(type(of: node)) failed: \(failure)")
+            noteGraphEvent("connection query of \(type(of: node)) failed: \(failure)")
+        }
+        return points
+    }
+
+    private func installTapGuarded(on node: AVAudioNode, bus: AVAudioNodeBus, bufferSize: AVAudioFrameCount,
+                                   format: AVAudioFormat?, block: @escaping AVAudioNodeTapBlock) {
+        guardedEngineCall("tap on \(type(of: node))") {
+            node.installTap(onBus: bus, bufferSize: bufferSize, format: format, block: block)
+        }
+    }
+
+    private func markPluginUnavailable(_ pluginID: UUID) {
+        unavailablePluginIDs.insert(pluginID)
+    }
+
+    // Active disk writers during recording
+    private var activeWriters: [UUID: AudioDiskWriter] = [:]
+    private var activeClips: [UUID: AudioClip] = [:]
+    /// Called right before a recording adds its takes to the tracks, so the
+    /// project can keep the clips as they were for undo.
+    public var onRecordingWillAddTakes: (@MainActor () -> Void)?
+
+    /// True while `clipID` is a take being recorded: from the record start
+    /// (also before a punch-in) until its file is finalized after the stop.
+    /// The lanes draw such a take growing with the playhead.
+    public func isRecordingTake(_ clipID: UUID) -> Bool {
+        (isRecording || hasPendingRecording) && activeClips.values.contains { $0.id == clipID }
+    }
+
+    /// While recording, and until the takes are finalized after the stop,
+    /// what is recorded must not change: the R buttons, the armed tracks'
+    /// input channels and the takes themselves are locked.
+    public var isRecordingLocked: Bool {
+        isRecording || hasPendingRecording
+    }
+
+    // Thread-safe capture configuration passed to real-time audio thread
+    private let captureLock = NSLock()
+    private var captureConfigs: [TrackCaptureConfig] = []
+    private var writersSnapshot: [UUID: AudioDiskWriter] = [:]
+    private var recordingActiveState: Bool = false
+    // A punch take is recorded as the whole pass and trimmed to the punch
+    // range on stop, leaving handles for later trim/crossfade adjustment.
+    private struct PunchTrim {
+        let fileTimelineStart: Double
+        let punchIn: Double
+        let punchOut: Double
+    }
+    private var recordingPunchTrim: PunchTrim?
+    /// The punch range of the take being recorded, kept until its file is
+    /// finalized after the stop (the lanes draw only the part inside it).
+    private var recordingTakePunchTrim: PunchTrim?
+    public var recordingTakePunchIn: Double? { recordingTakePunchTrim?.punchIn }
+    public var recordingTakePunchOut: Double? { recordingTakePunchTrim?.punchOut }
+    /// Rollback recording: a recording without a punch range starts playing
+    /// this many seconds before the playhead and records from the playhead
+    /// on (a punch-in at the playhead with no punch-out). 0 = off.
+    public var recordRollbackDuration: Double = 0.0
+    /// True while such a pass runs; the punch range is then the rollback's.
+    private var isRollbackPass = false
+    private static let punchCrossfadeDuration = 0.01
+    private let recordingTimingLock = NSLock()
+    private var recordingTimelineStart: Double = 0.0
+    private var recordingTransportStartHostTime: UInt64?
+    private var punchInTime: Double?
+    private var punchOutTime: Double?
+    private var punchArmedTrackIDs: Set<UUID> = []
+    // Armed tracks whose existing clips are silenced because they are
+    // recording right now (whole take, or only inside the punch range).
+    private var recordingMutedTrackIDs: Set<UUID> = []
+
+    private struct InputMonitorConfig: Equatable {
+        let channelOffset: Int
+        let isStereo: Bool
+    }
+    private var inputCaptureFormat: AVAudioFormat?
+    private var inputMonitorNodes: [UUID: AVAudioUnitEffect] = [:]
+    private var desiredInputMonitors: [UUID: InputMonitorConfig] = [:]
+    private var appliedInputMonitors: [UUID: InputMonitorConfig] = [:]
+    private var inputMonitorApplyTask: Task<Void, Never>?
+    private var quietRewireGeneration = 0
+    private var isWaitingForQuietRewire = false
+    /// The FX input each send's gain mixer is currently connected to.
+    private var wiredSendTargets: [SendKey: AVAudioMixerNode] = [:]
+    private var punchPlaybackState: Int = 0
+    private var pendingRecordingClipStartTime: Double?
+    private var hasLoggedFirstRecordingInput = false
+
+    // Realtime channel peak levels written by audio thread, read by 60Hz UI timer
+    private let peakLock = NSLock()
+    private var rawChannelPeaks: [Float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    private var masterOutputPeak: StereoPeak = .zero
+    /// Fed by the master meter tap while a master export runs (under
+    /// peakLock). A node takes only one tap, and tapping a master plug-in
+    /// directly raises an exception when its bus refuses the tap format.
+    private var masterExportSink: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
+    /// Track meters, kept by each track's dry delay unit as it renders.
+    /// Taps on the track splitters stopped for good at times (all tracks at
+    /// once, after a plug-in was inserted on one of them) while the tracks
+    /// kept sounding, and reinstalling the tap did not bring them back.
+    private var trackMeters: [UUID: RenderPeakMeter] = [:]
+    private var fxOutputPeaks: [UUID: StereoPeak] = [:]
+    private var liveWaveformPeaksBuffer: [UUID: [[(min: Float, max: Float)]]] = [:]
+    // Track meter health (checkTrackMeters). The render cycle counts
+    // advance even on silence; the master tap count is written under peakLock.
+    private var masterTapCallbackCount = 0
+    private var trackMeterWatch: [UUID: (cycles: Int, since: TimeInterval)] = [:]
+    private var trackMeterStallsLogged: Set<UUID> = []
+    private var lastMasterTapCount = 0
+    private var lastMasterTapAdvance: TimeInterval = 0
+    private var wasEngineRunning = false
+    private var meterTrackNames: [UUID: String] = [:]
+    /// Recent engine and graph events, written to the log on a recovery.
+    private var graphEventHistory: [String] = []
+
+    // Timers
+    private var playheadTimer: Timer?
+    private var playheadStartTime: Date?
+    private var playheadStartHostTime: UInt64?
+    private var playheadStartOffset: Double = 0.0
+    /// Bumped whenever the playhead timer starts or stops. A tick queued
+    /// before that must not write the playhead: after a seek it would add
+    /// the old run's elapsed time to the new position.
+    private var playheadTimerGeneration = 0
+
+    /// Song end flag in seconds (nil: none). Playback or recording that
+    /// crosses it stops; one started at or after it runs on.
+    public var songEndTime: Double?
+    /// Called when the playhead crosses `songEndTime`; the owner stops the
+    /// transport, since only it knows the current tracks.
+    public var onReachSongEnd: (() -> Void)?
+    private var hasReachedSongEnd = false
+    private var isStoppingAtSongEnd = false
+
+    private var meterTimer: Timer?
+    private var clickNode: AVAudioPlayerNode?
+    private var clickMixerNode: AVAudioMixerNode?
+    private var clickBuffer: AVAudioPCMBuffer?
+    private var accentClickBuffer: AVAudioPCMBuffer?
+    private var engineWarmupNode: AVAudioPlayerNode?
+    private var engineWarmupBuffer: AVAudioPCMBuffer?
+    private var metronomeBeat: Int = 0
+    private var metronomeNextSampleTime: AVAudioFramePosition = 0
+    private var metronomeIntervalFrames: AVAudioFramePosition = 0
+    private var metronomeGeneration = 0
+    private var playbackRetryTask: Task<Void, Never>?
+    private var startPlaybackTask: Task<Void, Never>?
+    private var lastPlaybackReadinessDiagnostic: String?
+    private var recordingFinalizationTask: Task<Void, Never>?
+
+    /// What counts of a latency a plug-in reports: it may report anything,
+    /// and a wild value must not push the transport start out of reach.
+    private static func usableLatency(_ latency: TimeInterval) -> TimeInterval {
+        latency.isFinite ? min(max(latency, 0.0), 60.0) : 0.0
+    }
+
+    private var masterPluginLatency: Double {
+        masterPluginNodes
+            .compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }
+            .map(Self.usableLatency)
+            .reduce(0.0, +)
+    }
+
+    /// `sampleRate` is set on the devices before the engine first starts
+    /// (the rate of the project MyDAW is launched with).
+    public init(inputDeviceID: AudioDeviceID = 0, outputDeviceID: AudioDeviceID = 0, sampleRate: Double? = nil) {
+        self.recordingsDirectory = Self.resolveRecordingsDirectory()
+        tunerFeed = tunerHost.feed
+        super.init()
+        // Before any plug-in is allocated: MyFX units take its blocks then.
+        HostMusicalContext.shared.beatsPerMinute = bpm
+        tunerHost.onClose = { [weak self] in self?.isTunerVisible = false }
+        adoptInheritedOriginalDeviceSettings()
+        if inputDeviceID != 0 || outputDeviceID != 0 {
+            bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID)
+        }
+        if let sampleRate {
+            // Set before the engine first touches its nodes, so it reads
+            // the new rate at once.
+            setDeviceSampleRate(sampleRate, deviceIDs: [inputDeviceID, outputDeviceID])
+        }
+        setupEngine()
+        startMeterTimer()
+        loadMonitor.start(engine: engine)
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.noteGraphEvent("AVAudioEngineConfigurationChange") }
+        }
+        // プラグインウィンドウは .floating レベルを使用するため、
+        // メインウィンドウのアクティブ化に応じて orderFront する処理は不要になった。
+        // 他のアプリに切り替えたときは通常レベルに下げて表示したままにする。
+        observeAppActivationForPluginWindows()
+        midiInput.onSourcesChanged = { [weak self] sources in
+            onMainThread { self?.midiInputStatus.setSources(sources) }
+        }
+        midiInput.onMessage = { [weak self] status, data1, data2, length, hostTime in
+            guard let self else { return }
+            let feeders = self.liveMIDILock.withLock { () -> [InstrumentMIDIFeeder] in
+                if self.isCapturingMIDI {
+                    self.capturedMIDI.append((hostTime, MIDIPlaybackPlan.pack(status: status, data1: data1, data2: data2)))
+                }
+                return self.liveMIDIFeeders
+            }
+            for feeder in feeders {
+                feeder.enqueue(status: status, data1: data1, data2: data2, length: length)
+            }
+        }
+        midiInput.start()
+    }
+
+    private static func resolveRecordingsDirectory() -> URL {
+        let fm = FileManager.default
+
+        if let savedPath = UserDefaults.standard.string(forKey: "MyDAW.recordingsDirectory") {
+            let savedURL = URL(fileURLWithPath: savedPath)
+            var isSavedDirectory: ObjCBool = false
+            if fm.fileExists(atPath: savedURL.path, isDirectory: &isSavedDirectory), isSavedDirectory.boolValue {
+                return savedURL
+            }
+        }
+
+        // 1. Check relative to app bundle inside project (e.g. MyDAW.app is at <project>/build/MyDAW.app)
+        let executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        let bundleParent = executableURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let projectRecordings = bundleParent.appendingPathComponent("Recordings")
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: projectRecordings.path, isDirectory: &isDir), isDir.boolValue {
+            return projectRecordings
+        }
+
+        // 2. Check current directory
+        let cwdRecordings = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Recordings")
+        if cwdRecordings.path != "/Recordings" {
+            if (try? fm.createDirectory(at: cwdRecordings, withIntermediateDirectories: true)) != nil {
+                return cwdRecordings
+            }
+        }
+
+        // 3. User Music Directory fallback (~/Music/MyDAW/Recordings)
+        let music = fm.urls(for: .musicDirectory, in: .userDomainMask).first ?? fm.homeDirectoryForCurrentUser
+        let userRecordings = music.appendingPathComponent("MyDAW/Recordings")
+        try? fm.createDirectory(at: userRecordings, withIntermediateDirectories: true)
+        return userRecordings
+    }
+
+    public func chooseRecordingsDirectory() -> Bool {
+        guard !isPlaying && !isRecording else { return false }
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Choose Recordings Folder")
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = recordingsDirectory
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        return setRecordingsDirectory(url)
+    }
+
+    @discardableResult
+    public func setRecordingsDirectory(_ url: URL) -> Bool {
+        guard !isPlaying && !isRecording else { return false }
+        let standardizedURL = url.standardizedFileURL
+        do {
+            try FileManager.default.createDirectory(at: standardizedURL, withIntermediateDirectories: true)
+            recordingsDirectory = standardizedURL
+            UserDefaults.standard.set(standardizedURL.path, forKey: "MyDAW.recordingsDirectory")
+            return true
+        } catch {
+            print("Failed to set recordings directory: \(error)")
+            return false
+        }
+    }
+
+    // MARK: - Engine Initialization
+
+    private func setupEngine() {
+        noteGraphEvent("setupEngine")
+        let mixer = engine.mainMixerNode
+        mixer.outputVolume = 1.0
+
+        let inputNode = engine.inputNode
+        let inputOutputFormat = inputNode.outputFormat(forBus: 0)
+        let inputBusFormat = inputNode.inputFormat(forBus: 0)
+        let inputFormat = inputBusFormat.channelCount >= inputOutputFormat.channelCount
+            ? inputBusFormat
+            : inputOutputFormat
+        let hwChannels = max(1, Int(inputFormat.channelCount))
+        self.inputHardwareChannels = hwChannels
+
+        // CRITICAL FIX: Always use the actual hardware sample rate.
+        // This prevents pitch shift caused by recording at 44100 Hz while the WAV header says 48000 Hz.
+        // An input device with no channels (a Mac without a microphone and
+        // no interface) gives a format with no channels and no rate; the
+        // engine raises an exception when such a format is tapped or
+        // connected, so input is then left out.
+        let hasInput = inputFormat.channelCount > 0 && inputFormat.sampleRate > 0
+        let outputRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        let hwSampleRate = hasInput ? inputFormat.sampleRate : (outputRate > 0 ? outputRate : 44100.0)
+        self.hardwareSampleRate = hwSampleRate
+        self.sampleRate = hwSampleRate
+        HostMusicalContext.shared.sampleRate = hwSampleRate
+
+        // Set up again (buffer size change, device apply): the master node is
+        // kept, so the master plug-ins hanging from it stay in the path. A
+        // new node every time left them on the old one, out of the path.
+        let masterNode: AVAudioMixerNode
+        if let existing = masterOutputNode {
+            masterNode = existing
+            engineDisconnectInput(masterNode)
+            engineDisconnectOutput(masterNode)
+        } else {
+            masterNode = AVAudioMixerNode()
+            engineAttach(masterNode)
+            masterOutputNode = masterNode
+        }
+        if let masterFormat = AVAudioFormat(standardFormatWithSampleRate: hwSampleRate, channels: 2) {
+            let meterNode: AVAudioMixerNode
+            if let existing = masterMeterNode {
+                meterNode = existing
+                meterNode.removeTap(onBus: 0)
+                engineDisconnectInput(meterNode)
+                engineDisconnectOutput(meterNode)
+            } else {
+                meterNode = AVAudioMixerNode()
+                engineAttach(meterNode)
+                masterMeterNode = meterNode
+            }
+            let automationNode: AVAudioUnitEffect
+            if let existing = masterAutomationNode {
+                automationNode = existing
+                engineDisconnectInput(automationNode)
+                engineDisconnectOutput(automationNode)
+            } else {
+                _ = VolumeAutomationAudioUnit.registration
+                automationNode = AVAudioUnitEffect(audioComponentDescription: VolumeAutomationAudioUnit.componentDescription)
+                engineAttach(automationNode)
+                masterAutomationNode = automationNode
+                updateMasterVolumeAutomation()
+            }
+            engineDisconnectOutput(mixer)
+            engineConnect(mixer, to: masterNode, format: masterFormat)
+            if masterPluginNodes.isEmpty {
+                connectReformatting(masterNode, to: automationNode, format: masterFormat)
+            } else {
+                reconnectPluginChain(from: masterNode, through: masterPluginNodes, to: automationNode, format: masterFormat)
+            }
+            connectReformatting(automationNode, to: meterNode, format: masterFormat)
+            engineConnect(meterNode, to: engine.outputNode, format: masterFormat)
+            masterNode.outputVolume = masterVolume
+
+            mixer.removeTap(onBus: 0)
+            installTapGuarded(on: meterNode, bus: 0, bufferSize: 512, format: masterFormat) { [weak self] buffer, when in
+                let peak = StereoPeak(buffer: buffer)
+                let exportSink = self?.peakLock.withLock { () -> ((AVAudioPCMBuffer, AVAudioTime) -> Void)? in
+                    self?.masterOutputPeak = (self?.masterOutputPeak ?? .zero).merged(with: peak)
+                    self?.masterTapCallbackCount &+= 1
+                    return self?.masterExportSink
+                }
+                exportSink?(buffer, when)
+            }
+        }
+
+        let clickFormat = AVAudioFormat(
+            standardFormatWithSampleRate: hwSampleRate,
+            channels: 2
+        )
+          if clickNode == nil,
+              let clickFormat,
+           let buffer = Self.makeClickBuffer(format: clickFormat, frequency: 1200.0, amplitude: 0.22),
+           let accentBuffer = Self.makeClickBuffer(format: clickFormat, frequency: 1800.0, amplitude: 0.42) {
+            let node = AVAudioPlayerNode()
+                        let clickMixer = AVAudioMixerNode()
+            engineAttach(node)
+                        engineAttach(clickMixer)
+                        engineConnect(node, to: clickMixer, format: clickFormat)
+                        engineConnect(clickMixer, to: mixer, format: clickFormat)
+            clickNode = node
+                        clickMixerNode = clickMixer
+            clickBuffer = buffer
+            accentClickBuffer = accentBuffer
+                        clickMixer.outputVolume = Float(metronomeVolume)
+        }
+
+        inputCaptureFormat = hasInput ? inputFormat : nil
+        tunerHost.setInputChannelCount(hwChannels, hasInput: hasInput)
+        connectInputMonitors()
+
+        // Install tap BEFORE engine.start()
+        inputNode.removeTap(onBus: 0)
+        if hasInput {
+            installTapGuarded(on: inputNode, bus: 0, bufferSize: AVAudioFrameCount(inputBufferFrameSize), format: inputFormat) { [weak self] (buffer, time) in
+                self?.processInputAudioBuffer(buffer: buffer, time: time)
+            }
+        }
+
+        raiseMaximumFramesPerSlice()
+        do {
+            try startEngine()
+            self.isAudioInputActive = true
+            updateHardwareLatencyInfo()
+            updateEstimatedRecordingLatency()
+            warmUpAudioRenderPath(format: clickFormat)
+                print(
+                    "AVAudioEngine started. Input format: \(inputFormat). " +
+                        "Output format: \(inputOutputFormat). Input bus format: \(inputBusFormat). " +
+                        "Hardware SR: \(hwSampleRate) Hz"
+                )
+        } catch {
+            print("Failed to start AVAudioEngine: \(error)")
+            self.isAudioInputActive = false
+        }
+    }
+
+    private func warmUpAudioRenderPath(format: AVAudioFormat?) {
+        guard let format else { return }
+
+        if engineWarmupNode == nil {
+            let node = AVAudioPlayerNode()
+            engineAttach(node)
+            engineConnect(node, to: engine.mainMixerNode, format: format)
+            engineWarmupNode = node
+        }
+
+        guard let node = engineWarmupNode,
+              let buffer = Self.makeSilentBuffer(format: format, duration: 0.15) else {
+            return
+        }
+        engineWarmupBuffer = buffer
+        hasWarmedUpAudioGraph = false
+        // A player raises an exception when its connection failed or the
+        // engine is not running.
+        guardedEngineCall("warm-up player") {
+            node.stop()
+            node.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.hasWarmedUpAudioGraph = true
+                    self?.schedulePendingPluginUIRequests()
+                }
+            }
+            node.play()
+        }
+    }
+
+    /// Starts the engine, first giving every hosted plug-in MyDAW's tempo
+    /// and transport again: AVAudioEngine.stop() sets each unit's
+    /// musicalContextBlock and transportStateBlock to nil, and a unit takes
+    /// them when its render resources are allocated (at start). MyFX units
+    /// read MyFXHostContext instead; this is for the others.
+    private func startEngine() throws {
+        for audioUnit in pluginAudioUnits.values {
+            HostMusicalContext.shared.attach(to: audioUnit.auAudioUnit)
+        }
+        // Reports most failures as an error, but a format it cannot take (a
+        // device that vanished, say) as an exception.
+        let engine = self.engine
+        var startError: Error?
+        let started = guardedEngineCall("engine start") {
+            do {
+                try engine.start()
+            } catch {
+                startError = error
+            }
+        }
+        if let startError { throw startError }
+        guard started else {
+            throw NSError(domain: "MyDAW.Engine", code: 1, userInfo: [NSLocalizedDescriptionKey: "The audio engine raised an exception while starting."])
+        }
+    }
+
+    private func reconfigureEngine() {
+        engine.stop()
+        // Re-install tap and re-read hardware sample rate
+        setupEngine()
+    }
+
+    public func applyInputBufferFrameSize(_ frameCount: Int) {
+        inputBufferFrameSize = max(128, min(4096, frameCount))
+        guard engine.isRunning else { return }
+        engine.stop()
+        setupEngine()
+    }
+
+    public func setPunchRange(startTime: Double?, endTime: Double?, enabled: Bool) {
+        // A rollback pass keeps its own punch-in until it stops.
+        guard !isRollbackPass else { return }
+        punchInTime = enabled ? startTime : nil
+        punchOutTime = enabled ? endTime : nil
+    }
+
+    /// Primes the hardware render path before restoring an asynchronous AU graph.
+    /// Some Audio Units assume that the host has already prepared its output
+    /// route, even though AVAudioEngine reports itself as running.
+    public func prepareForPluginGraphRestore() {
+        guard !isMasterPluginGraphBuilding else { return }
+        if !engine.isRunning {
+            let engine = self.engine
+            guardedEngineCall("engine prepare") { engine.prepare() }
+            do {
+                try startEngine()
+            } catch {
+                print("Failed to start audio engine before plugin restore: \(error)")
+            }
+        }
+    }
+
+    public func setSavedPluginStates(_ states: [PluginStateDocument]) {
+        savedPluginStates = states.reduce(into: [:]) { result, state in
+            result[state.pluginID] = state.stateData
+        }
+        restoredPluginStateIDs.removeAll()
+    }
+
+    /// A plug-in's state, nil when it raises an exception while giving it
+    /// (so a save goes on without that plug-in's latest state).
+    private func documentState(of unit: AUAudioUnit) -> [String: Any]? {
+        let (state, failure) = ObjCExceptionCatcher.value([String: Any]?.none) { unit.fullStateForDocument }
+        if let failure {
+            print("[Engine] reading the state of \(unit.audioUnitName ?? "a plug-in") failed: \(failure)")
+            noteGraphEvent("reading plug-in state failed: \(failure)")
+        }
+        return state
+    }
+
+    public func capturePluginStates() -> [PluginStateDocument] {
+        let auStates: [PluginStateDocument] = pluginAudioUnits.compactMap { entry in
+            let (pluginID, audioUnit) = entry
+            guard !(audioUnit.auAudioUnit is VST3AudioUnit),
+                  let state = documentState(of: audioUnit.auAudioUnit) else { return nil }
+            guard PropertyListSerialization.propertyList(
+                state,
+                isValidFor: .binary
+            ) else {
+                print("Skipped non-property-list state for plugin \(pluginID)")
+                return nil
+            }
+            do {
+                let data = try PropertyListSerialization.data(
+                    fromPropertyList: state,
+                    format: .binary,
+                    options: 0
+                )
+                return PluginStateDocument(pluginID: pluginID, stateData: data)
+            } catch {
+                print("Failed to serialize state for plugin \(pluginID): \(error)")
+                return nil
+            }
+        }
+
+        let vst3States: [PluginStateDocument] = vst3Instances.compactMap { entry in
+            let (pluginID, instance) = entry
+            guard let stateData = instance.captureState() else { return nil }
+            return PluginStateDocument(
+                pluginID: pluginID,
+                stateData: stateData,
+                format: "vst3-state"
+            )
+        }
+        return auStates + vst3States
+    }
+
+    /// Gives each copied plug-in (the values) the current state of the one it
+    /// was copied from (the keys); it is restored when the copy is built.
+    public func copyPluginStates(_ copies: [UUID: UUID]) {
+        for (sourceID, copyID) in copies {
+            if let data = currentStateData(for: sourceID) {
+                savedPluginStates[copyID] = data
+            }
+        }
+    }
+
+    /// A plug-in's state as `capturePluginStates` stores it, or the saved
+    /// one when it has no live instance.
+    private func currentStateData(for pluginID: UUID) -> Data? {
+        if let instance = vst3Instances[pluginID] {
+            return instance.captureState() ?? savedPluginStates[pluginID]
+        }
+        if let audioUnit = pluginAudioUnits[pluginID],
+           !(audioUnit.auAudioUnit is VST3AudioUnit),
+           let state = documentState(of: audioUnit.auAudioUnit),
+           PropertyListSerialization.propertyList(state, isValidFor: .binary),
+           let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) {
+            return data
+        }
+        return savedPluginStates[pluginID]
+    }
+
+    private func syncVST3Instances(for descriptors: [TrackPluginDescriptor]) {
+        // Instances are kept alive regardless of `enabled` (matching the AU
+        // path, which never tears down an AVAudioUnit on bypass). Destroying
+        // the instance on disable would drop unsaved plugin state and orphan
+        // any open editor window.
+        let vst3Descriptors = descriptors.filter { $0.kind == .vst3 }
+        let requiredIDs = Set(vst3Descriptors.map(\.id))
+        for (pluginID, instance) in vst3Instances where !requiredIDs.contains(pluginID) {
+            _ = instance
+            vst3Instances.removeValue(forKey: pluginID)
+        }
+
+        for descriptor in vst3Descriptors where vst3Instances[descriptor.id] == nil {
+            guard let instance = VST3NativeInstance(
+                descriptor: descriptor,
+                sampleRate: hardwareSampleRate,
+                maxFrames: inputBufferFrameSize
+            ) else {
+                markPluginUnavailable(descriptor.id)
+                print("Failed to create VST3 instance: \(descriptor.name)")
+                continue
+            }
+            unavailablePluginIDs.remove(descriptor.id)
+            vst3Instances[descriptor.id] = instance
+            if let stateData = savedPluginStates[descriptor.id] {
+                if instance.restoreState(stateData) {
+                    print("Restored VST3 state for plugin \(descriptor.id)")
+                } else {
+                    print("Failed to restore VST3 state for plugin \(descriptor.id)")
+                }
+            }
+        }
+    }
+
+    private func restoreSavedState(for pluginID: UUID, audioUnit: AVAudioUnit) {
+        guard !(audioUnit.auAudioUnit is VST3AudioUnit),
+              let data = savedPluginStates[pluginID] else { return }
+        guard !restoredPluginStateIDs.contains(pluginID) else { return }
+        pluginStateRestoreTasks[pluginID]?.cancel()
+        pluginStateRestoreTasks[pluginID] = Task { @MainActor [weak self] in
+            // Let the running engine render before applying a document state.
+            // This avoids racing AU initialization with state restoration.
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self,
+                  !Task.isCancelled,
+                  let currentAudioUnit = self.pluginAudioUnits[pluginID],
+                  currentAudioUnit === audioUnit else { return }
+
+            if !self.engine.isRunning && !self.isMasterPluginGraphBuilding {
+                try? self.startEngine()
+            }
+            if !audioUnit.auAudioUnit.renderResourcesAllocated {
+                // A unit not wired yet still has its default bus format
+                // (44.1 kHz for v2 units, 48 kHz for MyFX). Allocated with
+                // it, the unit then refuses the real format: a tap or
+                // connect at the hardware rate raises an exception.
+                if let format = AVAudioFormat(standardFormatWithSampleRate: self.hardwareSampleRate, channels: 2) {
+                    let unit = audioUnit.auAudioUnit
+                    for busses in [unit.inputBusses, unit.outputBusses] where busses.count > 0 {
+                        try? busses[0].setFormat(format)
+                    }
+                }
+                HostMusicalContext.shared.attach(to: audioUnit.auAudioUnit)
+                let unit = audioUnit.auAudioUnit
+                self.guardedEngineCall("allocate \(unit.audioUnitName ?? "plug-in")") {
+                    try? unit.allocateRenderResources()
+                }
+            }
+
+            let state: [String: Any]? = await Task.detached(priority: .userInitiated) {
+                guard let propertyList = try? PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                ) as? [String: Any] else {
+                    return nil
+                }
+                return propertyList
+            }.value
+
+            guard let state, !Task.isCancelled else { return }
+            print("Restoring saved state for plugin \(pluginID)")
+            // A state saved by another version can raise an exception; this
+            // is inside a MainActor task, where AppKit would swallow it.
+            let unit = audioUnit.auAudioUnit
+            self.guardedEngineCall("restore state of \(unit.audioUnitName ?? "plug-in")") {
+                unit.fullStateForDocument = state
+            }
+            self.restoredPluginStateIDs.insert(pluginID)
+            print("Restored saved state for plugin \(pluginID)")
+            self.pluginStateRestoreTasks.removeValue(forKey: pluginID)
+        }
+    }
+
+    /// Names every plug-in after its track or FX channel now and whenever
+    /// the name or the plug-ins change (master plug-ins: syncMasterPlugins).
+    private func observeChannelNames(tracks: [AudioTrack], fxChannels: [FXChannel]) {
+        let observe = { [weak self] (name: Published<String>.Publisher,
+                                     plugins: Published<[TrackPluginDescriptor]>.Publisher) in
+            name.combineLatest(plugins).sink { name, plugins in
+                onMainThread {
+                    self?.setChannelName(name, forPlugins: plugins.map(\.id))
+                }
+            }
+        }
+        // A track's instrument is named after the track like its inserts.
+        let observeTrack = { [weak self] (track: AudioTrack) in
+            track.$name.combineLatest(track.$plugins, track.$instrument).sink { name, plugins, instrument in
+                onMainThread {
+                    self?.setChannelName(name, forPlugins: plugins.map(\.id) + (instrument.map { [$0.id] } ?? []))
+                }
+            }
+        }
+        channelNameObservers = tracks.map { observeTrack($0) }
+            + fxChannels.map { observe($0.$name, $0.$plugins) }
+    }
+
+    private func setChannelName(_ name: String, forPlugins pluginIDs: [UUID]) {
+        for pluginID in pluginIDs {
+            pluginChannelNames[pluginID] = name
+            if let unit = pluginAudioUnits[pluginID]?.auAudioUnit, unit.contextName != name {
+                unit.contextName = name
+            }
+        }
+    }
+
+    private func replacePluginAudioUnit(_ audioUnit: AVAudioUnit, for pluginID: UUID) {
+        // Never set nil: Waves' instrument shell reads the name without a
+        // nil check and crashes (WCWaveShell_AU_Instrument::SetTrackName).
+        if let name = pluginChannelNames[pluginID] {
+            audioUnit.auAudioUnit.contextName = name
+        }
+        // A hidden AU window (see windowShouldClose) is dropped with the old
+        // unit's view but not shown again.
+        let existingWindow = pluginWindows[pluginID]
+        let hadPluginWindow = existingWindow?.isVisible == true
+        let previousFrame = existingWindow?.frame
+        pluginViewControllers.removeValue(forKey: pluginID)
+        if existingWindow != nil {
+            closePluginWindow(pluginID: pluginID)
+        }
+        pluginAudioUnits[pluginID] = audioUnit
+        if hadPluginWindow {
+            if let previousFrame {
+                pluginWindowFrames[pluginID] = previousFrame
+            }
+            openPluginUI(pluginID: pluginID)
+        }
+    }
+
+    private func retryPendingPluginUIRequest(for pluginID: UUID) {
+        guard pendingPluginUIRequests.contains(pluginID) else { return }
+
+        // Wait for the newly attached AU to pass through a render cycle before
+        // requesting its view controller.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard let self,
+                  self.pendingPluginUIRequests.remove(pluginID) != nil else { return }
+            self.openPluginUI(pluginID: pluginID)
+        }
+    }
+
+    public func commitBPM(_ value: Double) {
+        bpm = max(20.0, min(400.0, value))
+    }
+
+    public func applyAudioDevices(
+        inputDeviceID: AudioDeviceID,
+        outputDeviceID: AudioDeviceID,
+        sampleRate: Double? = nil
+    ) -> Bool {
+        guard !isPlaying && !isRecording else { return false }
+        engine.stop()
+
+        var applied = true
+        if let sampleRate {
+            applied = setDeviceSampleRate(sampleRate, deviceIDs: [inputDeviceID, outputDeviceID])
+        }
+
+        // Only switch the defaults when the device pair actually changes; the
+        // running engine keeps its old devices until MyDAW restarts.
+        let devicesChanged = inputDeviceID != selectedInputDeviceID ||
+            outputDeviceID != selectedOutputDeviceID
+        if devicesChanged && !bindIODevice(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID) {
+            applied = false
+        }
+        guard applied else {
+            setupEngine()
+            return false
+        }
+        selectedInputDeviceID = inputDeviceID
+        selectedOutputDeviceID = outputDeviceID
+        if let sampleRate {
+            requestedSampleRate = sampleRate
+        }
+        setupEngine()
+        return true
+    }
+
+    /// Points the engine at the given devices by making them the macOS
+    /// default input and output. With input in use, AVAudioEngine ignores a
+    /// device set on its I/O unit (a private aggregate included) and always
+    /// runs on an aggregate of the system default input and output,
+    /// so the defaults are the only handle that works. The defaults found at
+    /// launch are put back by `shutdown()`. Call before the engine first
+    /// starts; a change while running takes effect after a restart.
+    @discardableResult
+    private func bindIODevice(inputDeviceID: AudioDeviceID, outputDeviceID: AudioDeviceID) -> Bool {
+        if originalDefaultDevices == nil {
+            originalDefaultDevices = (
+                Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice),
+                Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+            )
+        }
+        var succeeded = true
+        if inputDeviceID != 0 {
+            succeeded = Self.setDefaultDevice(kAudioHardwarePropertyDefaultInputDevice, to: inputDeviceID) && succeeded
+        }
+        if outputDeviceID != 0 {
+            succeeded = Self.setDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, to: outputDeviceID) && succeeded
+        }
+        guard succeeded else { return false }
+        selectedInputDeviceID = inputDeviceID
+        selectedOutputDeviceID = outputDeviceID
+        return true
+    }
+
+    /// Puts back the macOS default devices MyDAW replaced at launch.
+    private func restoreOriginalDefaultDevices() {
+        guard let original = originalDefaultDevices else { return }
+        if original.input != 0 {
+            Self.setDefaultDevice(kAudioHardwarePropertyDefaultInputDevice, to: original.input)
+        }
+        if original.output != 0 {
+            Self.setDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, to: original.output)
+        }
+        originalDefaultDevices = nil
+    }
+
+    /// Whether the selected devices can run at `rate`.
+    public func supportsSampleRate(_ rate: Double) -> Bool {
+        let deviceIDs = Set([selectedInputDeviceID, selectedOutputDeviceID]).filter { $0 != 0 }
+        return !deviceIDs.isEmpty && deviceIDs.allSatisfy { deviceID in
+            Self.availableSampleRateRanges(deviceID).contains { range in
+                rate >= range.mMinimum - 0.5 && rate <= range.mMaximum + 0.5
+            }
+        }
+    }
+
+    /// Sets the devices' nominal rate, keeping the rate each had before
+    /// MyDAW first changed it, and waits until the devices report the new
+    /// rate (the change is asynchronous), so the engine set up next runs at it.
+    @discardableResult
+    private func setDeviceSampleRate(_ rate: Double, deviceIDs: [AudioDeviceID]) -> Bool {
+        guard rate.isFinite, rate > 0.0 else { return false }
+        var succeeded = true
+        for deviceID in Set(deviceIDs).filter({ $0 != 0 }) {
+            guard let current = Self.nominalSampleRate(deviceID) else {
+                succeeded = false
+                continue
+            }
+            guard abs(current - rate) > 0.5 else { continue }
+            if originalNominalSampleRates[deviceID] == nil {
+                originalNominalSampleRates[deviceID] = current
+            }
+            succeeded = Self.writeNominalSampleRate(rate, to: deviceID) && succeeded
+        }
+        return succeeded
+    }
+
+    /// The device settings to put back at quit, as launch arguments for a
+    /// relaunched MyDAW that takes them over (this process then quits with
+    /// `shutdown(restoresDevices: false)`).
+    public func originalDeviceSettingsArguments() -> [String] {
+        var arguments: [String] = []
+        if let original = originalDefaultDevices {
+            arguments += ["--original-default-devices", "\(original.input),\(original.output)"]
+        }
+        if !originalNominalSampleRates.isEmpty {
+            let rates = originalNominalSampleRates.map { "\($0.key):\($0.value)" }.joined(separator: ",")
+            arguments += ["--original-sample-rates", rates]
+        }
+        return arguments
+    }
+
+    /// Takes over the settings a relaunching MyDAW left to put back, so
+    /// they are not taken for the originals when this process binds.
+    private func adoptInheritedOriginalDeviceSettings() {
+        let arguments = CommandLine.arguments
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+        if let devices = value(after: "--original-default-devices")?.split(separator: ",").compactMap({ AudioDeviceID($0) }),
+           devices.count == 2 {
+            originalDefaultDevices = (devices[0], devices[1])
+        }
+        for entry in value(after: "--original-sample-rates")?.split(separator: ",") ?? [] {
+            let parts = entry.split(separator: ":")
+            if parts.count == 2, let deviceID = AudioDeviceID(parts[0]), let rate = Double(parts[1]) {
+                originalNominalSampleRates[deviceID] = rate
+            }
+        }
+    }
+
+    /// Puts back the default devices and sample rates MyDAW changed.
+    public func restoreOriginalDeviceSettings() {
+        restoreOriginalSampleRates()
+        restoreOriginalDefaultDevices()
+    }
+
+    /// Puts back the device sample rates MyDAW changed.
+    private func restoreOriginalSampleRates() {
+        for (deviceID, rate) in originalNominalSampleRates {
+            Self.writeNominalSampleRate(rate, to: deviceID)
+        }
+        originalNominalSampleRates.removeAll()
+    }
+
+    private static func nominalSampleRate(_ deviceID: AudioDeviceID) -> Double? {
+        var value: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr,
+              value > 0 else { return nil }
+        return Double(value)
+    }
+
+    @discardableResult
+    private static func writeNominalSampleRate(_ rate: Double, to deviceID: AudioDeviceID) -> Bool {
+        var value = Float64(rate)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float64>.size),
+            &value
+        )
+        guard status == noErr else {
+            print("Failed to set sample rate \(rate) Hz on device \(deviceID): \(status)")
+            return false
+        }
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            if let current = nominalSampleRate(deviceID), abs(current - rate) <= 0.5 {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        print("Device \(deviceID) did not switch to \(rate) Hz in time")
+        return false
+    }
+
+    private static func availableSampleRateRanges(_ deviceID: AudioDeviceID) -> [AudioValueRange] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0 else {
+            return []
+        }
+        var ranges = [AudioValueRange](
+            repeating: AudioValueRange(),
+            count: Int(size) / MemoryLayout<AudioValueRange>.size
+        )
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ranges) == noErr else {
+            return []
+        }
+        return ranges
+    }
+
+    private static func defaultDevice(_ selector: AudioObjectPropertySelector) -> AudioDeviceID {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        return deviceID
+    }
+
+    @discardableResult
+    private static func setDefaultDevice(_ selector: AudioObjectPropertySelector, to deviceID: AudioDeviceID) -> Bool {
+        var value = deviceID
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &value
+        )
+        if status != noErr {
+            print("Failed to set default audio device \(deviceID): \(status)")
+        }
+        return status == noErr
+    }
+
+    private func updateEstimatedRecordingLatency() {
+        let inputLatency = max(0.0, engine.inputNode.presentationLatency)
+        let outputLatency = max(0.0, engine.outputNode.presentationLatency)
+        let bufferLatency = Double(inputBufferFrameSize) / max(1.0, hardwareSampleRate)
+        estimatedRecordingLatencyMs = (inputLatency + outputLatency + bufferLatency) * 1000.0
+    }
+
+    private func updateHardwareLatencyInfo() {
+        inputDeviceLatencyFrames = readDeviceFrameProperty(
+            kAudioDevicePropertyLatency,
+            deviceID: selectedInputDeviceID,
+            scope: kAudioDevicePropertyScopeInput
+        )
+        outputDeviceLatencyFrames = readDeviceFrameProperty(
+            kAudioDevicePropertyLatency,
+            deviceID: selectedOutputDeviceID,
+            scope: kAudioDevicePropertyScopeOutput
+        )
+        inputSafetyOffsetFrames = readDeviceFrameProperty(
+            kAudioDevicePropertySafetyOffset,
+            deviceID: selectedInputDeviceID,
+            scope: kAudioDevicePropertyScopeInput
+        )
+        outputSafetyOffsetFrames = readDeviceFrameProperty(
+            kAudioDevicePropertySafetyOffset,
+            deviceID: selectedOutputDeviceID,
+            scope: kAudioDevicePropertyScopeOutput
+        )
+    }
+
+    private func readDeviceFrameProperty(
+        _ selector: AudioObjectPropertySelector,
+        deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope
+    ) -> UInt32 {
+        guard deviceID != 0 else { return 0 }
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        )
+        return status == noErr ? value : 0
+    }
+
+    public func applyAutomaticTimingCompensation() {
+        updateEstimatedRecordingLatency()
+        manualRecordingCompensationMs = 0.0
+        metronomeTimingOffsetMs = 0.0
+    }
+
+    private var recordingLatencyCompensation: Double {
+        let totalMilliseconds = estimatedRecordingLatencyMs + manualRecordingCompensationMs
+        guard totalMilliseconds.isFinite else { return 0.0 }
+        return min(5.0, max(-5.0, totalMilliseconds / 1000.0))
+    }
+
+    private var recordingPlacementCompensation: Double {
+        recordingLatencyCompensation + masterPluginLatency
+    }
+
+    private static func makeClickBuffer(
+        format: AVAudioFormat,
+        frequency: Double,
+        amplitude: Double
+    ) -> AVAudioPCMBuffer? {
+        let frameCount = AVAudioFrameCount(format.sampleRate * 0.045)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+              let channels = buffer.floatChannelData else { return nil }
+        buffer.frameLength = frameCount
+        for frame in 0..<Int(frameCount) {
+            let progress = Double(frame) / Double(frameCount)
+            let time = Double(frame) / format.sampleRate
+            let envelope = 1.0 - progress
+            let value = Float(sin(time * .pi * 2.0 * frequency) * envelope * amplitude)
+            for channel in 0..<Int(format.channelCount) {
+                channels[channel][frame] = value
+            }
+        }
+        return buffer
+    }
+
+    private static func makeSilentBuffer(
+        format: AVAudioFormat,
+        duration: Double
+    ) -> AVAudioPCMBuffer? {
+        let frameCount = AVAudioFrameCount(max(1.0, format.sampleRate * duration))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+              let channels = buffer.floatChannelData else { return nil }
+        buffer.frameLength = frameCount
+        for channel in 0..<Int(format.channelCount) {
+            channels[channel].initialize(repeating: 0.0, count: Int(frameCount))
+        }
+        return buffer
+    }
+
+    private func startMetronome(at sharedStartTime: AVAudioTime? = nil) {
+        stopMetronome()
+        guard metronomeEnabled,
+              let clickNode,
+              let clickBuffer,
+              let accentClickBuffer else { return }
+
+        let interval = meter.secondsPerBeat(bpm: bpm)
+        let beatsPerBar = meter.beatsPerBar
+        // With the transport starting, its start time and position are given.
+        // Switched on (or re-armed) while it runs, the clicks start at the
+        // next moment a player can start without losing its opening, at the
+        // position the transport clock has then: the on-screen playhead lags.
+        let transportStartTime: AVAudioTime
+        let startPosition: Double
+        if let sharedStartTime {
+            transportStartTime = sharedStartTime
+            startPosition = currentTime
+        } else {
+            let hostTime = earliestPlayerStartHostTime()
+            transportStartTime = AVAudioTime(hostTime: hostTime)
+            startPosition = transportPosition(atHostTime: hostTime) ?? currentTime
+        }
+        let beatPosition = startPosition / interval
+        let nearestBeat = round(beatPosition)
+        let isOnBeat = abs(beatPosition - nearestBeat) < 0.0001
+        let nextBeatPosition = isOnBeat ? nearestBeat : ceil(beatPosition)
+        let timingOffset = metronomeTimingOffsetMs / 1000.0
+        let delay = max(0.0, (nextBeatPosition * interval) - startPosition + timingOffset)
+        metronomeBeat = Int(nextBeatPosition) % beatsPerBar
+        metronomeGeneration += 1
+        let generation = metronomeGeneration
+
+        let firstBeat = metronomeBeat
+        // A player raises an exception when its connection failed or the
+        // engine is not running (a device gone, say): no clicks then.
+        guardedEngineCall("metronome start") {
+            let beatCount = 256
+            for beatIndex in 0..<beatCount {
+                let buffer = ((firstBeat + beatIndex) % beatsPerBar == 0) ? accentClickBuffer : clickBuffer
+                let offset = delay + Double(beatIndex) * interval
+                let hostTime = transportStartTime.hostTime + AudioConvertNanosToHostTime(
+                    UInt64(max(0.0, offset) * 1_000_000_000.0)
+                )
+                let clickTime = AVAudioTime(hostTime: hostTime)
+                if beatIndex == beatCount - 1 {
+                    clickNode.scheduleBuffer(buffer, at: clickTime, options: []) { [weak self] in
+                        Task<Void, Never> { @MainActor [weak self] in
+                            guard let self,
+                                  generation == self.metronomeGeneration,
+                                  self.isPlaying || self.isRecording else { return }
+                            self.startMetronome()
+                        }
+                    }
+                } else {
+                    clickNode.scheduleBuffer(buffer, at: clickTime, options: [])
+                }
+            }
+            clickNode.play(at: transportStartTime)
+        }
+    }
+
+    private func stopMetronome() {
+        metronomeGeneration += 1
+        guard let clickNode else { return }
+        guardedEngineCall("metronome stop") { clickNode.stop() }
+    }
+
+    // MARK: - Real-time Input Processing (Audio Thread)
+
+    private func processInputAudioBuffer(buffer: AVAudioPCMBuffer, time: AVAudioTime) {
+        guard let channelData = buffer.floatChannelData else { return }
+        let frameLength = Int(buffer.frameLength)
+        if frameLength == 0 { return }
+
+        let format = buffer.format
+        let hwChannels = Int(format.channelCount)
+
+        // The tuner, when its window is open.
+        tunerFeed.process(buffer)
+
+        // 1. Compute peak level for each hardware channel
+        var currentBufferPeaks = [Float](repeating: 0.0, count: max(hwChannels, 8))
+        for ch in 0..<hwChannels {
+            let samples = channelData[ch]
+            var peak: Float = 0.0
+            for i in 0..<frameLength {
+                let absVal = abs(samples[i])
+                if absVal > peak { peak = absVal }
+            }
+            currentBufferPeaks[ch] = peak
+        }
+
+        // Store peaks for UI meter timer
+        peakLock.lock()
+        for ch in 0..<min(hwChannels, rawChannelPeaks.count) {
+            rawChannelPeaks[ch] = max(rawChannelPeaks[ch], currentBufferPeaks[ch])
+        }
+        peakLock.unlock()
+
+        // 2. Check if recording is active
+        captureLock.lock()
+        let isRec = self.recordingActiveState
+        let configs = self.captureConfigs
+        let writers = self.writersSnapshot
+        captureLock.unlock()
+
+        guard isRec, !configs.isEmpty else { return }
+
+        // Timeline position of this buffer's first sample. Input taps
+        // deliver ~100 ms buffers, so the first one usually starts before the
+        // transport did; it must be trimmed to the start sample, not written
+        // whole, or the take lands late by that pre-roll. Punch takes record
+        // the whole pass too; they are trimmed to the punch range on stop.
+        let (bufferStartPosition, timelineStart): (Double?, Double) = recordingTimingLock.withLock {
+            guard let transportHostTime = recordingTransportStartHostTime,
+                  time.isHostTimeValid else { return (nil, recordingTimelineStart) }
+            let deltaNanos = time.hostTime >= transportHostTime
+                ? Double(AudioConvertHostTimeToNanos(time.hostTime - transportHostTime))
+                : -Double(AudioConvertHostTimeToNanos(transportHostTime - time.hostTime))
+            return (recordingTimelineStart + deltaNanos / 1_000_000_000.0, recordingTimelineStart)
+        }
+        var inputFrameOffset = 0
+        var capturedFrameLength = frameLength
+        if let bufferStartPosition {
+            let sampleRate = format.sampleRate
+            let skip = Int(((timelineStart - bufferStartPosition) * sampleRate).rounded())
+            inputFrameOffset = min(frameLength, max(0, skip))
+            capturedFrameLength = frameLength - inputFrameOffset
+            guard capturedFrameLength > 0 else { return }
+        }
+
+        var firstInputLog: String?
+        recordingTimingLock.lock()
+        if !hasLoggedFirstRecordingInput {
+            hasLoggedFirstRecordingInput = true
+            let hostDeltaMs: Double
+            if let transportHostTime = recordingTransportStartHostTime,
+               time.isHostTimeValid {
+                let deltaNanos: Int64
+                if time.hostTime >= transportHostTime {
+                    deltaNanos = Int64(AudioConvertHostTimeToNanos(time.hostTime - transportHostTime))
+                } else {
+                    deltaNanos = -Int64(AudioConvertHostTimeToNanos(transportHostTime - time.hostTime))
+                }
+                hostDeltaMs = Double(deltaNanos) / 1_000_000.0
+            } else {
+                hostDeltaMs = .nan
+            }
+            firstInputLog = String(
+                format: "[Timing] first input buffer: hostDelta=%.3f ms, sampleTime=%@, frames=%d, sampleRate=%.1f",
+                hostDeltaMs,
+                time.isSampleTimeValid ? String(format: "%.0f", time.sampleTime) : "invalid",
+                frameLength,
+                format.sampleRate
+            )
+        }
+        recordingTimingLock.unlock()
+        if let firstInputLog {
+            Task { @MainActor in
+                print(firstInputLog)
+            }
+        }
+
+        // Process armed tracks
+        for cfg in configs where cfg.isArmed {
+            guard let writer = writers[cfg.trackId] else { continue }
+
+            let chOffset = cfg.channelOffset
+            let ch0 = (chOffset < hwChannels) ? chOffset : 0
+            let ch1 = (chOffset + 1 < hwChannels) ? (chOffset + 1) : ch0
+            let outChannels: AVAudioChannelCount = cfg.isStereo ? 2 : 1
+
+            guard let subFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: format.sampleRate,
+                channels: outChannels,
+                interleaved: false
+            ),
+            let trackBuffer = AVAudioPCMBuffer(
+                pcmFormat: subFormat,
+                frameCapacity: AVAudioFrameCount(capturedFrameLength)
+            ) else {
+                continue
+            }
+            trackBuffer.frameLength = AVAudioFrameCount(capturedFrameLength)
+            guard let trackData = trackBuffer.floatChannelData else { continue }
+
+            trackData[0].update(
+                from: channelData[ch0].advanced(by: inputFrameOffset),
+                count: capturedFrameLength
+            )
+            if cfg.isStereo {
+                trackData[1].update(
+                    from: channelData[ch1].advanced(by: inputFrameOffset),
+                    count: capturedFrameLength
+                )
+            }
+
+            // Stream directly to disk writer
+            writer.write(buffer: trackBuffer)
+
+            // Calculate peak for live waveform
+            peakLock.lock()
+            if self.liveWaveformPeaksBuffer[cfg.trackId] == nil {
+                self.liveWaveformPeaksBuffer[cfg.trackId] = Array(
+                    repeating: [],
+                    count: Int(outChannels)
+                )
+            }
+            // WaveformCache uses 512 samples per point. Keep live waveform
+            // width in sync with the number of captured samples in this buffer.
+            let livePointCount = max(1, (capturedFrameLength + 511) / 512)
+            for channel in 0..<Int(outChannels) {
+                let sourceChannel = channel == 0 ? ch0 : ch1
+                let peakVal = currentBufferPeaks[sourceChannel]
+                for _ in 0..<livePointCount {
+                    self.liveWaveformPeaksBuffer[cfg.trackId]?[channel].append(
+                        (min: -peakVal, max: peakVal)
+                    )
+                }
+            }
+            peakLock.unlock()
+        }
+    }
+
+    // MARK: - 60Hz UI Meter & Waveform Timer (MainActor)
+
+    private func startMeterTimer() {
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+
+                self.updatePunchRecordingState()
+
+                let (peaks, livePeaks): ([Float], [UUID: [[(min: Float, max: Float)]]]) = self.peakLock.withLock {
+                    let p = self.rawChannelPeaks
+                    self.rawChannelPeaks = [Float](repeating: 0.0, count: self.rawChannelPeaks.count)
+                    let lp = self.liveWaveformPeaksBuffer
+                    self.liveWaveformPeaksBuffer.removeAll(keepingCapacity: true)
+                    return (p, lp)
+                }
+
+                if let recordingStartTime = self.recordingTimingLock.withLock({
+                    let value = self.pendingRecordingClipStartTime
+                    self.pendingRecordingClipStartTime = nil
+                    return value
+                }) {
+                    print(
+                        String(
+                            format: "[Timing] clip position: timelineStart=%.6f, clipStart=%.6f, compensation=%.3f ms",
+                            self.recordingTimelineStart,
+                            recordingStartTime,
+                            self.recordingPlacementCompensation * 1000.0
+                        )
+                    )
+                    for clip in self.activeClips.values {
+                        clip.startTime = max(0.0, recordingStartTime)
+                    }
+                }
+
+                // Update Master Peak from the main mixer output.
+                let outputMasterPeak = self.peakLock.withLock {
+                    let peak = self.masterOutputPeak
+                    self.masterOutputPeak = .zero
+                    return peak
+                }
+                self.masterMeter.update(
+                    inputPeak: 0,
+                    outputPeak: self.masterStereoPeak.falling(to: outputMasterPeak, by: 0.82)
+                )
+                let decayedPeak = max(self.masterPeak * 0.85, outputMasterPeak.maximum)
+                self.masterPeak = decayedPeak < 1e-5 ? 0 : decayedPeak
+
+                var outputPeaks: [UUID: StereoPeak] = [:]
+                var meterCycles: [UUID: Int] = [:]
+                for (trackID, meter) in self.trackMeters {
+                    let reading = meter.take()
+                    outputPeaks[trackID] = reading.peak
+                    meterCycles[trackID] = reading.cycles
+                }
+
+                let fxPeaks = self.peakLock.withLock {
+                    let values = self.fxOutputPeaks
+                    self.fxOutputPeaks.removeAll(keepingCapacity: true)
+                    return values
+                }
+                self.checkTrackMeters(cycles: meterCycles)
+
+                // Notify ProjectState to update track input meters
+                MyDAWNotificationCenter.shared.post(
+                    name: .audioEngineUpdatedPeaks,
+                    object: nil,
+                    userInfo: [
+                        "peaks": peaks,
+                        "liveChannelWaveforms": livePeaks,
+                        "outputPeaks": outputPeaks,
+                        "fxOutputPeaks": fxPeaks
+                    ]
+                )
+            }
+        }
+    }
+
+    // MARK: - Meter tap watchdog
+
+    /// Track meters stopped at times (all tracks at once, sound still
+    /// playing, master and FX meters fine) while they were taps on the track
+    /// splitters. They now come from the dry delay units, which render
+    /// whenever the track sounds. While the engine renders — the master tap
+    /// keeps advancing — every track's unit must render too, silent or not;
+    /// one that stays idle for a second is logged once per playback.
+    private func checkTrackMeters(cycles: [UUID: Int]) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let running = engine.isRunning
+        if running != wasEngineRunning {
+            wasEngineRunning = running
+            noteGraphEvent(running ? "engine running" : "engine stopped")
+        }
+        let masterCount = peakLock.withLock { masterTapCallbackCount }
+        if masterCount != lastMasterTapCount {
+            lastMasterTapCount = masterCount
+            lastMasterTapAdvance = now
+        }
+        guard isPlaying || isRecording else {
+            trackMeterWatch.removeAll()
+            trackMeterStallsLogged.removeAll()
+            return
+        }
+        guard running, now - lastMasterTapAdvance < 0.5 else {
+            // The engine itself is not rendering: nothing to judge.
+            trackMeterWatch.removeAll()
+            return
+        }
+        var stalled: [UUID] = []
+        for (trackID, count) in cycles {
+            if let watch = trackMeterWatch[trackID], watch.cycles == count {
+                if now - watch.since >= 1.0, !trackMeterStallsLogged.contains(trackID) {
+                    stalled.append(trackID)
+                }
+            } else {
+                trackMeterWatch[trackID] = (count, now)
+            }
+        }
+        guard !stalled.isEmpty else { return }
+        trackMeterStallsLogged.formUnion(stalled)
+        writeMeterRecoveryLog(stalled: stalled, cycles: cycles, masterCount: masterCount, now: now)
+    }
+
+    private func trackLabel(_ trackID: UUID) -> String {
+        "\(meterTrackNames[trackID] ?? "?") [\(trackID.uuidString.prefix(8))]"
+    }
+
+    private static let graphEventTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    private func noteGraphEvent(_ text: String) {
+        graphEventHistory.append("\(Self.graphEventTimeFormatter.string(from: Date()))  \(text)")
+        if graphEventHistory.count > 60 {
+            graphEventHistory.removeFirst(graphEventHistory.count - 60)
+        }
+    }
+
+    /// Appends the state at a recovery to ~/Library/Logs/MyDAW/MeterRecovery.log.
+    private func writeMeterRecoveryLog(stalled: [UUID], cycles: [UUID: Int], masterCount: Int, now: TimeInterval) {
+        func describe(_ format: AVAudioFormat) -> String {
+            "\(Int(format.sampleRate)) Hz \(format.channelCount) ch"
+        }
+        var lines: [String] = []
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        lines.append("=== \(ISO8601DateFormatter().string(from: Date()))  MyDAW \(version)")
+        lines.append("Track meters stalled (dry delay units not rendering): \(stalled.count) of \(trackMeters.count) tracks")
+        lines.append("engine running \(engine.isRunning), playing \(isPlaying), recording \(isRecording), hardware \(Int(hardwareSampleRate)) Hz, master tap calls \(masterCount), pending splitter rewires \(pendingSplitterRewires.count)")
+        for trackID in trackSplitterNodes.keys.sorted(by: { trackLabel($0) < trackLabel($1) }) {
+            guard let splitter = trackSplitterNodes[trackID] else { continue }
+            let since = trackMeterWatch[trackID].map { String(format: "%.2f s", now - $0.since) } ?? "-"
+            lines.append("  \(stalled.contains(trackID) ? "STALLED" : "ok     ") \(trackLabel(trackID)): render cycles \(cycles[trackID] ?? 0), unchanged for \(since), splitter in \(describe(splitter.inputFormat(forBus: 0))) / out \(describe(splitter.outputFormat(forBus: 0))), attached \(splitter.engine != nil)")
+        }
+        lines.append("Recent events:")
+        lines += graphEventHistory.map { "  " + $0 }
+        lines.append("")
+        let text = lines.joined(separator: "\n") + "\n"
+        print(text)
+
+        let folder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/MyDAW", isDirectory: true)
+        let url = folder.appendingPathComponent("MeterRecovery.log")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard let data = text.data(using: .utf8) else { return }
+        // Kept under about 1 MB: past that, the older half is dropped.
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 1_000_000,
+           let old = try? Data(contentsOf: url) {
+            var kept = old.suffix(500_000)
+            // Start at a whole entry.
+            if let start = kept.range(of: Data("\n=== ".utf8)) {
+                kept = kept[(start.lowerBound + 1)...]
+            }
+            try? Data(kept).write(to: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    // MARK: - Track Synchronization
+
+    public func syncTracks(_ tracks: [AudioTrack]) {
+        syncFXChannels([])
+        syncTracks(tracks, fxChannels: [])
+    }
+
+    public func syncTracks(_ tracks: [AudioTrack], fxChannels: [FXChannel]) {
+        syncedFXChannels = fxChannels
+        syncedTracks = tracks
+        meterTrackNames = Dictionary(tracks.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        noteGraphEvent("syncTracks (\(tracks.count) tracks, \(fxChannels.count) FX)")
+        let allPlugins = tracks.flatMap(\.plugins) + fxChannels.flatMap(\.plugins) + configuredMasterPlugins
+        let instrumentPlugins = tracks.compactMap { $0.kind == .instrument ? $0.instrument : nil }
+        let instrumentIDs = Set(instrumentPlugins.map(\.id))
+        let activePluginIDs = Set(allPlugins.map(\.id)).union(instrumentIDs)
+        let removedPluginIDs = Set(pluginDescriptors.keys).subtracting(activePluginIDs)
+        for pluginID in removedPluginIDs {
+            closePluginWindow(pluginID: pluginID)
+            pluginViewControllers.removeValue(forKey: pluginID)
+            pluginUIRequests.remove(pluginID)
+            pendingPluginUIRequests.remove(pluginID)
+        }
+        unavailablePluginIDs.subtract(removedPluginIDs)
+        pluginDescriptors = (allPlugins + instrumentPlugins)
+            .reduce(into: [:]) { descriptors, plugin in
+                descriptors[plugin.id] = plugin
+            }
+        syncVST3Instances(for: allPlugins)
+        observeChannelNames(tracks: tracks, fxChannels: fxChannels)
+        syncMasterPlugins(configuredMasterPlugins)
+        syncFXChannels(fxChannels)
+        // Sends stay wired between syncs; only new or retargeted ones are
+        // connected below. Rewiring every send on each sync (as this once
+        // did) makes AVAudioEngine throw "required condition is false:
+        // mixingDest" while input monitoring feeds the live input through
+        // those sends.
+        wiredSendTargets = wiredSendTargets.filter { _, target in
+            fxInputNodes.values.contains { $0 === target }
+        }
+        let currentTrackIDs = Set(tracks.map { $0.id })
+        let currentFXIDs = Set(fxChannels.map(\.id))
+        for (key, gainNode) in sendGainNodes
+        where !currentTrackIDs.contains(key.trackID) || !currentFXIDs.contains(key.fxChannelID) {
+            engineDisconnectOutput(gainNode)
+            gainNode.outputVolume = 0
+            retiredSendGains[key.trackID, default: []].append(gainNode)
+            sendGainNodes.removeValue(forKey: key)
+            wiredSendTargets.removeValue(forKey: key)
+        }
+
+        for trackID in Array(instrumentPluginIDs.keys) where !currentTrackIDs.contains(trackID) {
+            removeInstrument(of: trackID)
+        }
+        // Gone instrument outputs let go of their buses before their nodes go.
+        syncInstrumentOutputs(format: AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2))
+        for trackID in Array(instrumentFeeders.keys) where !currentTrackIDs.contains(trackID) {
+            instrumentFeeders.removeValue(forKey: trackID)?.detach()
+        }
+
+        for (id, renderer) in trackRenderers where !currentTrackIDs.contains(id) {
+            renderer.unregister()
+            engineDisconnectOutput(renderer.node)
+            engineDetach(renderer.node)
+            trackRenderers.removeValue(forKey: id)
+            if let outputNode = trackOutputNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(outputNode)
+                engineDetach(outputNode)
+            }
+            if let alignDelay = trackAlignDelayNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(alignDelay)
+                engineDetach(alignDelay)
+            }
+            if let downmixNode = trackDownmixNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(downmixNode)
+                engineDetach(downmixNode)
+            }
+            trackPluginLatencies.removeValue(forKey: id)
+            trackDryDestinations.removeValue(forKey: id)
+            trackChainTails.removeValue(forKey: id)
+            trackSendFXIDs.removeValue(forKey: id)
+            trackMeters.removeValue(forKey: id)
+            trackMeterWatch.removeValue(forKey: id)
+            trackMeterStallsLogged.remove(id)
+            if let splitter = trackSplitterNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(splitter)
+                engineDetach(splitter)
+            }
+            for gainNode in retiredSendGains.removeValue(forKey: id) ?? [] {
+                safeDetach(gainNode)
+            }
+            if let panNode = trackPanNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(panNode)
+                engineDetach(panNode)
+            }
+            trackPanValues.removeValue(forKey: id)
+            trackDryAudible.removeValue(forKey: id)
+            if let automationNode = trackAutomationNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(automationNode)
+                engineDetach(automationNode)
+            }
+            trackAutomationLeads.removeValue(forKey: id)
+            if let dryDelay = trackDryDelayNodes.removeValue(forKey: id) {
+                engineDisconnectOutput(dryDelay)
+                engineDetach(dryDelay)
+            }
+        }
+
+        for (id, nodes) in trackPluginNodes where !currentTrackIDs.contains(id) {
+            for pluginNode in nodes {
+                engineDisconnectOutput(pluginNode)
+                engineDetach(pluginNode)
+                detachPluginSwitch(of: pluginNode)
+            }
+            trackPluginNodes.removeValue(forKey: id)
+            pluginGraphSignatures.removeValue(forKey: id)
+        }
+
+        let currentPluginIDs = Set(tracks.flatMap { $0.plugins.map(\.id) })
+        let currentFXPluginIDs = Set(fxChannels.flatMap { $0.plugins.map(\.id) })
+        pluginAudioUnits = pluginAudioUnits.filter {
+            currentPluginIDs.contains($0.key) ||
+                currentFXPluginIDs.contains($0.key) ||
+                instrumentIDs.contains($0.key) ||
+                masterPluginIDs.contains($0.key)
+        }
+
+        let audible = audibility(tracks: tracks, fxChannels: fxChannels)
+
+        for track in tracks {
+            guard let format = AVAudioFormat(
+                standardFormatWithSampleRate: hardwareSampleRate,
+                channels: 2
+            ) else {
+                continue
+            }
+
+            let outputNode: AVAudioMixerNode
+            if let existing = trackOutputNodes[track.id] {
+                outputNode = existing
+            } else {
+                outputNode = AVAudioMixerNode()
+                engineAttach(outputNode)
+                trackOutputNodes[track.id] = outputNode
+            }
+            // A renderer works at one sample rate; a new rate gets a new one.
+            if let existing = trackRenderers[track.id], existing.sampleRate != hardwareSampleRate {
+                existing.unregister()
+                engineDisconnectOutput(existing.node)
+                engineDetach(existing.node)
+                trackRenderers.removeValue(forKey: track.id)
+            }
+            if trackRenderers[track.id] == nil {
+                let renderer = TrackRenderer(sampleRate: hardwareSampleRate)
+                engineAttach(renderer.node)
+                engineConnect(renderer.node, to: outputNode, fromBus: 0, toBus: 0, format: format)
+                trackRenderers[track.id] = renderer
+            }
+            // The inserts start after the downmix, so a mono track is mono
+            // through its whole chain, sends and meters included.
+            let downmixNode: AVAudioUnitEffect
+            if let existing = trackDownmixNodes[track.id] {
+                // Follow a sample-rate change, as the rest of the chain does.
+                if existing.inputFormat(forBus: 0) != format && !isPlaying && !isRecording {
+                    if let alignDelay = trackAlignDelayNodes[track.id] {
+                        connectReformatting(outputNode, to: alignDelay, format: format)
+                        connectReformatting(alignDelay, to: existing, format: format)
+                    } else {
+                        connectReformatting(outputNode, to: existing, format: format)
+                    }
+                }
+                downmixNode = existing
+            } else {
+                _ = MonoDownmixAudioUnit.registration
+                downmixNode = AVAudioUnitEffect(audioComponentDescription: MonoDownmixAudioUnit.componentDescription)
+                engineAttach(downmixNode)
+                trackDownmixNodes[track.id] = downmixNode
+                engineConnect(outputNode, to: downmixNode, format: format)
+            }
+            (downmixNode.auAudioUnit as? MonoDownmixAudioUnit)?.isMono = track.channelMode == .mono
+            if track.kind == .instrument {
+                let feeder = instrumentFeeders[track.id] ?? InstrumentMIDIFeeder()
+                instrumentFeeders[track.id] = feeder
+                feeder.setPlan(MIDIPlaybackPlan.make(for: track, bpm: bpm, sampleRate: hardwareSampleRate))
+            }
+            syncInstrument(for: track, output: outputNode, format: format)
+            let chainHead: AVAudioNode = downmixNode
+            // VST3 descriptors are persisted and shown in the mixer, but are
+            // bypassed until their native processing host is connected.
+            let auPlugins = track.plugins.filter { isChainPlugin($0) }
+            let desiredSignature = auPlugins.map(\.id)
+            let existingSignature = pluginGraphSignatures[track.id]
+            let graphNeedsRebuild = existingSignature != desiredSignature
+
+            if graphNeedsRebuild {
+                let previousNodes = trackPluginNodes[track.id] ?? []
+                let reusableNodes = auPlugins.compactMap { pluginAudioUnits[$0.id] }
+                let canReuseNodes = reusableNodes.count == auPlugins.count &&
+                    Set(reusableNodes.map { node in
+                        pluginAudioUnits.first(where: { $0.value === node })?.key
+                    }.compactMap { $0 }) == Set(desiredSignature)
+
+                if canReuseNodes {
+                    let reusableSet = Set(reusableNodes.map { ObjectIdentifier($0) })
+                    for pluginNode in previousNodes {
+                        safeDisconnectNodeOutput(pluginNode)
+                        safeDisconnectNodeInput(pluginNode)
+                        // Removed plug-ins must be detached to be released.
+                        if !reusableSet.contains(ObjectIdentifier(pluginNode)) {
+                            safeDetach(pluginNode)
+                        }
+                    }
+                    safeDisconnectNodeOutput(chainHead)
+                    trackPluginNodes[track.id] = reusableNodes
+                    reconnectPluginChain(
+                        from: chainHead,
+                        through: reusableNodes,
+                        to: engine.mainMixerNode,
+                        format: format
+                    )
+                    connectTrackChainTail(track.id, from: reusableNodes.last.map(chainOutput) ?? chainHead, format: format)
+                    for plugin in auPlugins {
+                        if let au = pluginAudioUnits[plugin.id] {
+                            setAUBypass(au, bypassed: !plugin.enabled)
+                            AudioUnitReset(au.audioUnit, kAudioUnitScope_Global, 0)
+                        }
+                    }
+                    updateLatencyCompensation()
+                    pluginGraphSignatures[track.id] = desiredSignature
+                } else {
+                    for pluginNode in previousNodes {
+                        safeDisconnectNodeOutput(pluginNode)
+                        safeDisconnectNodeInput(pluginNode)
+                        safeDetach(pluginNode)
+                    }
+                    trackPluginNodes[track.id] = []
+                    updateLatencyCompensation()
+                    pluginGraphGenerations[track.id, default: 0] += 1
+                    let graphGeneration = pluginGraphGenerations[track.id] ?? 0
+                    pluginGraphSignatures[track.id] = desiredSignature
+
+                    connectTrackChainTail(track.id, from: chainHead, format: format)
+                    if !auPlugins.isEmpty {
+                        // The chain is incomplete until installAudioUnits
+                        // reaches its end; nothing may re-fan-out the old tail
+                        // meanwhile or it would bypass the new inserts.
+                        trackChainTails[track.id] = nil
+                        installAudioUnits(
+                            auPlugins,
+                            for: track.id,
+                            previousNode: chainHead,
+                            format: format,
+                            index: 0,
+                            generation: graphGeneration
+                        )
+                    }
+                }
+            } else {
+                for plugin in auPlugins {
+                    if let au = pluginAudioUnits[plugin.id] {
+                        setAUBypass(au, bypassed: !plugin.enabled)
+                    }
+                }
+                updateLatencyCompensation()
+            }
+
+            var sendFXIDs: [UUID] = []
+            for channel in fxChannels where fxInputNodes[channel.id] != nil {
+                let gainNode = sendGainNode(SendKey(trackID: track.id, fxChannelID: channel.id))
+                setMixerVolume(gainNode, sendLevel(of: track, to: channel.id))
+                sendFXIDs.append(channel.id)
+            }
+            trackSendFXIDs[track.id] = sendFXIDs
+            if let tail = trackChainTails[track.id] {
+                connectTrackChainTail(track.id, from: tail, format: format)
+            }
+
+            let effectiveVolume = effectiveTrackVolume(for: track, audible: audible)
+            setMixerVolume(outputNode, effectiveVolume)
+            setTrackPan(track.id, track.pan)
+
+            trackRenderers[track.id]?.setPlan(TrackPlaybackPlan.make(for: track))
+        }
+
+        syncInstrumentOutputs(format: AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2))
+        for track in tracks {
+            applyVolumeAutomation(to: track)
+        }
+        // A destination made later in the loop above exists only now.
+        for track in tracks where track.outputDestinationID != nil || trackDryDestinations[track.id] != nil {
+            if let tail = trackChainTails[track.id] {
+                connectTrackChainTail(track.id, from: tail, format: AVAudioFormat(
+                    standardFormatWithSampleRate: hardwareSampleRate, channels: 2) ?? engine.mainMixerNode.outputFormat(forBus: 0))
+            }
+        }
+        applyInstrumentMainMutes(audible)
+        for track in tracks {
+            setTrackDryAudible(track.id, audible.dryTracks.contains(track.id))
+        }
+        for channel in fxChannels {
+            setFXAudible(channel.id, audible.fxChannels.contains(channel.id))
+        }
+
+        desiredInputMonitors = tracks.reduce(into: [:]) { result, track in
+            guard track.isInputMonitoring, track.isAudioRecordArmed else { return }
+            result[track.id] = InputMonitorConfig(
+                channelOffset: track.inputChannelIndex,
+                isStereo: track.channelMode == .stereo
+            )
+        }
+        // While a stop is still waiting for effect tails to fade, leave the
+        // rewiring to that wait instead of cutting the tails now.
+        if isWaitingForQuietRewire {
+            applyDeferredRewiresWhenQuiet()
+        } else {
+            applyInputMonitoringIfNeeded()
+        }
+
+        let newConfigs = tracks.map { track in
+            TrackCaptureConfig(
+                trackId: track.id,
+                isArmed: track.isAudioRecordArmed,
+                channelOffset: track.inputChannelIndex,
+                isStereo: track.channelMode == .stereo
+            )
+        }
+
+        captureLock.withLock {
+            self.captureConfigs = newConfigs
+        }
+        updateLiveMIDITargets()
+    }
+
+    // MARK: - Instruments
+
+    /// Builds the track's instrument when it changed, feeding the track's
+    /// output mixer like the clip renderer. Building is asynchronous; a
+    /// newer choice made meanwhile wins.
+    private func syncInstrument(for track: AudioTrack, output: AVAudioMixerNode, format: AVAudioFormat) {
+        let desired = track.kind == .instrument ? track.instrument : nil
+        guard instrumentPluginIDs[track.id] != desired?.id else { return }
+        removeInstrument(of: track.id)
+        guard let desired, desired.kind == .au, desired.isLoadable else { return }
+        let trackID = track.id
+        instrumentPluginIDs[trackID] = desired.id
+        instrumentGenerations[trackID, default: 0] += 1
+        let generation = instrumentGenerations[trackID] ?? 0
+        track.isInstrumentLoading = true
+        noteGraphEvent("instrument load \(desired.name)")
+        // On the main thread, as for every AU: an in-process unit runs its
+        // constructor on the calling thread, and some need the main one
+        // (Synthesizer V creates a WKWebViewConfiguration there, and WebKit
+        // traps when it first initializes on any other thread).
+        DispatchQueue.main.async { [weak self] in
+            AVAudioUnit.instantiate(
+                with: desired.audioComponentDescription,
+                options: [],
+                completionHandler: { audioUnit, error in
+                    HostMusicalContext.shared.attach(to: audioUnit?.auAudioUnit)
+                    DispatchQueue.main.async {
+                        guard let self,
+                              self.instrumentGenerations[trackID] == generation,
+                              self.trackOutputNodes[trackID] === output else { return }
+                        track.isInstrumentLoading = false
+                        // Instruments have no input; the output bus gets the
+                        // chain format before anything allocates the unit.
+                        let audioUnit = audioUnit.flatMap {
+                            self.acceptsChainFormat($0, format: format, name: desired.name) ? $0 : nil
+                        }
+                        guard let audioUnit else {
+                            self.markPluginUnavailable(desired.id)
+                            print("Failed to load instrument \(desired.name): \(error.map { "\($0)" } ?? "format refused")")
+                            return
+                        }
+                        let wasEngineRunning = self.engine.isRunning
+                        if wasEngineRunning {
+                            self.engine.stop()
+                        }
+                        self.engineAttach(audioUnit)
+                        self.prepareExtraOutputBuses(of: audioUnit, format: format)
+                        self.engineConnect(
+                            audioUnit,
+                            to: output,
+                            fromBus: 0,
+                            toBus: output.nextAvailableInputBus,
+                            format: format
+                        )
+                        self.instrumentUnits[trackID] = audioUnit
+                        self.syncInstrumentOutputs(format: format)
+                        self.unavailablePluginIDs.remove(desired.id)
+                        self.pluginChannelNames[desired.id] = track.name
+                        self.replacePluginAudioUnit(audioUnit, for: desired.id)
+                        if !self.engine.isRunning {
+                            try? self.startEngine()
+                        }
+                        self.restoreSavedState(for: desired.id, audioUnit: audioUnit)
+                        let feeder = self.instrumentFeeders[trackID] ?? InstrumentMIDIFeeder()
+                        self.instrumentFeeders[trackID] = feeder
+                        feeder.attach(to: audioUnit.auAudioUnit, sampleRate: self.hardwareSampleRate)
+                        self.updateLiveMIDITargets()
+                        self.updateLatencyCompensation()
+                        self.retryPendingPluginUIRequest(for: desired.id)
+                        self.noteGraphEvent("instrument ready \(desired.name)")
+                    }
+                }
+            )
+        }
+    }
+
+    private func removeInstrument(of trackID: UUID) {
+        instrumentGenerations[trackID, default: 0] += 1
+        syncedTracks.first(where: { $0.id == trackID })?.isInstrumentLoading = false
+        if let pluginID = instrumentPluginIDs.removeValue(forKey: trackID) {
+            closePluginWindow(pluginID: pluginID)
+            pluginViewControllers.removeValue(forKey: pluginID)
+            pendingPluginUIRequests.remove(pluginID)
+            pluginAudioUnits.removeValue(forKey: pluginID)
+        }
+        instrumentFeeders[trackID]?.detach()
+        if let unit = instrumentUnits.removeValue(forKey: trackID) {
+            let unitID = ObjectIdentifier(unit)
+            instrumentOutputWires = instrumentOutputWires.filter { $0.value.unit != unitID }
+            engineDisconnectOutput(unit)
+            engineDetach(unit)
+            if let mainDelay = instrumentMainDelayNodes.removeValue(forKey: trackID) {
+                engineDisconnectOutput(mainDelay)
+                engineDetach(mainDelay)
+            }
+        }
+        updateLiveMIDITargets()
+        updateLatencyCompensation()
+    }
+
+    // MARK: - Instrument outputs
+
+    /// The buses the track's instrument offers beyond its main one, once it
+    /// is built.
+    public func instrumentOutputBuses(of trackID: UUID) -> [InstrumentOutputBus] {
+        guard let unit = instrumentUnits[trackID]?.auAudioUnit, unit.outputBusses.count > 1 else { return [] }
+        let description = unit.componentDescription
+        let panAddresses = DrumMap.map(subtype: description.componentSubType,
+                                       manufacturer: description.componentManufacturer)?.outputBusPanAddresses ?? []
+        return (1..<unit.outputBusses.count).map { index in
+            let bus = unit.outputBusses[index]
+            let name = bus.name.flatMap { $0.isEmpty ? nil : $0 } ?? String(localized: "Output \(index + 1)")
+            // An instrument may pan an output only into its mix: the channel
+            // starts where the sound was.
+            let pan = panAddresses.indices.contains(index - 1)
+                ? unit.parameterTree?.parameter(withAddress: panAddresses[index - 1])?.value ?? 0 : 0
+            return InstrumentOutputBus(index: index, name: name, defaultPan: pan)
+        }
+    }
+
+    /// Before the unit is attached: the other buses run at the chain's rate,
+    /// stereo when they can, so a channel takes them as they are.
+    private func prepareExtraOutputBuses(of audioUnit: AVAudioUnit, format: AVAudioFormat) {
+        let busses = audioUnit.auAudioUnit.outputBusses
+        guard busses.count > 1 else { return }
+        for index in 1..<busses.count {
+            do {
+                try busses[index].setFormat(format)
+            } catch {
+                guard let own = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
+                                              channels: busses[index].format.channelCount) else { continue }
+                try? busses[index].setFormat(own)
+            }
+        }
+    }
+
+    /// Connects each instrument output channel to its bus and lets go of the
+    /// ones gone. Only ever changes anything while stopped (canChangeInstrument)
+    /// or building a project; the engine stops around it, as for a new instrument.
+    private func syncInstrumentOutputs(format: AVAudioFormat?) {
+        guard let format else { return }
+        var desired: [UUID: InstrumentOutputWire] = [:]
+        for track in syncedTracks where track.kind == .instrumentOutput {
+            guard let parent = track.parentTrackID, let unit = instrumentUnits[parent],
+                  track.outputBus >= 1, track.outputBus < unit.auAudioUnit.outputBusses.count,
+                  trackOutputNodes[track.id] != nil, trackDownmixNodes[track.id] != nil else { continue }
+            desired[track.id] = InstrumentOutputWire(unit: ObjectIdentifier(unit), parent: parent, bus: track.outputBus)
+        }
+        guard desired != instrumentOutputWires else { return }
+        let wasRunning = engine.isRunning
+        if wasRunning { engine.stop() }
+
+        for (trackID, wire) in instrumentOutputWires where desired[trackID] != wire {
+            guard let unit = instrumentUnits[wire.parent], ObjectIdentifier(unit) == wire.unit else { continue }
+            let engine = self.engine
+            guardedEngineCall("disconnect instrument bus \(wire.bus)") {
+                engine.disconnectNodeOutput(unit, bus: wire.bus)
+            }
+            unit.auAudioUnit.outputBusses[wire.bus].isEnabled = false
+        }
+        for (trackID, wire) in desired where instrumentOutputWires[trackID] != wire {
+            guard let unit = instrumentUnits[wire.parent], let output = trackOutputNodes[trackID] else { continue }
+            insertAlignDelay(for: trackID, format: format)
+            insertInstrumentMainDelay(of: wire.parent, format: format)
+            let busses = unit.auAudioUnit.outputBusses
+            busses[wire.bus].isEnabled = true
+            engineConnect(unit, to: output, fromBus: wire.bus, toBus: output.nextAvailableInputBus,
+                          format: busses[wire.bus].format)
+        }
+        instrumentOutputWires = desired
+        noteGraphEvent("instrument outputs: \(desired.count)")
+        updateLatencyCompensation()
+        if wasRunning { try? startEngine() }
+    }
+
+    private func insertInstrumentMainDelay(of trackID: UUID, format: AVAudioFormat) {
+        guard instrumentMainDelayNodes[trackID] == nil, let unit = instrumentUnits[trackID],
+              let output = trackOutputNodes[trackID] else { return }
+        let delay = makeDelayCompensationNode()
+        instrumentMainDelayNodes[trackID] = delay
+        let engine = self.engine
+        guardedEngineCall("disconnect instrument main") { engine.disconnectNodeOutput(unit, bus: 0) }
+        engineConnect(unit, to: delay, fromBus: 0, toBus: 0, format: format)
+        engineConnect(delay, to: output, fromBus: 0, toBus: output.nextAvailableInputBus, format: format)
+    }
+
+    private func applyInstrumentMainMutes(_ audible: Audibility) {
+        for (trackID, node) in instrumentMainDelayNodes {
+            (node.auAudioUnit as? DelayCompensationAudioUnit)?.isMuted = audible.silentInstrumentMains.contains(trackID)
+        }
+    }
+
+    private func insertAlignDelay(for trackID: UUID, format: AVAudioFormat) {
+        guard trackAlignDelayNodes[trackID] == nil, let output = trackOutputNodes[trackID],
+              let downmix = trackDownmixNodes[trackID] else { return }
+        let delay = makeDelayCompensationNode()
+        trackAlignDelayNodes[trackID] = delay
+        engineDisconnectOutput(output)
+        engineConnect(output, to: delay, format: format)
+        engineConnect(delay, to: downmix, format: format)
+    }
+
+    /// Sends one message to the track's instrument at once (the piano roll
+    /// auditioning a note).
+    public func sendLiveMIDI(to trackID: UUID, status: UInt8, data1: UInt8, data2: UInt8) {
+        instrumentFeeders[trackID]?.enqueue(status: status, data1: data1, data2: data2, length: 3)
+    }
+
+    /// The MIDI clips of every instrument track at the current tempo.
+    private func updateMIDIPlans() {
+        for track in syncedTracks where track.kind == .instrument {
+            instrumentFeeders[track.id]?.setPlan(
+                MIDIPlaybackPlan.make(for: track, bpm: bpm, sampleRate: hardwareSampleRate)
+            )
+        }
+    }
+
+    /// Points the keyboard at the instruments of the armed instrument
+    /// tracks; an instrument it stops playing is silenced.
+    private func updateLiveMIDITargets() {
+        let feeders = syncedTracks
+            .filter { $0.kind == .instrument && $0.isRecordArmed }
+            .compactMap { instrumentFeeders[$0.id] }
+        let previous = liveMIDILock.withLock {
+            let previous = liveMIDIFeeders
+            liveMIDIFeeders = feeders
+            return previous
+        }
+        for feeder in previous where !feeders.contains(where: { $0 === feeder }) {
+            feeder.silence()
+        }
+    }
+
+    /// During playback the renderers re-read the blocks ahead with the new
+    /// clips, so nothing needs restarting.
+    public func syncAfterClipEdit(_ tracks: [AudioTrack], fxChannels: [FXChannel] = []) {
+        syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    public func updateMixerLevels(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel]
+    ) {
+        let audible = audibility(tracks: tracks, fxChannels: fxChannels)
+        applyInstrumentMainMutes(audible)
+        for track in tracks {
+            let level = effectiveTrackVolume(for: track, audible: audible)
+            trackOutputNodes[track.id].map { setMixerVolume($0, level) }
+            setTrackDryAudible(track.id, audible.dryTracks.contains(track.id))
+            setTrackPan(track.id, track.pan)
+            trackRenderers[track.id]?.setMuted(recordingMutedTrackIDs.contains(track.id))
+
+            for (key, gainNode) in sendGainNodes where key.trackID == track.id {
+                setMixerVolume(gainNode, sendLevel(of: track, to: key.fxChannelID))
+            }
+        }
+
+        for channel in fxChannels {
+            fxInputNodes[channel.id].map { setMixerVolume($0, channel.volume) }
+            fxPanNodes[channel.id]?.pan = channel.pan
+            setFXAudible(channel.id, audible.fxChannels.contains(channel.id))
+        }
+    }
+
+    /// The clip's `isMuted` is already set; its track's renderer takes the
+    /// new plan (a muted clip also stops masking the clips under it).
+    public func setClipMuted(_ clipID: UUID, muted: Bool) {
+        guard let track = syncedTracks.first(where: { $0.clips.contains { $0.id == clipID } }) else { return }
+        trackRenderers[track.id]?.setPlan(TrackPlaybackPlan.make(for: track))
+    }
+
+    private func sendLevel(of track: AudioTrack, to fxChannelID: UUID) -> Float {
+        guard let send = track.fxSends.first(where: { $0.fxChannelID == fxChannelID }), send.enabled else { return 0.0 }
+        return send.level
+    }
+
+    private func sendGainNode(_ key: SendKey) -> AVAudioMixerNode {
+        if let existing = sendGainNodes[key] { return existing }
+        let gainNode = AVAudioMixerNode()
+        gainNode.outputVolume = 0.0
+        engineAttach(gainNode)
+        sendGainNodes[key] = gainNode
+        return gainNode
+    }
+
+    /// Sets a send's level on its always-wired gain mixer. Returns false when
+    /// the track's sends are not built yet, so the caller can sync instead.
+    @discardableResult
+    public func updateSendLevel(track: AudioTrack, fxChannelID: UUID) -> Bool {
+        guard let gainNode = sendGainNodes[SendKey(trackID: track.id, fxChannelID: fxChannelID)] else { return false }
+        setMixerVolume(gainNode, sendLevel(of: track, to: fxChannelID))
+        return true
+    }
+
+    public func syncTracks(
+        _ tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        masterPlugins: [TrackPluginDescriptor]
+    ) {
+        configuredMasterPlugins = masterPlugins
+        syncTracks(tracks, fxChannels: fxChannels)
+    }
+
+    public func syncMasterPlugins(_ plugins: [TrackPluginDescriptor]) {
+        setChannelName("MASTER", forPlugins: plugins.map(\.id))
+        let signature = plugins.map(\.id)
+        if isMasterPluginGraphBuilding {
+            if signature == masterPluginSignature {
+                // The in-flight build is already targeting this signature.
+                // Just update bypass states on any already instantiated units.
+                for plugin in plugins {
+                    if let au = pluginAudioUnits[plugin.id] {
+                        setAUBypass(au, bypassed: !plugin.enabled)
+                    }
+                }
+                return
+            }
+            // Signature actually changed while building: invalidate and restart.
+            pendingMasterPluginSync = nil
+            isMasterPluginGraphBuilding = false
+            masterPluginGraphGeneration += 1
+            syncMasterPlugins(plugins)
+            return
+        }
+
+        configuredMasterPlugins = plugins
+        masterPluginIDs = Set(plugins.map(\.id))
+        for plugin in plugins {
+            pluginDescriptors[plugin.id] = plugin
+        }
+        guard let masterOutputNode,
+              let format = AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2) else { return }
+
+        let auPlugins = plugins.filter { isChainPlugin($0) }
+
+        // If signature matches, just update bypass states
+        if signature == masterPluginSignature {
+            for plugin in plugins {
+                if let au = pluginAudioUnits[plugin.id] {
+                    setAUBypass(au, bypassed: !plugin.enabled)
+                }
+            }
+            return
+        }
+
+        if plugins.isEmpty {
+            let wasEngineRunning = engine.isRunning
+            if wasEngineRunning {
+                engine.stop()
+            }
+            for pluginID in masterPluginSignature {
+                pluginUIRequests.remove(pluginID)
+                pendingPluginUIRequests.remove(pluginID)
+                pluginStateRestoreTasks[pluginID]?.cancel()
+                pluginStateRestoreTasks.removeValue(forKey: pluginID)
+                pluginAudioUnits.removeValue(forKey: pluginID)
+                vst3Instances.removeValue(forKey: pluginID)?.removeEditor()
+                pluginWindows[pluginID]?.close()
+                pluginWindows.removeValue(forKey: pluginID)
+            }
+            for node in masterPluginNodes {
+                safeDisconnectNodeOutput(node)
+                safeDisconnectNodeInput(node)
+                safeDetach(node)
+            }
+            masterPluginNodes.removeAll()
+            isMasterPluginGraphBuilding = false
+            pendingMasterPluginSync = nil
+            masterPluginSignature = []
+            playbackRetryTask?.cancel()
+            playbackRetryTask = nil
+            reconnectPluginChain(
+                from: masterOutputNode,
+                through: [],
+                to: masterChainOutput,
+                format: format
+            )
+            if wasEngineRunning {
+                try? startEngine()
+            }
+            return
+        }
+
+        let reusableMasterNodes = auPlugins.compactMap { pluginAudioUnits[$0.id] }
+        let canReuseMasterNodes = reusableMasterNodes.count == auPlugins.count
+
+        let removedPluginIDs = Set(masterPluginSignature).subtracting(signature)
+        for pluginID in removedPluginIDs {
+            pluginUIRequests.remove(pluginID)
+            pendingPluginUIRequests.remove(pluginID)
+            pluginStateRestoreTasks[pluginID]?.cancel()
+            pluginStateRestoreTasks.removeValue(forKey: pluginID)
+            pluginAudioUnits.removeValue(forKey: pluginID)
+            vst3Instances.removeValue(forKey: pluginID)?.removeEditor()
+            pluginWindows[pluginID]?.close()
+            pluginWindows.removeValue(forKey: pluginID)
+        }
+
+        if canReuseMasterNodes {
+            let wasEngineRunning = engine.isRunning
+            if wasEngineRunning {
+                engine.stop()
+            }
+            let reusableSet = Set(reusableMasterNodes.map { ObjectIdentifier($0) })
+            for node in masterPluginNodes where !reusableSet.contains(ObjectIdentifier(node)) {
+                safeDisconnectNodeOutput(node)
+                safeDisconnectNodeInput(node)
+                safeDetach(node)
+            }
+            for node in reusableMasterNodes {
+                safeDisconnectNodeOutput(node)
+                safeDisconnectNodeInput(node)
+            }
+            masterPluginNodes = reusableMasterNodes
+            reconnectPluginChain(
+                from: masterOutputNode,
+                through: reusableMasterNodes,
+                to: masterChainOutput,
+                format: format
+            )
+            for plugin in plugins {
+                if let au = pluginAudioUnits[plugin.id] {
+                    setAUBypass(au, bypassed: !plugin.enabled)
+                }
+            }
+            masterPluginSignature = signature
+            isMasterPluginGraphBuilding = false
+            if wasEngineRunning {
+                try? startEngine()
+            }
+            return
+        }
+
+        playbackRetryTask?.cancel()
+        playbackRetryTask = nil
+        isMasterPluginGraphBuilding = true
+        masterPluginSignature = signature
+        masterPluginGraphGeneration += 1
+        let graphGeneration = masterPluginGraphGeneration
+        let wasEngineRunning = engine.isRunning
+        if wasEngineRunning {
+            engine.stop()
+        }
+        let currentDesiredIDs = Set(auPlugins.map(\.id))
+        for node in masterPluginNodes {
+            safeDisconnectNodeOutput(node)
+            safeDisconnectNodeInput(node)
+            if let pluginID = pluginAudioUnits.first(where: { $0.value === node })?.key,
+               !currentDesiredIDs.contains(pluginID) {
+                safeDetach(node)
+            }
+        }
+        masterPluginNodes.removeAll()
+        if auPlugins.isEmpty {
+            connectMasterOutput(from: masterOutputNode, format: format)
+            if wasEngineRunning {
+                try? startEngine()
+            }
+            finishMasterPluginGraphBuild()
+        } else {
+            installMasterAudioUnits(
+                auPlugins,
+                previousNode: masterOutputNode,
+                format: format,
+                index: 0,
+                generation: graphGeneration,
+                resumeEngine: wasEngineRunning
+            )
+        }
+    }
+
+    // VST3s run inside VST3AudioUnit wrappers in the same chains as the AUs,
+    // so they are processed in insert order on the render thread.
+    private func isChainPlugin(_ plugin: TrackPluginDescriptor) -> Bool {
+        switch plugin.kind {
+        case .au: return true
+        case .vst3: return vst3Instances[plugin.id] != nil
+        }
+    }
+
+    private func chainComponentDescription(for plugin: TrackPluginDescriptor) -> AudioComponentDescription {
+        guard plugin.kind == .vst3 else { return plugin.audioComponentDescription }
+        _ = VST3AudioUnit.registration
+        return VST3AudioUnit.componentDescription
+    }
+
+    private func finishMasterPluginGraphBuild() {
+        isMasterPluginGraphBuilding = false
+        guard let pendingPlugins = pendingMasterPluginSync else { return }
+        pendingMasterPluginSync = nil
+        guard pendingPlugins.map(\.id) != masterPluginSignature else { return }
+        syncMasterPlugins(pendingPlugins)
+    }
+
+    @discardableResult
+    public func setPluginEnabled(_ pluginID: UUID, enabled: Bool) -> Bool {
+        if var descriptor = pluginDescriptors[pluginID] {
+            descriptor.enabled = enabled
+            pluginDescriptors[pluginID] = descriptor
+        }
+        configuredMasterPlugins = configuredMasterPlugins.map { descriptor in
+            guard descriptor.id == pluginID else { return descriptor }
+            var updated = descriptor
+            updated.enabled = enabled
+            return updated
+        }
+        if let au = pluginAudioUnits[pluginID] {
+            setAUBypass(au, bypassed: !enabled)
+        }
+        // A plug-in switched off still counts its latency (its switch delays
+        // the dry signal by it), so toggling it never moves the compensation.
+
+        return pluginAudioUnits[pluginID] != nil || vst3Instances[pluginID] != nil
+    }
+
+    /// Turns a chain plug-in on or off. Wired plug-ins are switched around
+    /// (see PluginSwitchAudioUnit) and keep running unbypassed; the plug-in's
+    /// own bypass is used only until its switch is wired.
+    private func setAUBypass(_ audioUnit: AVAudioUnit, bypassed: Bool) {
+        pluginEnabledStates[ObjectIdentifier(audioUnit)] = !bypassed
+        if pluginSwitches[ObjectIdentifier(audioUnit)] != nil {
+            updatePluginSwitch(of: audioUnit)
+            return
+        }
+        applyOwnBypass(audioUnit, bypassed: bypassed)
+    }
+
+    private func applyOwnBypass(_ audioUnit: AVAudioUnit, bypassed: Bool) {
+        audioUnit.auAudioUnit.shouldBypassEffect = bypassed
+        (audioUnit as? AVAudioUnitEffect)?.bypass = bypassed
+
+        var bypassVal: UInt32 = bypassed ? 1 : 0
+        AudioUnitSetProperty(
+            audioUnit.audioUnit,
+            kAudioUnitProperty_BypassEffect,
+            kAudioUnitScope_Global,
+            0,
+            &bypassVal,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+    }
+
+    private func connectMasterOutput(from node: AVAudioNode, format: AVAudioFormat) {
+        let destination = masterChainOutput
+        if destination !== engine.outputNode {
+            safeDisconnectNodeInput(destination)
+        }
+        safeDisconnectNodeOutput(node)
+        connectReformatting(node, to: destination, format: format)
+    }
+
+    // An AU whose render resources are allocated refuses a bus format change
+    // (-10865 from setFormat, raised as an uncaught exception by connect).
+    // That happens when a chain first wired before the device's real format
+    // was known is rewired with the real one, and engine.stop() does not
+    // release those resources. Release them first so the engine can
+    // reinitialize the unit with the new format.
+    // A mixer ramps volume changes, but an input bus that is not rendering
+    // (a stopped clip player) does not advance the ramp: when it next plays,
+    // its first buffer comes out at the old volume. That leaked muted/soloed
+    // tracks for one buffer at their first clip. Resetting the mixer after a
+    // change completes the ramp immediately.
+    private func setMixerVolume(_ mixer: AVAudioMixerNode, _ volume: Float) {
+        guard mixer.outputVolume != volume else { return }
+        mixer.outputVolume = volume
+        mixer.auAudioUnit.reset()
+    }
+
+    // A plug-in that cannot take the chain format (a mono-only "(m)" variant
+    // on the stereo chain) makes connect raise an uncaught exception from
+    // setFormat. Asking the busses first returns that refusal as an error, so
+    // such a plug-in is left out of the chain as unavailable instead.
+    private nonisolated func acceptsChainFormat(_ audioUnit: AVAudioUnit, format: AVAudioFormat, name: String) -> Bool {
+        let unit = audioUnit.auAudioUnit
+        do {
+            for busses in [unit.inputBusses, unit.outputBusses] where busses.count > 0 {
+                // A unit may report the chain format as its default and still
+                // refuse it, so a unit without render resources is always asked.
+                let current = busses[0].format
+                if !unit.renderResourcesAllocated
+                    || current.sampleRate != format.sampleRate
+                    || current.channelCount != format.channelCount {
+                    try busses[0].setFormat(format)
+                }
+            }
+            return true
+        } catch {
+            print("Plug-in \(name) does not support \(format.channelCount) ch at \(format.sampleRate) Hz: \(error)")
+            return false
+        }
+    }
+
+    private func connectReformatting(_ source: AVAudioNode, to destination: AVAudioNode, format: AVAudioFormat) {
+        let needsRelease: (AVAudioNode) -> AUAudioUnit? = { node in
+            guard let unit = (node as? AVAudioUnit)?.auAudioUnit, unit.renderResourcesAllocated else { return nil }
+            let differs: (AUAudioUnitBusArray) -> Bool = { busses in
+                guard busses.count > 0 else { return false }
+                let current = busses[0].format
+                return current.sampleRate != format.sampleRate || current.channelCount != format.channelCount
+            }
+            return differs(unit.inputBusses) || differs(unit.outputBusses) ? unit : nil
+        }
+        let units = [needsRelease(source), needsRelease(destination)].compactMap { $0 }
+        let restart = !units.isEmpty && engine.isRunning
+        if restart {
+            noteGraphEvent("connectReformatting restarts the engine")
+            engine.stop()
+        }
+        units.forEach { $0.deallocateRenderResources() }
+        let accepted = [source, destination].allSatisfy { node in
+            guard let audioUnit = node as? AVAudioUnit else { return true }
+            // Not AVAudioUnit.name: it splits the component name at ": " and
+            // raises an uncaught exception for a name without a vendor part.
+            let name = audioUnit.auAudioUnit.audioUnitName ?? "Audio Unit"
+            return acceptsChainFormat(audioUnit, format: format, name: name)
+        }
+        if accepted {
+            engineConnect(source, to: destination, format: format)
+        }
+        if restart {
+            try? startEngine()
+        }
+    }
+
+    private func reconnectPluginChain(
+        from source: AVAudioNode,
+        through pluginNodes: [AVAudioNode],
+        to destination: AVAudioNode,
+        format: AVAudioFormat
+    ) {
+        safeDisconnectNodeOutput(source)
+        for pluginNode in pluginNodes {
+            safeDisconnectNodeOutput(pluginNode)
+            safeDisconnectNodeInput(pluginNode)
+        }
+        if destination !== engine.mainMixerNode && destination !== engine.outputNode {
+            safeDisconnectNodeInput(destination)
+        }
+
+        var previousNode = source
+        for pluginNode in pluginNodes {
+            previousNode = connectChainPlugin(pluginNode, after: previousNode, format: format)
+        }
+        connectReformatting(previousNode, to: destination, format: format)
+    }
+
+    /// Wires previous → capture → plug-in → switch and returns the switch,
+    /// which stands for the plug-in as the next unit's source.
+    private func connectChainPlugin(_ plugin: AVAudioNode, after previous: AVAudioNode,
+                                    format: AVAudioFormat) -> AVAudioNode {
+        let key = ObjectIdentifier(plugin)
+        let pair: (capture: AVAudioUnitEffect, output: AVAudioUnitEffect)
+        if let existing = pluginSwitches[key] {
+            pair = existing
+        } else {
+            _ = PluginSwitchAudioUnit.registration
+            let capture = AVAudioUnitEffect(audioComponentDescription: PluginSwitchAudioUnit.captureDescription)
+            let output = AVAudioUnitEffect(audioComponentDescription: PluginSwitchAudioUnit.outputDescription)
+            let kernel = PluginSwitchKernel()
+            (capture.auAudioUnit as? PluginSwitchAudioUnit)?.kernel = kernel
+            (output.auAudioUnit as? PluginSwitchAudioUnit)?.kernel = kernel
+            pair = (capture, output)
+            pluginSwitches[key] = pair
+        }
+        for node in [pair.capture, pair.output] where !engine.attachedNodes.contains(node) {
+            engineAttach(node)
+        }
+        safeDisconnectNodeOutput(previous)
+        safeDisconnectNodeInput(pair.capture)
+        safeDisconnectNodeOutput(pair.capture)
+        safeDisconnectNodeInput(plugin)
+        safeDisconnectNodeOutput(plugin)
+        safeDisconnectNodeInput(pair.output)
+        safeDisconnectNodeOutput(pair.output)
+        connectReformatting(previous, to: pair.capture, format: format)
+        connectReformatting(pair.capture, to: plugin, format: format)
+        connectReformatting(plugin, to: pair.output, format: format)
+        if let audioUnit = plugin as? AVAudioUnit {
+            updatePluginSwitch(of: audioUnit)
+        }
+        return pair.output
+    }
+
+    /// The node that carries a chain plug-in's output: its switch once wired.
+    private func chainOutput(of plugin: AVAudioNode) -> AVAudioNode {
+        pluginSwitches[ObjectIdentifier(plugin)]?.output ?? plugin
+    }
+
+    private func updatePluginSwitch(of audioUnit: AVAudioUnit) {
+        guard let pair = pluginSwitches[ObjectIdentifier(audioUnit)],
+              let kernel = (pair.output.auAudioUnit as? PluginSwitchAudioUnit)?.kernel else { return }
+        applyOwnBypass(audioUnit, bypassed: false)
+        // A plug-in may report anything: NaN or infinity would trap in Int().
+        let latency = audioUnit.auAudioUnit.latency
+        let seconds = latency.isFinite ? min(max(latency, 0), PluginSwitchKernel.maximumLatencySeconds) : 0
+        kernel.latencyFrames = Int((seconds * hardwareSampleRate).rounded())
+        kernel.isEnabled = pluginEnabledStates[ObjectIdentifier(audioUnit)] ?? true
+    }
+
+    private func detachPluginSwitch(of plugin: AVAudioNode) {
+        let key = ObjectIdentifier(plugin)
+        guard let pair = pluginSwitches.removeValue(forKey: key) else { return }
+        pluginEnabledStates.removeValue(forKey: key)
+        for node in [pair.capture, pair.output] where engine.attachedNodes.contains(node) {
+            safeDisconnectNodeInput(node)
+            safeDisconnectNodeOutput(node)
+            engineDetach(node)
+        }
+    }
+
+    private func installMasterAudioUnits(
+        _ plugins: [TrackPluginDescriptor],
+        previousNode: AVAudioNode,
+        format: AVAudioFormat,
+        index: Int,
+        generation: Int,
+        resumeEngine: Bool = false
+    ) {
+        guard index < plugins.count else { return }
+        let plugin = plugins[index]
+
+        // Reuse existing AU instance if already instantiated
+        if let existingAU = pluginAudioUnits[plugin.id] {
+            if !masterPluginNodes.contains(where: { $0 === existingAU }) {
+                masterPluginNodes.append(existingAU)
+            }
+            if !engine.attachedNodes.contains(existingAU) {
+                engineAttach(existingAU)
+            }
+            safeDisconnectNodeOutput(previousNode)
+            safeDisconnectNodeInput(existingAU)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
+            setAUBypass(existingAU, bypassed: !plugin.enabled)
+
+            if index + 1 < plugins.count {
+                installMasterAudioUnits(
+                    plugins,
+                    previousNode: chainTail,
+                    format: format,
+                    index: index + 1,
+                    generation: generation,
+                    resumeEngine: resumeEngine
+                )
+            } else {
+                connectMasterOutput(from: chainTail, format: format)
+                if resumeEngine && !engine.isRunning {
+                    try? startEngine()
+                }
+                finishMasterPluginGraphBuild()
+            }
+            return
+        }
+
+        // New plugin instantiation:
+        let isVST3 = plugin.kind == .vst3
+        if isVST3 {
+            _ = VST3AudioUnit.registration
+        }
+        let componentDescription = isVST3 ? VST3AudioUnit.componentDescription : plugin.audioComponentDescription
+        let pluginName = plugin.name
+        let pluginID = plugin.id
+        // Main thread: see syncInstrument.
+        DispatchQueue.main.async { [weak self] in
+            AVAudioUnit.instantiate(with: componentDescription, options: []) { instantiatedUnit, error in
+                HostMusicalContext.shared.attach(to: instantiatedUnit?.auAudioUnit)
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    guard self.masterPluginGraphGeneration == generation else {
+                        return
+                    }
+                    var audioUnit = instantiatedUnit
+                    if isVST3 {
+                        if let wrapper = audioUnit?.auAudioUnit as? VST3AudioUnit,
+                           let instance = self.vst3Instances[pluginID] {
+                            wrapper.attach(instance)
+                        } else {
+                            audioUnit = nil
+                        }
+                    }
+                    audioUnit = audioUnit.flatMap {
+                        self.acceptsChainFormat($0, format: format, name: pluginName) ? $0 : nil
+                    }
+                    guard let audioUnit else {
+                        self.markPluginUnavailable(pluginID)
+                        if let error {
+                            print("Failed to create master AU \(pluginName): \(error)")
+                        } else {
+                            print("Failed to create master AU \(pluginName): unknown error")
+                        }
+                        if index + 1 < plugins.count {
+                            self.installMasterAudioUnits(
+                                plugins,
+                                previousNode: previousNode,
+                                format: format,
+                                index: index + 1,
+                                generation: generation,
+                                resumeEngine: resumeEngine
+                            )
+                        } else {
+                            self.connectMasterOutput(from: previousNode, format: format)
+                            if !self.engine.isRunning {
+                                try? self.startEngine()
+                            }
+                            self.finishMasterPluginGraphBuild()
+                        }
+                        return
+                    }
+
+                    if self.engine.isRunning {
+                        self.engine.stop()
+                    }
+                    self.safeDisconnectNodeOutput(previousNode)
+                    if !self.engine.attachedNodes.contains(audioUnit) {
+                        self.engineAttach(audioUnit)
+                    }
+                    self.safeDisconnectNodeInput(audioUnit)
+                    self.unavailablePluginIDs.remove(pluginID)
+                    let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
+                    self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
+                    self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
+                    self.masterPluginNodes.append(audioUnit)
+                    self.replacePluginAudioUnit(audioUnit, for: pluginID)
+                    self.retryPendingPluginUIRequest(for: pluginID)
+                    if index + 1 < plugins.count {
+                        self.installMasterAudioUnits(
+                            plugins,
+                            previousNode: chainTail,
+                            format: format,
+                            index: index + 1,
+                            generation: generation,
+                            resumeEngine: resumeEngine
+                        )
+                    } else {
+                        self.connectMasterOutput(from: chainTail, format: format)
+                        if !self.engine.isRunning {
+                            try? self.startEngine()
+                        }
+                        self.finishMasterPluginGraphBuild()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tracks and FX channels heard under the current mute and solo.
+    /// Soloing a track keeps the FX channels it sends to. Soloing an FX
+    /// channel plays only its return: the tracks that send to it keep feeding
+    /// their sends (`tracks`) but their dry sound is off (`dryTracks`).
+    private struct Audibility {
+        var tracks: Set<UUID> = []
+        var dryTracks: Set<UUID> = []
+        var fxChannels: Set<UUID> = []
+        /// Instrument tracks open only for what passes through their fader:
+        /// their instrument's main output stays silent.
+        var silentInstrumentMains: Set<UUID> = []
+    }
+
+    private func audibility(tracks: [AudioTrack], fxChannels: [FXChannel]) -> Audibility {
+        let soloedFX = Set(fxChannels.filter(\.isSoloed).map(\.id))
+        // An instrument output is muted and soloed along with its instrument track.
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let isMuted: (AudioTrack) -> Bool = { track in
+            track.effectiveMuted || (track.parentTrackID.flatMap { byID[$0] }?.effectiveMuted ?? false)
+        }
+        let directSolo = Set(tracks.filter { track in
+            track.effectiveSoloed || (track.parentTrackID.flatMap { byID[$0] }?.effectiveSoloed ?? false)
+        }.map(\.id))
+        // A soloed channel needs the channels its output passes through, and
+        // a soloed bus the channels sending to it.
+        var downstream = Set<UUID>()
+        for id in directSolo {
+            var next = byID[id]?.outputDestinationID
+            while let current = next, downstream.insert(current).inserted {
+                next = byID[current]?.outputDestinationID
+            }
+        }
+        var upstream = directSolo
+        var grew = true
+        while grew {
+            grew = false
+            for track in tracks where !upstream.contains(track.id) {
+                if let destination = track.outputDestinationID, upstream.contains(destination) {
+                    upstream.insert(track.id)
+                    grew = true
+                }
+            }
+        }
+        let soloed = upstream.union(downstream)
+        let soloActive = !soloedFX.isEmpty || !directSolo.isEmpty
+        let sendsTo: (AudioTrack, UUID) -> Bool = { track, fxID in
+            track.fxSends.contains { $0.fxChannelID == fxID && $0.enabled && $0.level > 0 }
+        }
+        var result = Audibility()
+        if soloActive {
+            result.silentInstrumentMains = downstream.subtracting(upstream)
+        }
+        for track in tracks where !isMuted(track) {
+            if !soloActive || soloed.contains(track.id) {
+                result.tracks.insert(track.id)
+                result.dryTracks.insert(track.id)
+            } else if soloedFX.contains(where: { sendsTo(track, $0) }) {
+                result.tracks.insert(track.id)
+            }
+        }
+        for channel in fxChannels where !channel.isMuted {
+            if !soloActive || channel.isSoloed ||
+                tracks.contains(where: { soloed.contains($0.id) && !isMuted($0) && sendsTo($0, channel.id) }) {
+                result.fxChannels.insert(channel.id)
+            }
+        }
+        return result
+    }
+
+    private func effectiveTrackVolume(for track: AudioTrack, audible: Audibility) -> Float {
+        audible.tracks.contains(track.id) ? track.volume : 0.0
+    }
+
+    // MARK: - Latency compensation
+
+    /// Recomputes plug-in latencies and sets the compensation: each track's
+    /// pre-roll is its own inserts' latency plus D, the largest FX channel
+    /// latency; its dry path is delayed by D and each FX return by D minus its
+    /// own latency, so dry and wet line up with the timeline. Bypassed
+    /// plug-ins count (bypass keeps their delay), and so does every FX
+    /// channel, fed or not, so mute, solo and bypass never move it.
+    /// A change during playback moves the renderers' timelines to match.
+    private func updateLatencyCompensation() {
+        func latency(of nodes: [AVAudioNode]) -> Double {
+            nodes.compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }
+                .map(Self.usableLatency)
+                .reduce(0.0, +)
+        }
+        var trackLatencies: [UUID: Double] = [:]
+        for (trackID, nodes) in trackPluginNodes {
+            trackLatencies[trackID] = latency(of: nodes)
+        }
+        // An instrument's own latency delays its track like an insert's.
+        for (trackID, unit) in instrumentUnits {
+            trackLatencies[trackID, default: 0.0] += latency(of: [unit])
+        }
+        // A channel's material also passes through the inserts of the
+        // channels its output goes to. Its pre-roll includes them, so what
+        // comes into a bus lines up there.
+        let chainLatencies = trackLatencies
+        let tracksByID = Dictionary(syncedTracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var instrumentLatencies: [UUID: Double] = [:]
+        for (trackID, unit) in instrumentUnits { instrumentLatencies[trackID] = latency(of: [unit]) }
+        func downstreamLatency(of trackID: UUID) -> Double {
+            var total = 0.0
+            var seen: Set<UUID> = [trackID]
+            var next = tracksByID[trackID]?.outputDestinationID
+            while let current = next, seen.insert(current).inserted {
+                total += (chainLatencies[current] ?? 0.0) - (instrumentLatencies[current] ?? 0.0)
+                next = tracksByID[current]?.outputDestinationID
+            }
+            return total
+        }
+        for track in syncedTracks {
+            trackLatencies[track.id] = (chainLatencies[track.id] ?? 0.0) + downstreamLatency(of: track.id)
+        }
+        // One note stream feeds an instrument's main output and all its output
+        // channels: the notes start early by the slowest path, the others wait.
+        var alignments: [UUID: Double] = [:]
+        var mainAlignments: [UUID: Double] = [:]
+        for (parent, children) in Dictionary(grouping: syncedTracks.filter { $0.kind == .instrumentOutput },
+                                             by: { $0.parentTrackID ?? UUID() }) {
+            let instrument = instrumentLatencies[parent] ?? 0.0
+            let mainPath = (trackLatencies[parent] ?? 0.0) - instrument
+            let slowest = children.map { trackLatencies[$0.id] ?? 0.0 }.reduce(mainPath, max)
+            mainAlignments[parent] = slowest - mainPath
+            trackLatencies[parent] = instrument + slowest
+            for child in children {
+                alignments[child.id] = slowest - (trackLatencies[child.id] ?? 0.0)
+                trackLatencies[child.id] = instrument + slowest
+            }
+        }
+        var fxLatencies: [UUID: Double] = [:]
+        for channelID in fxReturnDelayNodes.keys {
+            fxLatencies[channelID] = latency(of: fxPluginNodes[channelID] ?? [])
+        }
+        let compensation = fxLatencies.values.max() ?? 0.0
+
+        let frames: (Double) -> Int = { [hardwareSampleRate] seconds in
+            // Sums of finite latencies; capped so a wild report cannot
+            // overflow Int() (the delay units hold 1 s at most anyway).
+            Int((min(max(0.0, seconds), 60.0) * hardwareSampleRate).rounded())
+        }
+        // FX compensation once on the way to MASTER: at the last channel.
+        for (trackID, node) in trackDryDelayNodes {
+            let goesToMaster = tracksByID[trackID]?.outputDestinationID == nil
+            (node.auAudioUnit as? DelayCompensationAudioUnit)?.delayFrames = goesToMaster ? frames(compensation) : 0
+        }
+        for (trackID, node) in trackAlignDelayNodes {
+            (node.auAudioUnit as? DelayCompensationAudioUnit)?.delayFrames = frames(alignments[trackID] ?? 0.0)
+        }
+        for (trackID, node) in instrumentMainDelayNodes {
+            (node.auAudioUnit as? DelayCompensationAudioUnit)?.delayFrames = frames(mainAlignments[trackID] ?? 0.0)
+        }
+        for (channelID, node) in fxReturnDelayNodes {
+            (node.auAudioUnit as? DelayCompensationAudioUnit)?.delayFrames =
+                frames(compensation - (fxLatencies[channelID] ?? 0.0))
+        }
+        listenForLatencyChanges()
+
+        let tolerance = 0.5 / max(1.0, hardwareSampleRate)
+        let trackChanged = Set(trackLatencies.keys).union(trackPluginLatencies.keys).contains {
+            abs((trackLatencies[$0] ?? 0.0) - (trackPluginLatencies[$0] ?? 0.0)) > tolerance
+        }
+        let compensationChanged = abs(compensation - fxCompensationLatency) > tolerance
+        trackPluginLatencies = trackLatencies
+        fxCompensationLatency = compensation
+        for track in syncedTracks {
+            // What the audio has passed on reaching the automation gain: the
+            // instrument, the wait for its slowest output, the own inserts.
+            let instrument = instrumentLatencies[track.parentTrackID ?? track.id] ?? 0.0
+            let inserts = (chainLatencies[track.id] ?? 0.0) - (instrumentLatencies[track.id] ?? 0.0)
+            let wait = alignments[track.id] ?? mainAlignments[track.id] ?? 0.0
+            trackAutomationLeads[track.id] = (trackLatencies[track.id] ?? 0.0) + compensation - instrument - wait - inserts
+        }
+        transportPreRoll = compensation + (trackLatencies.values.max() ?? 0.0)
+        guard trackChanged || compensationChanged else { return }
+        print(String(
+            format: "[Latency] FX compensation D=%.2f ms; FX: %@; tracks: %@",
+            compensation * 1000.0,
+            fxLatencies.values.map { String(format: "%.2f", $0 * 1000.0) }.joined(separator: ", "),
+            trackLatencies.values.map { String(format: "%.2f", $0 * 1000.0) }.joined(separator: ", ")
+        ))
+        if isPlaying {
+            updateRendererAnchors()
+        }
+    }
+
+    /// Keeps a latency listener on every track and FX plug-in, so a plug-in
+    /// that changes its latency (a look-ahead setting, say) is compensated.
+    private func listenForLatencyChanges() {
+        let units = (trackPluginNodes.values.flatMap { $0 } + fxPluginNodes.values.flatMap { $0 })
+            .compactMap { $0 as? AVAudioUnit } + Array(instrumentUnits.values)
+        let current = Dictionary(units.map { (ObjectIdentifier($0), $0) }, uniquingKeysWith: { first, _ in first })
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        for (id, unit) in latencyListenedUnits where current[id] == nil {
+            AudioUnitRemovePropertyListenerWithUserData(
+                unit.audioUnit, kAudioUnitProperty_Latency, pluginLatencyListener, context
+            )
+        }
+        for (id, unit) in current where latencyListenedUnits[id] == nil {
+            AudioUnitAddPropertyListener(unit.audioUnit, kAudioUnitProperty_Latency, pluginLatencyListener, context)
+        }
+        latencyListenedUnits = current
+    }
+
+    private func removeLatencyListeners() {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        for unit in latencyListenedUnits.values {
+            AudioUnitRemovePropertyListenerWithUserData(
+                unit.audioUnit, kAudioUnitProperty_Latency, pluginLatencyListener, context
+            )
+        }
+        latencyListenedUnits.removeAll()
+    }
+
+    fileprivate func pluginLatencyDidChange() {
+        updateLatencyCompensation()
+    }
+
+    /// Mutes the track's dry path only (in its delay unit, before the main
+    /// mixer), leaving the sends fed.
+    private func setTrackDryAudible(_ trackID: UUID, _ isAudible: Bool) {
+        trackDryAudible[trackID] = isAudible
+        applyTrackDryMute(trackID)
+    }
+
+    private func applyTrackDryMute(_ trackID: UUID) {
+        let unit = trackDryDelayNodes[trackID]?.auAudioUnit as? DelayCompensationAudioUnit
+        unit?.isMuted = !(trackDryAudible[trackID] ?? true)
+    }
+
+    private func makeDelayCompensationNode() -> AVAudioUnitEffect {
+        _ = DelayCompensationAudioUnit.registration
+        let node = AVAudioUnitEffect(audioComponentDescription: DelayCompensationAudioUnit.componentDescription)
+        engineAttach(node)
+        return node
+    }
+
+    /// Silences an FX channel at its output, after the plug-ins, so muting
+    /// cuts its reverb or delay tail at once.
+    private func setFXAudible(_ channelID: UUID, _ isAudible: Bool) {
+        fxOutputNodes[channelID].map { setMixerVolume($0, isAudible ? 1.0 : 0.0) }
+    }
+
+    // Fan-out to main mixer + sends happens only from a per-track mixer, so
+    // every plug-in keeps exactly one downstream connection (as before sends
+    // were post-insert). Rewiring is skipped when nothing changed, to avoid
+    // touching a running graph on every sync.
+    private func setTrackPan(_ trackID: UUID, _ pan: Float) {
+        trackPanValues[trackID] = pan
+        trackRenderers[trackID]?.node.pan = 0
+        trackOutputNodes[trackID]?.pan = 0
+        trackPanNodes[trackID]?.pan = pan
+    }
+
+    // MARK: - Volume automation
+
+    /// After an edit of `track`'s line or its [A] button: takes effect at once,
+    /// also during playback.
+    public func updateVolumeAutomation(of track: AudioTrack) {
+        applyVolumeAutomation(to: track)
+        for channel in syncedTracks where channel.parentTrackID == track.id {
+            applyVolumeAutomation(to: channel)
+        }
+    }
+
+    /// After an edit of the master's line or its [A] button, or a project load.
+    public func updateMasterVolumeAutomation() {
+        guard let unit = masterAutomationUnit else { return }
+        let automation = masterAutomation
+        unit.setCurve(automation.isVolumeAutomationEnabled && !automation.volumeAutomation.isEmpty
+            ? automation.volumeAutomation
+            : nil)
+        unit.setHeldTime(currentTime)
+    }
+
+    private var masterAutomationUnit: VolumeAutomationAudioUnit? {
+        masterAutomationNode?.auAudioUnit as? VolumeAutomationAudioUnit
+    }
+
+    /// The audio at the master's gain has come through the master plug-ins,
+    /// so it is behind the playhead by their latency.
+    private func masterAutomationAnchorFrame(position: Double) -> Int64 {
+        Int64(saturating: ((position - masterPluginLatency) * hardwareSampleRate).rounded())
+    }
+
+    private func applyVolumeAutomation(to channel: AudioTrack) {
+        guard let unit = trackAutomationNodes[channel.id]?.auAudioUnit as? VolumeAutomationAudioUnit else { return }
+        unit.setCurve(volumeAutomationCurve(for: channel))
+        unit.setHeldTime(currentTime)
+    }
+
+    /// An instrument's output channels follow its track's line, unless their
+    /// output comes through that track's fader and so gets its gain anyway.
+    private func volumeAutomationCurve(for channel: AudioTrack) -> [VolumeAutomationPoint]? {
+        var source = channel
+        if channel.kind == .instrumentOutput {
+            guard let parent = syncedTracks.first(where: { $0.id == channel.parentTrackID }) else { return nil }
+            var seen: Set<UUID> = [channel.id]
+            var next = channel.outputDestinationID
+            while let current = next, seen.insert(current).inserted {
+                if current == parent.id { return nil }
+                next = syncedTracks.first { $0.id == current }?.outputDestinationID
+            }
+            source = parent
+        }
+        guard source.isVolumeAutomationEnabled, !source.volumeAutomation.isEmpty else { return nil }
+        return source.volumeAutomation
+    }
+
+    private func holdVolumeAutomation(at time: Double) {
+        for node in trackAutomationNodes.values {
+            (node.auAudioUnit as? VolumeAutomationAudioUnit)?.setHeldTime(time)
+        }
+        masterAutomationUnit?.setHeldTime(time)
+    }
+
+    private func volumeAutomationAnchorFrame(_ trackID: UUID, position: Double) -> Int64 {
+        Int64(saturating: ((position + (trackAutomationLeads[trackID] ?? fxCompensationLatency)) * hardwareSampleRate).rounded())
+    }
+
+    private func connectTrackChainTail(_ trackID: UUID, from tail: AVAudioNode, format: AVAudioFormat) {
+        trackChainTails[trackID] = tail
+        let splitter: AVAudioMixerNode
+        if let existing = trackSplitterNodes[trackID] {
+            splitter = existing
+        } else {
+            splitter = AVAudioMixerNode()
+            engineAttach(splitter)
+            trackSplitterNodes[trackID] = splitter
+        }
+        let panNode: AVAudioMixerNode
+        if let existing = trackPanNodes[trackID] {
+            panNode = existing
+        } else {
+            panNode = AVAudioMixerNode()
+            engineAttach(panNode)
+            trackPanNodes[trackID] = panNode
+        }
+
+        // A stale format (e.g. wired before the device's real sample rate was
+        // known) would leave a hidden resampling stage in the path, so the
+        // format is part of "up to date", not just the topology.
+        let panTargets = engineOutputPoints(for: panNode, outputBus: 0)
+        if panTargets.count != 1 || panTargets.first?.node !== splitter ||
+            splitter.inputFormat(forBus: 0) != format {
+            safeDisconnectNodeOutput(panNode)
+            safeDisconnectNodeInput(splitter)
+            engineConnect(panNode, to: splitter, format: format)
+        }
+        panNode.pan = trackPanValues[trackID] ?? 0
+        let automationNode: AVAudioUnitEffect
+        if let existing = trackAutomationNodes[trackID] {
+            automationNode = existing
+        } else {
+            _ = VolumeAutomationAudioUnit.registration
+            automationNode = AVAudioUnitEffect(audioComponentDescription: VolumeAutomationAudioUnit.componentDescription)
+            engineAttach(automationNode)
+            trackAutomationNodes[trackID] = automationNode
+            if let track = syncedTracks.first(where: { $0.id == trackID }) {
+                applyVolumeAutomation(to: track)
+            }
+        }
+        let automationTargets = engineOutputPoints(for: automationNode, outputBus: 0)
+        if automationTargets.count != 1 || automationTargets.first?.node !== panNode ||
+            panNode.inputFormat(forBus: 0) != format {
+            safeDisconnectNodeOutput(automationNode)
+            safeDisconnectNodeInput(panNode)
+            connectReformatting(automationNode, to: panNode, format: format)
+        }
+        let tailTargets = engineOutputPoints(for: tail, outputBus: 0)
+        if tailTargets.count != 1 || tailTargets.first?.node !== automationNode ||
+            automationNode.inputFormat(forBus: 0) != format {
+            safeDisconnectNodeOutput(tail)
+            safeDisconnectNodeInput(automationNode)
+            connectReformatting(tail, to: automationNode, format: format)
+        }
+
+        // The dry path reaches the main mixer through the delay unit.
+        let dryDelay: AVAudioUnitEffect
+        if let existing = trackDryDelayNodes[trackID] {
+            dryDelay = existing
+        } else {
+            dryDelay = makeDelayCompensationNode()
+            trackDryDelayNodes[trackID] = dryDelay
+            // Metered here: after inserts, fader and pan — what the track sends on.
+            let meter = RenderPeakMeter()
+            (dryDelay.auAudioUnit as? DelayCompensationAudioUnit)?.meter = meter
+            trackMeters[trackID] = meter
+            applyTrackDryMute(trackID)
+        }
+        defer { updateLatencyCompensation() }
+
+        let sends: [(key: SendKey, gain: AVAudioMixerNode, fxInput: AVAudioMixerNode)] =
+            (trackSendFXIDs[trackID] ?? []).compactMap { fxID in
+                let key = SendKey(trackID: trackID, fxChannelID: fxID)
+                guard let gain = sendGainNodes[key], let fxInput = fxInputNodes[fxID] else { return nil }
+                return (key, gain, fxInput)
+            }
+        let sendGains = sends.map(\.gain)
+        let sendsReachFX = sends.allSatisfy { send in
+            wiredSendTargets[send.key] === send.fxInput &&
+                engineOutputPoints(for: send.gain, outputBus: 0).contains { $0.node === send.fxInput }
+        }
+        let currentTargets = engineOutputPoints(for: splitter, outputBus: 0).compactMap(\.node)
+        let desiredTargets: [AVAudioNode] = [dryDelay] + sendGains
+        // MASTER, or the fader of the channel it sends to.
+        let dryDestinationID = syncedTracks.first { $0.id == trackID }?.outputDestinationID
+        let dryDestination: AVAudioMixerNode = dryDestinationID.flatMap { trackOutputNodes[$0] } ?? engine.mainMixerNode
+        let dryReachesMain = engineOutputPoints(for: dryDelay, outputBus: 0)
+            .contains { $0.node === dryDestination }
+        let isUpToDate = currentTargets.count == desiredTargets.count &&
+            desiredTargets.allSatisfy { desired in currentTargets.contains { $0 === desired } } &&
+            splitter.outputFormat(forBus: 0) == format &&
+            dryReachesMain &&
+            sendsReachFX &&
+            dryDelay.outputFormat(forBus: 0) == format
+        guard !isUpToDate else {
+            // The fan-out matches the live sends, so no removed one is in it.
+            detachRetiredSendGains(of: trackID)
+            return
+        }
+
+        // A one-to-many connect made while the engine runs ignores the
+        // requested format (a new mixer stays at its 44.1 kHz default, adding
+        // a hidden resampler) and can throw, so fan-out is rewired only with
+        // the engine stopped. During transport it waits for stop().
+        if isPlaying || isRecording {
+            pendingSplitterRewires[trackID] = format
+            noteGraphEvent("splitter rewire deferred: \(trackLabel(trackID))")
+            return
+        }
+        noteGraphEvent("splitter rewire: \(trackLabel(trackID)), \(Int(format.sampleRate)) Hz \(format.channelCount) ch, engine running \(engine.isRunning)")
+        let wasRunning = engine.isRunning
+        if wasRunning {
+            engine.stop()
+        }
+        safeDisconnectNodeOutput(splitter)
+        if dryDelay.auAudioUnit.renderResourcesAllocated && dryDelay.outputFormat(forBus: 0) != format {
+            // An AU with allocated resources refuses a format change.
+            dryDelay.auAudioUnit.deallocateRenderResources()
+        }
+        if !dryReachesMain || dryDelay.outputFormat(forBus: 0) != format {
+            safeDisconnectNodeOutput(dryDelay)
+            engineConnect(
+                dryDelay,
+                to: dryDestination,
+                fromBus: 0,
+                toBus: dryDestination.nextAvailableInputBus,
+                format: format
+            )
+        }
+        trackDryDestinations[trackID] = dryDestinationID
+        // Send → FX input connects need the stopped engine too: queued
+        // connects into one mixer all take the same input bus.
+        for send in sends {
+            let reachesFX = engineOutputPoints(for: send.gain, outputBus: 0)
+                .contains { $0.node === send.fxInput }
+            guard !reachesFX || wiredSendTargets[send.key] !== send.fxInput else { continue }
+            safeDisconnectNodeOutput(send.gain)
+            engineConnect(send.gain, to: send.fxInput, fromBus: 0, toBus: send.fxInput.nextAvailableInputBus, format: format)
+            wiredSendTargets[send.key] = send.fxInput
+        }
+        var points = [AVAudioConnectionPoint(node: dryDelay, bus: 0)]
+        for gainNode in sendGains {
+            safeDisconnectNodeInput(gainNode)
+            points.append(AVAudioConnectionPoint(node: gainNode, bus: 0))
+        }
+        engineConnect(splitter, to: points, fromBus: 0, format: format)
+        detachRetiredSendGains(of: trackID)
+        if wasRunning {
+            try? startEngine()
+        }
+    }
+
+    private func detachRetiredSendGains(of trackID: UUID) {
+        for gainNode in retiredSendGains.removeValue(forKey: trackID) ?? [] {
+            safeDisconnectNodeInput(gainNode)
+            safeDetach(gainNode)
+        }
+    }
+
+    private func syncFXChannels(_ fxChannels: [FXChannel]) {
+        let currentIDs = Set(fxChannels.map(\.id))
+        for (id, node) in fxInputNodes where !currentIDs.contains(id) {
+            engineDisconnectInput(node)
+            engineDisconnectOutput(node)
+            engineDetach(node)
+            fxInputNodes.removeValue(forKey: id)
+            if let output = fxOutputNodes.removeValue(forKey: id) {
+                output.removeTap(onBus: 0)
+                engineDisconnectInput(output)
+                engineDisconnectOutput(output)
+                engineDetach(output)
+            }
+            if let panNode = fxPanNodes.removeValue(forKey: id) {
+                engineDisconnectInput(panNode)
+                engineDisconnectOutput(panNode)
+                engineDetach(panNode)
+            }
+            if let returnDelay = fxReturnDelayNodes.removeValue(forKey: id) {
+                engineDisconnectInput(returnDelay)
+                engineDisconnectOutput(returnDelay)
+                engineDetach(returnDelay)
+            }
+            // A removed plug-in left attached stays alive with its threads.
+            for pluginNode in fxPluginNodes.removeValue(forKey: id) ?? [] {
+                safeDisconnectNodeOutput(pluginNode)
+                safeDisconnectNodeInput(pluginNode)
+                safeDetach(pluginNode)
+            }
+            fxGraphSignatures.removeValue(forKey: id)
+            fxPluginGraphGenerations.removeValue(forKey: id)
+        }
+
+        guard let format = AVAudioFormat(
+            standardFormatWithSampleRate: hardwareSampleRate,
+            channels: 2
+        ) else { return }
+
+        for channel in fxChannels {
+            let input: AVAudioMixerNode
+            if let existing = fxInputNodes[channel.id] {
+                input = existing
+            } else {
+                input = AVAudioMixerNode()
+                engineAttach(input)
+                fxInputNodes[channel.id] = input
+            }
+
+            setMixerVolume(input, channel.volume)
+            let fxOutput = fxOutputNode(for: channel.id, format: format)
+            fxPanNodes[channel.id]?.pan = channel.pan
+            let plugins = channel.plugins.filter { isChainPlugin($0) }
+            let signature = plugins.map(\.id)
+            if fxGraphSignatures[channel.id] == signature {
+                for plugin in plugins {
+                    if let au = pluginAudioUnits[plugin.id] {
+                        setAUBypass(au, bypassed: !plugin.enabled)
+                    }
+                }
+                continue
+            }
+            fxPluginGraphGenerations[channel.id, default: 0] += 1
+            let generation = fxPluginGraphGenerations[channel.id] ?? 0
+            fxGraphSignatures[channel.id] = signature
+
+            let previousNodes = fxPluginNodes[channel.id] ?? []
+            let reusableNodes = plugins.compactMap { pluginAudioUnits[$0.id] }
+            let canReuseNodes = reusableNodes.count == plugins.count &&
+                Set(reusableNodes.map { node in
+                    pluginAudioUnits.first(where: { $0.value === node })?.key
+                }.compactMap { $0 }) == Set(plugins.map(\.id))
+            if canReuseNodes {
+                let reusableSet = Set(reusableNodes.map { ObjectIdentifier($0) })
+                for node in previousNodes {
+                    safeDisconnectNodeOutput(node)
+                    safeDisconnectNodeInput(node)
+                    // A removed plug-in left attached stays alive, and its
+                    // threads crash in the plug-in's static destructors at exit.
+                    if !reusableSet.contains(ObjectIdentifier(node)) {
+                        safeDetach(node)
+                    }
+                }
+                fxPluginNodes[channel.id] = reusableNodes
+                reconnectPluginChain(
+                    from: input,
+                    through: reusableNodes,
+                    to: fxPanNodes[channel.id] ?? fxOutput,
+                    format: format
+                )
+                for plugin in plugins {
+                    if let au = pluginAudioUnits[plugin.id] {
+                        setAUBypass(au, bypassed: !plugin.enabled)
+                        AudioUnitReset(au.audioUnit, kAudioUnitScope_Global, 0)
+                    }
+                }
+                continue
+            }
+
+            for node in previousNodes {
+                engineDisconnectOutput(node)
+                engineDetach(node)
+                detachPluginSwitch(of: node)
+            }
+            fxPluginNodes[channel.id] = []
+
+            engineDisconnectOutput(input)
+            if plugins.isEmpty {
+                connectFXOutput(channelID: channel.id, from: input, format: format)
+            }
+            installFXAudioUnits(
+                plugins,
+                channelID: channel.id,
+                previousNode: input,
+                format: format,
+                index: 0,
+                generation: generation
+            )
+        }
+        connectFXOutputsToMainMixer(format: format)
+    }
+
+    private func fxOutputsMissingMainMixer() -> [AVAudioMixerNode] {
+        fxOutputNodes.values.filter { output in
+            !engineOutputPoints(for: output, outputBus: 0)
+                .contains { $0.node === engine.mainMixerNode }
+        }
+    }
+
+    // A connect to the main mixer made while the engine runs is only queued
+    // until the next stop, and every queued connect targets the same "next
+    // available" bus, so a later one silently replaces an earlier one. That
+    // left an FX channel's output unconnected: the channel was never rendered
+    // and all sends to it were silent. So FX outputs are connected with the
+    // engine stopped, and re-checked on every sync; during transport this
+    // waits for stop().
+    private func connectFXOutputsToMainMixer(format: AVAudioFormat) {
+        let missing = fxOutputsMissingMainMixer()
+        guard !missing.isEmpty, !isPlaying, !isRecording else { return }
+        noteGraphEvent("connectFXOutputsToMainMixer (\(missing.count))")
+        let wasRunning = engine.isRunning
+        if wasRunning {
+            engine.stop()
+        }
+        for output in missing {
+            engineConnect(
+                output,
+                to: engine.mainMixerNode,
+                fromBus: 0,
+                toBus: engine.mainMixerNode.nextAvailableInputBus,
+                format: format
+            )
+        }
+        if wasRunning {
+            try? startEngine()
+        }
+    }
+
+    private func connectFXOutput(
+        channelID: UUID,
+        from node: AVAudioNode,
+        format: AVAudioFormat
+    ) {
+        safeDisconnectNodeOutput(node)
+        let fxOutput = fxOutputNode(for: channelID, format: format)
+        let destination = fxPanNodes[channelID] ?? fxOutput
+        safeDisconnectNodeInput(destination)
+        connectReformatting(node, to: destination, format: format)
+        updateLatencyCompensation()
+    }
+
+    private func fxOutputNode(for channelID: UUID, format: AVAudioFormat) -> AVAudioMixerNode {
+        if let existing = fxOutputNodes[channelID] {
+            return existing
+        }
+        // Connected to the main mixer by connectFXOutputsToMainMixer(), with
+        // the engine stopped.
+        let output = AVAudioMixerNode()
+        engineAttach(output)
+        let panNode = AVAudioMixerNode()
+        engineAttach(panNode)
+        // Pan → return delay → output (fader meter and mute stay after it).
+        let returnDelay = makeDelayCompensationNode()
+        fxReturnDelayNodes[channelID] = returnDelay
+        engineConnect(panNode, to: returnDelay, format: format)
+        engineConnect(returnDelay, to: output, format: format)
+        fxPanNodes[channelID] = panNode
+        installTapGuarded(on: output, bus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
+            let peak = StereoPeak(buffer: buffer)
+            self?.peakLock.withLock {
+                let previous = self?.fxOutputPeaks[channelID] ?? .zero
+                self?.fxOutputPeaks[channelID] = previous.merged(with: peak)
+            }
+        }
+        fxOutputNodes[channelID] = output
+        return output
+    }
+
+    private func installFXAudioUnits(
+        _ plugins: [TrackPluginDescriptor],
+        channelID: UUID,
+        previousNode: AVAudioNode,
+        format: AVAudioFormat,
+        index: Int,
+        generation: Int,
+        resumeEngine: Bool = true
+    ) {
+        guard index < plugins.count else {
+            connectFXOutput(channelID: channelID, from: previousNode, format: format)
+            if resumeEngine && !engine.isRunning {
+                try? startEngine()
+            }
+            return
+        }
+        let plugin = plugins[index]
+
+        if let existingAU = pluginAudioUnits[plugin.id] {
+            if !fxPluginNodes[channelID, default: []].contains(where: { $0 === existingAU }) {
+                fxPluginNodes[channelID, default: []].append(existingAU)
+            }
+            if !engine.attachedNodes.contains(existingAU) {
+                engineAttach(existingAU)
+            }
+            safeDisconnectNodeOutput(previousNode)
+            safeDisconnectNodeInput(existingAU)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
+            setAUBypass(existingAU, bypassed: !plugin.enabled)
+            restoreSavedState(for: plugin.id, audioUnit: existingAU)
+
+            if index + 1 < plugins.count {
+                installFXAudioUnits(
+                    plugins,
+                    channelID: channelID,
+                    previousNode: chainTail,
+                    format: format,
+                    index: index + 1,
+                    generation: generation,
+                    resumeEngine: resumeEngine
+                )
+            } else {
+                connectFXOutput(channelID: channelID, from: chainTail, format: format)
+                if resumeEngine && !engine.isRunning {
+                    try? startEngine()
+                }
+            }
+            return
+        }
+
+        let vst3Instance = plugin.kind == .vst3 ? vst3Instances[plugin.id] : nil
+        AVAudioUnit.instantiate(
+            with: chainComponentDescription(for: plugin),
+            options: [],
+            completionHandler: { [weak self] audioUnit, _ in
+                HostMusicalContext.shared.attach(to: audioUnit?.auAudioUnit)
+                if let vst3Instance {
+                    (audioUnit?.auAudioUnit as? VST3AudioUnit)?.attach(vst3Instance)
+                }
+                guard let self else { return }
+                let audioUnit = audioUnit.flatMap {
+                    self.acceptsChainFormat($0, format: format, name: plugin.name) ? $0 : nil
+                }
+                guard let audioUnit else {
+                    DispatchQueue.main.async {
+                        // The channel may be gone or rebuilt by now; going on
+                        // would wire its detached input to a new output.
+                        guard self.fxPluginGraphGenerations[channelID] == generation else { return }
+                        self.markPluginUnavailable(plugin.id)
+                        self.installFXAudioUnits(
+                            plugins,
+                            channelID: channelID,
+                            previousNode: previousNode,
+                            format: format,
+                            index: index + 1,
+                            generation: generation,
+                            resumeEngine: resumeEngine
+                        )
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    guard self.fxPluginGraphGenerations[channelID] == generation else {
+                        return
+                    }
+                    let wasEngineRunning = self.engine.isRunning || resumeEngine
+                    if self.engine.isRunning {
+                        self.engine.stop()
+                    }
+                    self.safeDisconnectNodeOutput(previousNode)
+                    if !self.engine.attachedNodes.contains(audioUnit) {
+                        self.engineAttach(audioUnit)
+                    }
+                    self.unavailablePluginIDs.remove(plugin.id)
+                    self.safeDisconnectNodeInput(audioUnit)
+                    let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
+                    self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
+                    self.restoreSavedState(for: plugin.id, audioUnit: audioUnit)
+                    self.fxPluginNodes[channelID, default: []].append(audioUnit)
+                    self.replacePluginAudioUnit(audioUnit, for: plugin.id)
+                    self.retryPendingPluginUIRequest(for: plugin.id)
+                    if index + 1 < plugins.count {
+                        self.installFXAudioUnits(
+                            plugins,
+                            channelID: channelID,
+                            previousNode: chainTail,
+                            format: format,
+                            index: index + 1,
+                            generation: generation,
+                            resumeEngine: wasEngineRunning
+                        )
+                    } else {
+                        self.connectFXOutput(channelID: channelID, from: chainTail, format: format)
+                        if wasEngineRunning && !self.engine.isRunning {
+                            try? self.startEngine()
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    private func isPluginGraphReady(
+        for tracks: [AudioTrack],
+        fxChannels: [FXChannel]
+    ) -> Bool {
+        guard !isMasterPluginGraphBuilding else { return false }
+
+        for track in tracks {
+            let requiredPluginIDs = track.plugins
+                .filter { isChainPlugin($0) }
+                .map(\.id)
+            guard requiredPluginIDs.allSatisfy({
+                pluginAudioUnits[$0] != nil || unavailablePluginIDs.contains($0)
+            }) else { return false }
+            let availablePluginCount = requiredPluginIDs.filter {
+                !unavailablePluginIDs.contains($0)
+            }.count
+            guard (trackPluginNodes[track.id]?.count ?? 0) == availablePluginCount else {
+                return false
+            }
+            let vstIDs = track.plugins
+                .filter { $0.enabled && $0.kind == .vst3 }
+                .map(\.id)
+            guard vstIDs.allSatisfy({ vst3Instances[$0] != nil || unavailablePluginIDs.contains($0) }) else {
+                return false
+            }
+        }
+
+        for channel in fxChannels {
+            let requiredPluginIDs = channel.plugins
+                .filter { isChainPlugin($0) }
+                .map(\.id)
+            guard requiredPluginIDs.allSatisfy({
+                pluginAudioUnits[$0] != nil || unavailablePluginIDs.contains($0)
+            }) else { return false }
+            let availablePluginCount = requiredPluginIDs.filter {
+                !unavailablePluginIDs.contains($0)
+            }.count
+            guard (fxPluginNodes[channel.id]?.count ?? 0) == availablePluginCount else {
+                return false
+            }
+        }
+
+        let masterAUPlugins = configuredMasterPlugins.filter { isChainPlugin($0) }
+        guard masterAUPlugins.allSatisfy({
+            pluginAudioUnits[$0.id] != nil || unavailablePluginIDs.contains($0.id)
+        }) else { return false }
+        let availableMasterAUCount = masterAUPlugins.filter {
+            !unavailablePluginIDs.contains($0.id)
+        }.count
+        let availableMasterNodes = masterAUPlugins.compactMap { pluginAudioUnits[$0.id] }
+        guard availableMasterNodes.count == availableMasterAUCount else { return false }
+        guard masterPluginNodes.count == availableMasterAUCount else { return false }
+
+        // The master path remains connected directly to the output while its
+        // AU is being instantiated. Do not block the first render on a master
+        // plug-in: the running engine is what allows some AUs to finish their
+        // host-side initialization. The completed AU is inserted asynchronously.
+        return true
+    }
+
+    private func installAudioUnits(
+        _ plugins: [TrackPluginDescriptor],
+        for trackID: UUID,
+        previousNode: AVAudioNode,
+        format: AVAudioFormat,
+        index: Int,
+        generation: Int,
+        resumeEngine: Bool = true
+    ) {
+        guard index < plugins.count else {
+            connectTrackChainTail(trackID, from: previousNode, format: format)
+            if resumeEngine && !engine.isRunning {
+                try? startEngine()
+            }
+            return
+        }
+
+        let plugin = plugins[index]
+        guard isChainPlugin(plugin) else {
+            installAudioUnits(
+                plugins,
+                for: trackID,
+                previousNode: previousNode,
+                format: format,
+                index: index + 1,
+                generation: generation,
+                resumeEngine: resumeEngine
+            )
+            return
+        }
+
+        if let existingAU = pluginAudioUnits[plugin.id] {
+            if !trackPluginNodes[trackID, default: []].contains(where: { $0 === existingAU }) {
+                trackPluginNodes[trackID, default: []].append(existingAU)
+            }
+            if !engine.attachedNodes.contains(existingAU) {
+                engineAttach(existingAU)
+            }
+            safeDisconnectNodeOutput(previousNode)
+            safeDisconnectNodeInput(existingAU)
+            let chainTail = connectChainPlugin(existingAU, after: previousNode, format: format)
+            setAUBypass(existingAU, bypassed: !plugin.enabled)
+            restoreSavedState(for: plugin.id, audioUnit: existingAU)
+            updateLatencyCompensation()
+
+            if index + 1 < plugins.count {
+                installAudioUnits(
+                    plugins,
+                    for: trackID,
+                    previousNode: chainTail,
+                    format: format,
+                    index: index + 1,
+                    generation: generation,
+                    resumeEngine: resumeEngine
+                )
+            } else {
+                connectTrackChainTail(trackID, from: chainTail, format: format)
+                if resumeEngine && !engine.isRunning {
+                    try? startEngine()
+                }
+            }
+            return
+        }
+
+        let componentDescription = chainComponentDescription(for: plugin)
+        let vst3Instance = plugin.kind == .vst3 ? vst3Instances[plugin.id] : nil
+        let pluginName = plugin.name
+        let pluginID = plugin.id
+        // Main thread: see syncInstrument.
+        DispatchQueue.main.async { [weak self] in
+            AVAudioUnit.instantiate(
+                with: componentDescription,
+                options: [],
+                completionHandler: { audioUnit, error in
+                    HostMusicalContext.shared.attach(to: audioUnit?.auAudioUnit)
+                    if let vst3Instance {
+                        (audioUnit?.auAudioUnit as? VST3AudioUnit)?.attach(vst3Instance)
+                    }
+                    guard let self else { return }
+                    DispatchQueue.main.async {
+                        guard self.trackRenderers[trackID] != nil,
+                              self.pluginGraphGenerations[trackID] == generation else {
+                            return
+                        }
+                        let audioUnit = audioUnit.flatMap {
+                            self.acceptsChainFormat($0, format: format, name: pluginName) ? $0 : nil
+                        }
+                        guard let audioUnit else {
+                            self.markPluginUnavailable(pluginID)
+                            if let error {
+                                print("Failed to insert AU effect \(pluginName): \(error)")
+                            }
+                            self.installAudioUnits(
+                                plugins,
+                                for: trackID,
+                                previousNode: previousNode,
+                                format: format,
+                                index: index + 1,
+                                generation: generation,
+                                resumeEngine: resumeEngine
+                            )
+                            return
+                        }
+
+                        let wasEngineRunning = self.engine.isRunning || resumeEngine
+                        if self.engine.isRunning {
+                            self.engine.stop()
+                        }
+                        self.safeDisconnectNodeOutput(previousNode)
+                        if !self.engine.attachedNodes.contains(audioUnit) {
+                            self.engineAttach(audioUnit)
+                        }
+                        self.unavailablePluginIDs.remove(pluginID)
+                        self.safeDisconnectNodeInput(audioUnit)
+                        let chainTail = self.connectChainPlugin(audioUnit, after: previousNode, format: format)
+                        self.setAUBypass(audioUnit, bypassed: !plugin.enabled)
+                        self.restoreSavedState(for: pluginID, audioUnit: audioUnit)
+                        self.trackPluginNodes[trackID, default: []].append(audioUnit)
+                        self.replacePluginAudioUnit(audioUnit, for: pluginID)
+                        self.updateLatencyCompensation()
+                        self.retryPendingPluginUIRequest(for: pluginID)
+                        if index + 1 < plugins.count {
+                            self.installAudioUnits(
+                                plugins,
+                                for: trackID,
+                                previousNode: chainTail,
+                                format: format,
+                                index: index + 1,
+                                generation: generation,
+                                resumeEngine: wasEngineRunning
+                            )
+                        } else {
+                            self.connectTrackChainTail(trackID, from: chainTail, format: format)
+                            if wasEngineRunning && !self.engine.isRunning {
+                                try? self.startEngine()
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    public func openPluginUI(pluginID: UUID) {
+        if pluginDescriptors[pluginID]?.kind == .vst3 {
+            openVST3PluginUI(pluginID: pluginID)
+            return
+        }
+
+        guard let audioUnit = pluginAudioUnits[pluginID] else {
+            print("Plugin UI requested before AU was ready: \(pluginID)")
+            pendingPluginUIRequests.insert(pluginID)
+            return
+        }
+
+        if let window = pluginWindows[pluginID] {
+            configurePluginWindow(window)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let descriptor = pluginDescriptors[pluginID]
+        let pluginTitle = descriptor?.name ?? audioUnit.auAudioUnit.audioUnitName ?? "Audio Unit"
+        let compatibility = descriptor?.resolvedCompatibility ?? .automatic
+        print("Opening plugin UI: \(pluginTitle) [\(pluginID)]")
+
+        if let viewController = pluginViewControllers[pluginID] {
+            presentPluginViewController(
+                viewController,
+                pluginID: pluginID,
+                title: pluginTitle,
+                cacheForPlugin: false
+            )
+            return
+        }
+
+        if compatibility.ui == .genericOnly {
+            presentGenericPluginView(
+                audioUnit: audioUnit,
+                pluginID: pluginID,
+                title: pluginTitle
+            )
+            return
+        }
+
+        if compatibility.ui == .disabled {
+            return
+        }
+
+        guard audioUnit.auAudioUnit.providesUserInterface else {
+            print("Plugin has no custom UI, using Generic UI: \(pluginTitle)")
+            presentGenericPluginView(
+                audioUnit: audioUnit,
+                pluginID: pluginID,
+                title: pluginTitle
+            )
+            return
+        }
+
+        // Some AU implementations are not safe to initialize their custom
+        // view until the host graph has rendered at least one real-time cycle.
+        // Use the same warm-up rule for every plug-in and retry after playback
+        // starts instead of calling requestViewController too early.
+        guard hasWarmedUpAudioGraph else {
+            print("Plugin UI deferred until audio warm-up: \(pluginTitle)")
+            pendingPluginUIRequests.insert(pluginID)
+            return
+        }
+
+        requestOriginalPluginUI(
+            audioUnit: audioUnit,
+            pluginID: pluginID,
+            title: pluginTitle,
+            timeoutMs: compatibility.requestTimeoutMs
+        )
+    }
+
+
+    private func openVST3PluginUI(pluginID: UUID) {
+        guard let descriptor = pluginDescriptors[pluginID],
+              descriptor.kind == .vst3 else {
+            print("VST3 descriptor is not ready: \(pluginID)")
+            return
+        }
+        // Attach to the same instance that actually processes audio, so
+        // parameter edits made in the plugin's own editor affect playback.
+        guard let instance = vst3Instances[pluginID] else {
+            print("VST3 plugin instance is not ready: \(pluginID)")
+            pendingPluginUIRequests.insert(pluginID)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self,
+                      self.pendingPluginUIRequests.remove(pluginID) != nil else { return }
+                self.openPluginUI(pluginID: pluginID)
+            }
+            return
+        }
+        if let window = pluginWindows[pluginID] {
+            configurePluginWindow(window)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        // ウィンドウを表示する前にエディタをアタッチしてサイズを確定する。
+        // 旧実装では仮サイズ(640×480)でウィンドウを先に makeKeyAndOrderFront してから
+        // サイズを変更していたため、ビットマップとウィンドウのサイズが一致しないことがあった。
+        // C++ 側では attached() を先に呼んでから getSize() を取得するよう修正済み。
+        let hostView = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+
+        guard let contentSize = instance.attachEditor(to: hostView) else {
+            print("VST3 plugin editor attach failed: \(pluginID)")
+            return
+        }
+        hostView.frame = NSRect(origin: .zero, size: contentSize)
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostView
+        window.title = pluginDescriptors[pluginID]?.name ?? "VST3"
+        window.setContentSize(contentSize)
+        window.center()
+        restorePluginWindowFrame(window, pluginID: pluginID)
+        window.isReleasedWhenClosed = false
+        configurePluginWindow(window)
+        pluginWindows[pluginID] = window
+
+        // プラグインが後から IPlugFrame::resizeView() を呼んできたとき
+        // ウィンドウとホストビューのサイズを追従させる。
+        instance.onResizeRequest = { [weak self, weak window, weak hostView] newSize in
+            guard let self, let window, let hostView else { return }
+            let clamped = NSSize(
+                width: max(320, newSize.width),
+                height: max(240, newSize.height)
+            )
+            hostView.setFrameSize(clamped)
+            window.setContentSize(clamped)
+            window.layoutIfNeeded()
+            print("VST3 resizeView: \(clamped) [\(pluginID)]")
+            _ = self // suppress "self captured but never used" warning
+        }
+
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func closePluginWindow(pluginID: UUID) {
+        if pluginDescriptors[pluginID]?.kind == .vst3 {
+            if let instance = vst3Instances[pluginID] {
+                instance.onResizeRequest = nil
+                instance.removeEditor()
+            }
+        }
+        removePluginViewSizeObservers(pluginID: pluginID)
+        guard let window = pluginWindows.removeValue(forKey: pluginID) else { return }
+        window.contentViewController = nil
+        window.contentView = nil
+        window.close()
+    }
+
+    // An AU's close button only hides its window, and opening the UI again
+    // shows that same window. Closing it moved the cached view controller
+    // into a new window at every open, and some plug-in views (Waves
+    // WaveShell) come up blank after a few such moves. VST3 editors are
+    // detached and attached again instead, so their windows still close.
+    // window.close() from the host (plug-in removed, project closed) does not
+    // ask this and still closes the window.
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let entry = pluginWindows.first(where: { $0.value === sender }),
+              pluginDescriptors[entry.key]?.kind != .vst3 else { return true }
+        sender.orderOut(nil)
+        return false
+    }
+
+    public func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        guard let entry = pluginWindows.first(where: { $0.value === window }) else { return }
+        let pluginID = entry.key
+        pluginWindowFrames[pluginID] = window.frame
+        pluginWindows.removeValue(forKey: pluginID)
+        removePluginViewSizeObservers(pluginID: pluginID)
+        // The window's own close button bypasses closePluginWindow(), so the
+        // VST3 editor must be detached here too. Otherwise the plugin still
+        // believes it is attached to the (now deallocated) host view, and
+        // MyDAWVST3AttachEditor skips re-attaching on the next open, leaving
+        // the reopened window blank.
+        if pluginDescriptors[pluginID]?.kind == .vst3, let instance = vst3Instances[pluginID] {
+            instance.onResizeRequest = nil
+            instance.removeEditor()
+        }
+    }
+
+    /// プラグインウィンドウがキーになった（クリックされた）とき、
+    /// そのウィンドウを orderFront して最前面に出す。
+    /// これによりプラグイン間の重なり順をクリックで自由に変更できる。
+    public func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              pluginWindows.values.contains(where: { $0 === window }) else { return }
+        window.orderFront(nil)
+    }
+
+    private func requestOriginalPluginUI(
+        audioUnit: AVAudioUnit,
+        pluginID: UUID,
+        title: String,
+        timeoutMs: Int
+    ) {
+        guard !pluginUIRequests.contains(pluginID) else { return }
+        pluginUIRequests.insert(pluginID)
+
+        // Keep a potentially blocking third-party AU request off MainActor.
+        // The returned AppKit controller is installed on MainActor below.
+        pluginUIRequestQueue.async { [weak self] in
+            let callbackReceived = DispatchSemaphore(value: 0)
+            print("Requesting AU view controller: \(title) [\(pluginID)]")
+            audioUnit.auAudioUnit.requestViewController { viewController in
+                print("AU view controller callback: \(title), returned=\(viewController != nil) [\(pluginID)]")
+                callbackReceived.signal()
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.pluginUIRequests.remove(pluginID) != nil else { return }
+
+                    if let viewController {
+                        self.pluginViewControllers[pluginID] = viewController
+                        self.presentPluginViewController(
+                            viewController,
+                            pluginID: pluginID,
+                            title: title
+                        )
+                    } else {
+                        self.presentGenericPluginView(
+                            audioUnit: audioUnit,
+                            pluginID: pluginID,
+                            title: title
+                        )
+                    }
+                }
+            }
+            if callbackReceived.wait(timeout: .now() + .milliseconds(timeoutMs)) == .timedOut {
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.pluginUIRequests.remove(pluginID) != nil else { return }
+                    print("AU view controller timed out, using Generic UI: \(title) [\(pluginID)]")
+                    self.presentGenericPluginView(
+                        audioUnit: audioUnit,
+                        pluginID: pluginID,
+                        title: title
+                    )
+                }
+            }
+        }
+    }
+
+    private func presentPluginViewController(
+        _ viewController: NSViewController,
+        pluginID: UUID,
+        title: String,
+        maximumContentSize: NSSize? = nil,
+        cacheForPlugin: Bool = true
+    ) {
+        // contentViewController を使う場合、NSWindow は自動的にビューコントローラーの
+        // view を contentView として設定し、ウィンドウのリサイズに追従させる。
+        // translatesAutoresizingMaskIntoConstraints を false にすると
+        // この自動リサイズが壊れ、ビューが左下に張り付いて上部に空白ができるため、
+        // デフォルト (true) のままにする。
+        let pluginView = viewController.view
+        let preferredSize = viewController.preferredContentSize
+        let viewSize = pluginView.frame.size
+        let isValid: (NSSize) -> Bool = { $0.width > 1 && $0.height > 1 }
+
+        let contentSize: NSSize
+        if let maximumContentSize {
+            // Host-built generic parameter view.
+            contentSize = NSSize(
+                width: min(max(viewSize.width, 480), maximumContentSize.width),
+                height: min(max(viewSize.height, 360), maximumContentSize.height)
+            )
+        } else {
+            // A plug-in's custom view is usually a fixed-size bitmap. Any
+            // window larger than the view leaves blank space at the top and
+            // right (AppKit anchors content bottom-left), so the window must
+            // match the view exactly: no minimum size is imposed.
+            let rawSize: NSSize
+            if isValid(viewSize) {
+                rawSize = viewSize
+            } else if isValid(preferredSize) {
+                rawSize = preferredSize
+            } else {
+                pluginView.layoutSubtreeIfNeeded()
+                rawSize = pluginView.fittingSize
+            }
+            contentSize = NSSize(width: max(rawSize.width, 100), height: max(rawSize.height, 60))
+        }
+        print("[PluginUI] \(title): preferred=\(preferredSize) viewFrame=\(viewSize) -> window content \(contentSize)")
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = viewController
+        window.title = title
+        window.setContentSize(contentSize)
+        window.center()
+        restorePluginWindowFrame(window, pluginID: pluginID)
+        window.isReleasedWhenClosed = false
+        configurePluginWindow(window)
+        window.makeKeyAndOrderFront(nil)
+        pluginWindows[pluginID] = window
+        if cacheForPlugin {
+            pluginViewControllers[pluginID] = viewController
+        }
+        if maximumContentSize == nil {
+            followPluginViewSize(viewController, window: window, pluginID: pluginID, title: title)
+        }
+    }
+
+    // Some plug-ins (e.g. web-view based UIs) size their view only after it
+    // is on screen. Keep the window matched to whatever size the plug-in
+    // settles on, from either its view frame or its preferredContentSize.
+    private func followPluginViewSize(
+        _ viewController: NSViewController,
+        window: NSWindow,
+        pluginID: UUID,
+        title: String
+    ) {
+        removePluginViewSizeObservers(pluginID: pluginID)
+        let pluginView = viewController.view
+        let apply: (NSSize) -> Void = { [weak window] size in
+            guard let window, size.width > 1, size.height > 1,
+                  window.contentLayoutRect.size != size else { return }
+            print("[PluginUI] \(title): plug-in resized to \(size)")
+            window.setContentSize(size)
+        }
+        pluginView.postsFrameChangedNotifications = true
+        let frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: pluginView,
+            queue: .main
+        ) { [weak pluginView] _ in
+            guard let pluginView else { return }
+            onMainThread { apply(pluginView.frame.size) }
+        }
+        let preferredObserver = viewController.observe(\.preferredContentSize, options: [.new]) { controller, _ in
+            let size = controller.preferredContentSize
+            DispatchQueue.main.async { apply(size) }
+        }
+        pluginViewSizeObservers[pluginID] = [frameObserver, preferredObserver]
+    }
+
+    private func removePluginViewSizeObservers(pluginID: UUID) {
+        for observer in pluginViewSizeObservers.removeValue(forKey: pluginID) ?? [] {
+            if let observation = observer as? NSKeyValueObservation {
+                observation.invalidate()
+            } else {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+    }
+
+    /// Marks plug-in windows so the main window's key handling can pass
+    /// transport shortcuts typed in them on to MyDAW.
+    nonisolated public static let pluginWindowIdentifier = NSUserInterfaceItemIdentifier("MyDAW.PluginWindow")
+
+    private func configurePluginWindow(_ window: NSWindow) {
+        window.delegate = self
+        window.identifier = Self.pluginWindowIdentifier
+        // .floating レベルにすることで、メインウィンドウを何度クリックしても
+        // プラグインウィンドウが後ろに回らないようにする。
+        // プラグイン同士は同じ .floating レベルにあるため、
+        // クリックで互いの重なり順を変えることは引き続き可能。
+        // 他のアプリに切り替えたときは隠さず、通常レベルに下げて
+        // MyDAW のウィンドウのすぐ上に置く（setPluginWindowsFloating）。
+        window.level = NSApp.isActive ? .floating : .normal
+        window.collectionBehavior.insert(.moveToActiveSpace)
+    }
+
+    /// Plug-in windows (and the tuner) float above MyDAW's windows while
+    /// MyDAW is active. When another app comes forward they stay visible
+    /// but drop to the normal level, just above MyDAW's front window, so
+    /// the stack is: the other app, the plug-ins, MyDAW. They float again
+    /// when MyDAW comes back.
+    private func observeAppActivationForPluginWindows() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            onMainThread { Self.setPluginWindowsFloating(false) }
+        }
+        center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            onMainThread { Self.setPluginWindowsFloating(true) }
+        }
+    }
+
+    static func setPluginWindowsFloating(_ floating: Bool) {
+        let windows = NSApp.orderedWindows // front to back
+        let pluginWindows = windows.filter { $0.identifier == pluginWindowIdentifier && $0.isVisible }
+        guard floating else {
+            let mainWindow = windows.first {
+                $0.identifier != pluginWindowIdentifier && $0.isVisible && $0.level == .normal
+            }
+            // Front to back, each straight above the main window: the
+            // plug-ins keep their order among themselves.
+            for window in pluginWindows {
+                window.level = .normal
+                if let mainWindow { window.order(.above, relativeTo: mainWindow.windowNumber) }
+            }
+            return
+        }
+        for window in pluginWindows { window.level = .floating }
+    }
+
+    private func restorePluginWindowFrame(_ window: NSWindow, pluginID: UUID) {
+        guard let frame = pluginWindowFrames.removeValue(forKey: pluginID) else { return }
+        window.setFrameOrigin(frame.origin)
+    }
+
+    private func presentGenericPluginView(
+        audioUnit: AVAudioUnit,
+        pluginID: UUID,
+        title: String
+    ) {
+        guard let parameterTree = audioUnit.auAudioUnit.parameterTree else {
+            print("AU has no parameter tree for Generic UI: \(title)")
+            return
+        }
+        let view = GenericAUParameterView(parameterTree: parameterTree)
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.documentView = view
+
+        let documentSize = view.fittingSize
+        let maximumWidth = NSScreen.main?.visibleFrame.width ?? 1200
+        let documentWidth = max(documentSize.width + 24, 480)
+        let visibleSize = NSSize(
+            width: min(documentWidth + 18, maximumWidth),
+            height: min(max(documentSize.height, 360), 640)
+        )
+        scrollView.hasHorizontalScroller = documentWidth > visibleSize.width
+        view.frame = NSRect(
+            origin: .zero,
+            size: NSSize(
+                width: documentWidth,
+                height: max(documentSize.height, visibleSize.height)
+            )
+        )
+        scrollView.frame = NSRect(origin: .zero, size: visibleSize)
+
+        let viewController = NSViewController()
+        viewController.view = scrollView
+        presentPluginViewController(
+            viewController,
+            pluginID: pluginID,
+            title: title,
+            maximumContentSize: visibleSize,
+            cacheForPlugin: false
+        )
+    }
+
+    // MARK: - Transport: Play / Record
+
+    public func startPlayOrRecord(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel] = [],
+        isRetry: Bool = false,
+        recordArmedTracks: Bool = true
+    ) {
+        noteGraphEvent("startPlayOrRecord\(isRetry ? " (retry)" : "")")
+        if isStartingPlayback && !isRetry && !isPlaying && !isRecording {
+            startPlaybackTask?.cancel()
+            startPlaybackTask = nil
+            playbackRetryTask?.cancel()
+            playbackRetryTask = nil
+            isStartingPlayback = false
+            return
+        }
+
+        if isPlaying || isRecording {
+            stop(tracks: tracks)
+            return
+        }
+
+        if !isRetry {
+            isStartingPlayback = true
+        }
+
+        startPlaybackTask?.cancel()
+        startPlaybackTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  self.isStartingPlayback else { return }
+            self.startPlaybackTask = nil
+            self.beginPlayOrRecord(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
+        }
+    }
+
+    private func beginPlayOrRecord(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        recordArmedTracks: Bool
+    ) {
+        // After shutdown the plug-ins are released and, while a relaunched
+        // MyDAW starts, the devices belong to it.
+        guard !isShutDown else { return }
+        // Ensure master graph matches configured master plugins before readiness check
+        if configuredMasterPlugins.map(\.id) != masterPluginSignature && !isMasterPluginGraphBuilding {
+            syncMasterPlugins(configuredMasterPlugins)
+        }
+
+        // The graph is prepared by project/plugin changes, never by transport
+        // start. Wait here until asynchronous plugin insertion has completed.
+        guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
+            let diagnostic = masterGraphReadinessDiagnostic()
+            if diagnostic != lastPlaybackReadinessDiagnostic {
+                print("Playback delayed: \(diagnostic)")
+                lastPlaybackReadinessDiagnostic = diagnostic
+            }
+            schedulePlaybackRetry(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
+            return
+        }
+
+        playbackRetryTask?.cancel()
+        playbackRetryTask = nil
+        lastPlaybackReadinessDiagnostic = nil
+
+        if !engine.isRunning {
+            do {
+                try startEngine()
+            } catch {
+                print("Failed to start audio engine for playback: \(error)")
+                isStartingPlayback = false
+                return
+            }
+        }
+
+        let armedTracks = recordArmedTracks ? tracks.filter { $0.isAudioRecordArmed } : []
+        let midiArmedTracks = recordArmedTracks
+            ? tracks.filter { $0.kind == .instrument && $0.isRecordArmed }
+            : []
+        let hasArmedTracks = !armedTracks.isEmpty || !midiArmedTracks.isEmpty
+
+        if hasArmedTracks, recordingFinalizationTask != nil {
+            schedulePlaybackRetry(
+                tracks: tracks,
+                fxChannels: fxChannels,
+                recordArmedTracks: recordArmedTracks
+            )
+            return
+        }
+
+        if hasArmedTracks, punchInTime == nil, recordRollbackDuration > 0 {
+            // Record from the playhead, playing from the rollback point.
+            isRollbackPass = true
+            punchInTime = currentTime
+            punchOutTime = .infinity
+            currentTime = max(0.0, currentTime - recordRollbackDuration)
+        }
+
+        // The start time is fixed after the clips are scheduled (see
+        // startPlayback), so slow scheduling never costs the opening.
+        isStartingPlayback = false
+        // The click player starts before the clip players, so its first
+        // click (on the start position) is never late. Its stop() and
+        // play(at:) each take a render cycle, hence two extra calls.
+        let sharedStartTime: AVAudioTime
+        if hasArmedTracks {
+            sharedStartTime = startRecording(
+                armedTracks: armedTracks,
+                midiTracks: midiArmedTracks,
+                playbackTracks: tracks.filter { !$0.isAudioRecordArmed }
+            )
+        } else {
+            sharedStartTime = startPlayback(
+                tracks: tracks,
+                extraPlayCalls: metronomeEnabled ? 2 : 0
+            ) { [self] transportStartTime in
+                startMetronome(at: transportStartTime)
+            }
+        }
+
+        isPlaying = true
+        isRecording = hasArmedTracks
+        if punchInTime != nil, punchOutTime != nil, currentTime < (punchInTime ?? 0.0) {
+            isRecording = false
+        }
+        hasWarmedUpAudioGraph = true
+        schedulePendingPluginUIRequests()
+        if playheadTimer == nil {
+            startPlayheadTimer(at: sharedStartTime.hostTime)
+        }
+    }
+
+    private func schedulePendingPluginUIRequests() {
+        guard !pendingPluginUIRequests.isEmpty else { return }
+        let requests = pendingPluginUIRequests
+        pendingPluginUIRequests.removeAll()
+
+        // Let AVAudioEngine enter its render cycle before asking an AU for its
+        // AppKit view. This keeps UI creation outside the playback start path.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            for pluginID in requests {
+                self.openPluginUI(pluginID: pluginID)
+            }
+        }
+    }
+
+    private func schedulePlaybackRetry(
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        recordArmedTracks: Bool
+    ) {
+        guard playbackRetryTask == nil else { return }
+
+        playbackRetryTask = Task { @MainActor [weak self] in
+            for _ in 0..<100 {
+                do {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled,
+                      let self,
+                      !self.isPlaying,
+                      !self.isRecording else { return }
+                guard self.isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
+                    continue
+                }
+                self.playbackRetryTask = nil
+                self.startPlayOrRecord(
+                    tracks: tracks,
+                    fxChannels: fxChannels,
+                    isRetry: true,
+                    recordArmedTracks: recordArmedTracks
+                )
+                return
+            }
+            self?.playbackRetryTask = nil
+        }
+    }
+
+    private func masterGraphReadinessDiagnostic() -> String {
+        let masterAUPlugins = configuredMasterPlugins.filter { $0.kind == .au }
+        let auIDs = masterAUPlugins.map(\.id)
+        let loadedCount = auIDs.filter { pluginAudioUnits[$0] != nil }.count
+        let unavailableCount = auIDs.filter { unavailablePluginIDs.contains($0) }.count
+        return "masterBuilding=\(isMasterPluginGraphBuilding), expectedAU=\(auIDs.count), nodes=\(masterPluginNodes.count), loaded=\(loadedCount), unavailable=\(unavailableCount), signature=\(masterPluginSignature.count)/\(configuredMasterPlugins.count)"
+    }
+
+    /// The pre-roll of a track: its own inserts' latency plus the FX
+    /// compensation. Its renderer plays this much ahead of the transport.
+    private func trackPreRoll(_ trackID: UUID) -> Double {
+        (trackPluginLatencies[trackID] ?? 0.0) + fxCompensationLatency
+    }
+
+    /// Starts every track's renderer so that `startSec` is heard at the
+    /// returned transport start (the playhead clock). The opening of each
+    /// track is read from disk first, so nothing is lost at the start; the
+    /// start is then the earliest safe time, plus a render cycle for each of
+    /// the metronome's `extraPlayCalls`. `beforePlayersStart` sets up what
+    /// must be in place at the start (recording, the metronome).
+    @discardableResult
+    private func startPlayback(
+        tracks: [AudioTrack],
+        startSec: Double? = nil,
+        extraPlayCalls: Int = 0,
+        beforePlayersStart: ((AVAudioTime) -> Void)? = nil
+    ) -> AVAudioTime {
+        let startSec = startSec ?? currentTime
+        let rate = hardwareSampleRate
+        let renderers = tracks.compactMap { track in trackRenderers[track.id].map { (track.id, $0) } }
+        let startFrame = Int64(saturating: (startSec * rate).rounded())
+        for (_, renderer) in renderers {
+            renderer.prepare(renderFrom: startFrame)
+        }
+        let readyDeadline = Date().addingTimeInterval(2.0)
+        while !renderers.allSatisfy({ $0.1.isReadyToStart() }) && Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+
+        let cycle = Double(max(256, inputBufferFrameSize)) / max(1.0, rate) * 1.2
+        let transportStartTime = nextTransportStartTime(extraLead: Double(extraPlayCalls) * cycle)
+        beforePlayersStart?(transportStartTime)
+        for (trackID, renderer) in renderers {
+            renderer.start(
+                anchorHost: transportStartTime.hostTime,
+                anchorFrame: Int64(saturating: ((startSec + trackPreRoll(trackID)) * rate).rounded())
+            )
+        }
+        for track in tracks where track.kind == .instrument {
+            guard let feeder = instrumentFeeders[track.id] else { continue }
+            let plan = MIDIPlaybackPlan.make(for: track, bpm: bpm, sampleRate: rate)
+            feeder.setPlan(plan)
+            feeder.start(
+                anchorHost: transportStartTime.hostTime,
+                anchorFrame: Int64(saturating: ((startSec + trackPreRoll(track.id)) * rate).rounded()),
+                renderFrom: startFrame,
+                chase: plan.chase(before: startFrame)
+            )
+        }
+        isVolumeAutomationRunning = true
+        for (trackID, node) in trackAutomationNodes {
+            (node.auAudioUnit as? VolumeAutomationAudioUnit)?.start(
+                anchorHost: transportStartTime.hostTime,
+                anchorFrame: volumeAutomationAnchorFrame(trackID, position: startSec)
+            )
+        }
+        masterAutomationUnit?.start(
+            anchorHost: transportStartTime.hostTime,
+            anchorFrame: masterAutomationAnchorFrame(position: startSec)
+        )
+        return transportStartTime
+    }
+
+    /// After a latency change during playback: keeps every track's audio
+    /// its new pre-roll ahead of the running transport clock.
+    private func updateRendererAnchors() {
+        let rate = hardwareSampleRate
+        for (trackID, renderer) in trackRenderers {
+            renderer.setAnchorFrame(Int64(saturating: ((playheadStartOffset + trackPreRoll(trackID)) * rate).rounded()))
+        }
+        for (trackID, feeder) in instrumentFeeders {
+            feeder.setAnchorFrame(Int64(saturating: ((playheadStartOffset + trackPreRoll(trackID)) * rate).rounded()))
+        }
+        for (trackID, node) in trackAutomationNodes {
+            (node.auAudioUnit as? VolumeAutomationAudioUnit)?.setAnchorFrame(
+                volumeAutomationAnchorFrame(trackID, position: playheadStartOffset)
+            )
+        }
+        masterAutomationUnit?.setAnchorFrame(masterAutomationAnchorFrame(position: playheadStartOffset))
+    }
+
+    /// Stops every renderer, reporting render cycles that found no audio
+    /// read ahead (the disk could not keep up).
+    private func stopRenderers() {
+        var underruns: Int64 = 0
+        for renderer in trackRenderers.values {
+            underruns += renderer.stop()
+        }
+        for feeder in instrumentFeeders.values {
+            feeder.stop()
+        }
+        isVolumeAutomationRunning = false
+        for node in trackAutomationNodes.values {
+            (node.auAudioUnit as? VolumeAutomationAudioUnit)?.stop(heldTime: currentTime)
+        }
+        masterAutomationUnit?.stop(heldTime: currentTime)
+        if underruns > 0 {
+            print("[Playback] \(underruns) render cycles found no audio read ahead")
+        }
+    }
+
+    /// The transport position heard at `hostTime`, or nil before the
+    /// transport clock has started.
+    private func transportPosition(atHostTime hostTime: UInt64) -> Double? {
+        guard let startHostTime = playheadStartHostTime, hostTime >= startHostTime else { return nil }
+        return playheadStartOffset + Double(AudioConvertHostTimeToNanos(hostTime - startHostTime)) / 1_000_000_000.0
+    }
+
+    private static func hostTicks(_ seconds: Double) -> UInt64 {
+        AudioConvertNanosToHostTime(UInt64(Int64(saturating: max(0.0, seconds) * 1_000_000_000.0)))
+    }
+
+    /// When the transport starts: the renderers may play up to the pre-roll
+    /// before it, so it is the earliest safe time plus the pre-roll.
+    private func nextTransportStartTime(extraLead: Double = 0.0) -> AVAudioTime {
+        AVAudioTime(hostTime: earliestPlayerStartHostTime() + Self.hostTicks(extraLead + transportPreRoll))
+    }
+
+    /// The engine renders ahead of what is heard (output latency plus an IO
+    /// buffer or two), and render times are the times the audio is heard.
+    /// Audio due inside the already rendered stretch would be lost, so start
+    /// past it: two IO buffers after the last render, plus a margin, and
+    /// never sooner than 50 ms from now.
+    private func earliestPlayerStartHostTime() -> UInt64 {
+        var earliest = mach_absolute_time() + Self.hostTicks(0.05)
+        if engine.isRunning,
+           let lastRender = engine.mainMixerNode.lastRenderTime,
+           lastRender.isHostTimeValid {
+            let ioBuffer = Double(max(256, inputBufferFrameSize)) / max(1.0, hardwareSampleRate)
+            earliest = max(earliest, lastRender.hostTime + Self.hostTicks(2.0 * ioBuffer + 0.01))
+        }
+        return earliest
+    }
+
+    // Live input enters the track at its output mixer, so it passes the
+    // track's fader, pan, inserts and sends like clip playback does.
+    // Rewiring the input node needs the engine stopped; while the transport
+    // runs the change is deferred to stop().
+    /// Used on transport stop for the rewiring deferred during playback
+    /// (track fan-out, input monitors). It needs the engine stopped, which
+    /// cuts effect tails still ringing (an FX reverb, say) and replays a
+    /// stale block on restart. So wait until the master output has decayed
+    /// below -60 dB (at most 8 s) first — not lower: plug-in dither and armed
+    /// inputs keep an idle master around -64 dB. If the transport starts
+    /// again before that, the next stop tries again.
+    private func applyDeferredRewiresWhenQuiet() {
+        guard !pendingSplitterRewires.isEmpty ||
+            desiredInputMonitors != appliedInputMonitors ||
+            !fxOutputsMissingMainMixer().isEmpty else { return }
+        inputMonitorApplyTask?.cancel()
+        quietRewireGeneration += 1
+        let generation = quietRewireGeneration
+        isWaitingForQuietRewire = true
+        inputMonitorApplyTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.quietRewireGeneration == generation {
+                    self?.isWaitingForQuietRewire = false
+                }
+            }
+            let deadline = Date().addingTimeInterval(8)
+            while let self, !Task.isCancelled, Date() < deadline {
+                if self.isPlaying || self.isRecording || self.isStartingPlayback { return }
+                if self.masterPeak < 0.001 { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, !Task.isCancelled,
+                  !self.isPlaying, !self.isRecording, !self.isStartingPlayback else { return }
+            let rewires = self.pendingSplitterRewires
+            self.pendingSplitterRewires.removeAll()
+            self.noteGraphEvent("applying deferred rewires (\(rewires.count) tracks)")
+            for (trackID, format) in rewires {
+                if let tail = self.trackChainTails[trackID] {
+                    self.connectTrackChainTail(trackID, from: tail, format: format)
+                }
+            }
+            if let format = AVAudioFormat(standardFormatWithSampleRate: self.hardwareSampleRate, channels: 2) {
+                self.connectFXOutputsToMainMixer(format: format)
+            }
+            self.applyInputMonitoringIfNeeded()
+        }
+    }
+
+    private func applyInputMonitoringIfNeeded() {
+        guard desiredInputMonitors != appliedInputMonitors,
+              !isPlaying, !isRecording else { return }
+        let wasRunning = engine.isRunning
+        if wasRunning {
+            engine.stop()
+        }
+        connectInputMonitors()
+        raiseMaximumFramesPerSlice()
+        if wasRunning {
+            do {
+                try startEngine()
+            } catch {
+                print("Input monitoring: engine restart failed: \(error)")
+            }
+        }
+    }
+
+    // Any resampling stage in a path makes some render cycles longer than
+    // the I/O buffer (e.g. 513 frames against 512). AVAudioEngine gives every
+    // node the I/O units' slice limit, so a 512-limited AU would reject such
+    // a cycle (-10874) and fail the whole pull. Raising the I/O units' limit
+    // raises it for every node. Must be set while the engine is stopped.
+    private func raiseMaximumFramesPerSlice() {
+        var frames: UInt32 = 4096
+        for unit in [engine.inputNode.audioUnit, engine.outputNode.audioUnit].compactMap({ $0 }) {
+            let status = AudioUnitSetProperty(
+                unit,
+                kAudioUnitProperty_MaximumFramesPerSlice,
+                kAudioUnitScope_Global,
+                0,
+                &frames,
+                UInt32(MemoryLayout<UInt32>.size)
+            )
+            if status != noErr {
+                print("Input monitoring: MaximumFramesPerSlice set failed: \(status)")
+            }
+        }
+    }
+
+    private func connectInputMonitors() {
+        engineDisconnectOutput(engine.inputNode)
+        for (trackID, node) in inputMonitorNodes
+            where desiredInputMonitors[trackID] == nil || trackOutputNodes[trackID] == nil {
+            safeDisconnectNodeOutput(node)
+            safeDetach(node)
+            inputMonitorNodes.removeValue(forKey: trackID)
+        }
+        appliedInputMonitors = desiredInputMonitors
+        guard let inputFormat = inputCaptureFormat,
+              let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hardwareSampleRate, channels: 2) else {
+            return
+        }
+
+        _ = InputMonitorAudioUnit.registration
+        var points: [AVAudioConnectionPoint] = []
+        for (trackID, config) in desiredInputMonitors {
+            guard let trackOutput = trackOutputNodes[trackID] else { continue }
+            let node: AVAudioUnitEffect
+            if let existing = inputMonitorNodes[trackID] {
+                node = existing
+            } else {
+                node = AVAudioUnitEffect(audioComponentDescription: InputMonitorAudioUnit.componentDescription)
+                engineAttach(node)
+                inputMonitorNodes[trackID] = node
+            }
+            (node.auAudioUnit as? InputMonitorAudioUnit)?.configure(
+                channelOffset: config.channelOffset,
+                isStereo: config.isStereo
+            )
+            safeDisconnectNodeOutput(node)
+            if node.auAudioUnit.renderResourcesAllocated
+                && (node.outputFormat(forBus: 0) != stereoFormat || node.inputFormat(forBus: 0) != inputFormat) {
+                // An AU with allocated resources refuses a format change.
+                node.auAudioUnit.deallocateRenderResources()
+            }
+            engineConnect(
+                node,
+                to: trackOutput,
+                fromBus: 0,
+                toBus: trackOutput.nextAvailableInputBus,
+                format: stereoFormat
+            )
+            points.append(AVAudioConnectionPoint(node: node, bus: 0))
+        }
+        if !points.isEmpty {
+            engineConnect(engine.inputNode, to: points, fromBus: 0, format: inputFormat)
+        }
+    }
+
+    private func setRecordingMutedTracks(_ trackIDs: Set<UUID>) {
+        recordingMutedTrackIDs = trackIDs
+        for (trackID, renderer) in trackRenderers {
+            renderer.setMuted(trackIDs.contains(trackID))
+        }
+    }
+
+    /// Starts playback and recording; returns the transport start.
+    private func startRecording(
+        armedTracks: [AudioTrack],
+        midiTracks: [AudioTrack] = [],
+        playbackTracks: [AudioTrack]
+    ) -> AVAudioTime {
+        // The renderers read ahead first, so the start time is fixed only once
+        // that is done; the recording is armed before they start.
+        return startPlayback(
+            tracks: playbackTracks + armedTracks,
+            extraPlayCalls: metronomeEnabled ? 2 : 0
+        ) { [self] sharedStartTime in
+            let usesPunchRange = punchInTime != nil && punchOutTime != nil
+            if !usesPunchRange {
+                setRecordingMutedTracks(Set(armedTracks.map(\.id)))
+            }
+            beginCapture(armedTracks: armedTracks, sharedStartTime: sharedStartTime)
+            beginMIDICapture(tracks: midiTracks, undoStepTaken: !armedTracks.isEmpty)
+            startMetronome(at: sharedStartTime)
+        }
+    }
+
+    /// Creates the take files and starts capturing input for a transport
+    /// that starts at `sharedStartTime`.
+    private func beginCapture(armedTracks: [AudioTrack], sharedStartTime: AVAudioTime) {
+        activeWriters.removeAll()
+        punchArmedTrackIDs = Set(armedTracks.map(\.id))
+        punchPlaybackState = 0
+        isPunchRecording = punchInTime.map { currentTime >= $0 } ?? true
+        isRecordPass = true
+        // CRITICAL: Use hardwareSampleRate (actual HW rate from inputNode) — NOT the UI sampleRate.
+        // This ensures the WAV file header matches the actual captured audio sample rate.
+        let recordSampleRate = self.hardwareSampleRate
+
+        activeClips.removeAll()
+        if let punchInTime, let punchOutTime {
+            recordingPunchTrim = PunchTrim(
+                fileTimelineStart: currentTime - recordingPlacementCompensation,
+                punchIn: punchInTime,
+                punchOut: punchOutTime
+            )
+        } else {
+            recordingPunchTrim = nil
+        }
+        recordingTakePunchTrim = recordingPunchTrim
+        recordingTimingLock.withLock {
+            recordingTimelineStart = currentTime
+            recordingTransportStartHostTime = sharedStartTime.hostTime
+            pendingRecordingClipStartTime = max(
+                0.0,
+                currentTime - recordingPlacementCompensation
+            )
+            hasLoggedFirstRecordingInput = false
+        }
+        // Signed: starting the players can take past the start time.
+        let startNowHostTime = mach_absolute_time()
+        let startDelayMs = (Double(AudioConvertHostTimeToNanos(sharedStartTime.hostTime))
+            - Double(AudioConvertHostTimeToNanos(startNowHostTime))) / 1_000_000.0
+        print(
+            String(
+                format: "[Timing] recording start: timeline=%.6f, currentTime=%.6f, sharedStartDelay=%.3f ms, inputStartSample=%@, deviceCompensation=%.3f ms, masterPluginLatency=%.3f ms",
+                recordingTimelineStart,
+                currentTime,
+                startDelayMs,
+                "hostTime",
+                recordingLatencyCompensation * 1000.0,
+                masterPluginLatency * 1000.0
+            )
+        )
+        if !armedTracks.isEmpty {
+            onRecordingWillAddTakes?()
+        }
+        for track in armedTracks {
+            do {
+                let writer = try AudioDiskWriter(
+                    destinationDirectory: recordingsDirectory,
+                    trackId: track.id,
+                    trackName: track.name,
+                    sampleRate: recordSampleRate,
+                    channelCount: track.channelMode.channelCount,
+                    is24Bit: true
+                )
+                activeWriters[track.id] = writer
+                let compensatedStartTime = max(0.0, currentTime - recordingPlacementCompensation)
+                activeClips[track.id] = track.addClip(startTime: compensatedStartTime, fileURL: writer.fileURL)
+                print("Created disk writer for \(track.name) -> \(writer.fileURL.lastPathComponent) @ \(recordSampleRate) Hz")
+            } catch {
+                print("Failed to initialize disk writer for track \(track.name): \(error)")
+            }
+        }
+        hasPendingRecording = !activeClips.isEmpty
+
+        captureLock.withLock {
+            self.writersSnapshot = activeWriters
+            self.recordingActiveState = true
+        }
+    }
+
+    // MARK: - MIDI recording
+
+    /// Starts recording the keyboard into a new MIDI clip on each of
+    /// `tracks`, from the bar of the start (or punch in). The clips grow
+    /// as the transport runs (see `drainMIDICapture`).
+    private func beginMIDICapture(tracks: [AudioTrack], undoStepTaken: Bool) {
+        guard !tracks.isEmpty else { return }
+        if !undoStepTaken {
+            onRecordingWillAddTakes?()
+        }
+        let start = punchInTime ?? currentTime
+        // Never upside down: an edited file can hold a punch-out before the
+        // punch-in, and a Range with its ends swapped ends the app.
+        midiTakeRange = start..<max(start, punchOutTime ?? .infinity)
+        let ticksPerBar = meter.ticksPerBar
+        let startTick = MIDITiming.ticks(seconds: max(0.0, start), bpm: bpm) / ticksPerBar * ticksPerBar
+        midiTakes = tracks.map { track in
+            let clip = MIDIClip(startTick: startTick, lengthTicks: ticksPerBar)
+            track.restoreMIDIClip(clip)
+            return MIDIRecordingTake(track: track, clip: clip, ticksPerBar: ticksPerBar)
+        }
+        punchArmedTrackIDs.formUnion(tracks.map(\.id))
+        liveMIDILock.withLock {
+            capturedMIDI.removeAll(keepingCapacity: true)
+            isCapturingMIDI = true
+        }
+        midiTakeTimer?.invalidate()
+        midiTakeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            onMainThread { self?.drainMIDICapture() }
+        }
+        print(String(format: "[MIDI] recording from %.3f s into %d track(s), compensation %.2f ms",
+                     start, tracks.count, midiRecordingCompensation * 1000.0))
+    }
+
+    /// How much earlier than its arrival a key belongs on the timeline: the
+    /// player heard the timeline that late (output latency, master plug-ins).
+    private var midiRecordingCompensation: Double {
+        max(0.0, engine.outputNode.presentationLatency) + masterPluginLatency
+    }
+
+    /// Moves the messages played so far into the takes, and grows the takes
+    /// (and their held notes) to the playhead.
+    private func drainMIDICapture() {
+        guard !midiTakes.isEmpty else { return }
+        let captured = liveMIDILock.withLock { () -> [(hostTime: UInt64, message: UInt32)] in
+            let captured = capturedMIDI
+            capturedMIDI.removeAll(keepingCapacity: true)
+            return captured
+        }
+        let compensation = midiRecordingCompensation
+        let now = transportPosition(atHostTime: mach_absolute_time()).map { $0 - compensation } ?? currentTime
+        for index in midiTakes.indices {
+            var take = midiTakes[index]
+            for item in captured {
+                // Keys played before the transport clock started (during its
+                // start-up) count as played at its start.
+                let position = (transportPosition(atHostTime: item.hostTime) ?? playheadStartOffset) - compensation
+                take.receive(item.message, at: position, range: midiTakeRange, bpm: bpm)
+            }
+            take.grow(to: now, bpm: bpm)
+            midiTakes[index] = take
+        }
+    }
+
+    /// Ends the MIDI recording: held notes end at the stop, the clips end
+    /// on the bar after their last note, empty takes are dropped and, in
+    /// replace mode, older notes in the recorded range are removed.
+    private func finishMIDICapture() {
+        guard !midiTakes.isEmpty else { return }
+        drainMIDICapture()
+        midiTakeTimer?.invalidate()
+        midiTakeTimer = nil
+        liveMIDILock.withLock {
+            isCapturingMIDI = false
+            capturedMIDI.removeAll()
+        }
+        let stopTime = (transportPosition(atHostTime: mach_absolute_time()) ?? currentTime) - midiRecordingCompensation
+        let recordedEnd = min(stopTime, midiTakeRange.upperBound)
+        for var take in midiTakes {
+            take.closeHeldNotes(at: recordedEnd, bpm: bpm)
+            let clip = take.clip
+            guard !clip.notes.isEmpty || !clip.events.isEmpty else {
+                take.track.removeMIDIClip(id: clip.id)
+                continue
+            }
+            let ticksPerBar = meter.ticksPerBar
+            let lastTick = max(clip.notes.map(\.endTick).max() ?? 0, clip.events.map(\.tick).max() ?? 0)
+            clip.lengthTicks = max(ticksPerBar, (lastTick + ticksPerBar) / ticksPerBar * ticksPerBar)
+            if midiRecordMode == .replace {
+                let from = MIDITiming.ticks(seconds: midiTakeRange.lowerBound, bpm: bpm)
+                let to = MIDITiming.ticks(seconds: recordedEnd, bpm: bpm)
+                for other in take.track.midiClips where other !== clip {
+                    let kept = other.notes.filter { note in
+                        let tick = other.timelineTick(ofContentTick: note.startTick)
+                        return tick < from || tick >= to
+                    }
+                    if kept.count != other.notes.count {
+                        other.notes = kept
+                    }
+                }
+            }
+            print("[MIDI] recorded \(clip.notes.count) notes, \(clip.events.count) events on \(take.track.name)")
+        }
+        midiTakes = []
+        updateMIDIPlans()
+    }
+
+    private func updatePunchRecordingState() {
+        guard isPlaying else { return }
+        guard punchInTime != nil, punchOutTime != nil else { return }
+        // Only while a punch take is being recorded: plain playback through
+        // the punch range must not switch to "recording".
+        guard !punchArmedTrackIDs.isEmpty else { return }
+        let nextState: Int
+        if let punchInTime, currentTime < punchInTime {
+            nextState = 0
+        } else if let punchOutTime, currentTime >= punchOutTime {
+            nextState = 2
+        } else {
+            nextState = 1
+        }
+        guard nextState != punchPlaybackState else { return }
+        punchPlaybackState = nextState
+        let recordingNow = nextState == 1
+        isPunchRecording = recordingNow
+        isRecording = recordingNow
+        setRecordingMutedTracks(recordingNow ? punchArmedTrackIDs : [])
+    }
+
+    private static func trimToPunchRange(_ clip: AudioClip, in track: AudioTrack, _ trim: PunchTrim) {
+        let fileEnd = trim.fileTimelineStart + clip.originalDuration
+        let start = max(trim.punchIn, trim.fileTimelineStart)
+        let end = min(trim.punchOut, fileEnd)
+        guard end - start >= 0.02 else {
+            // Stopped before reaching the punch range: nothing was punched in.
+            track.deleteClip(id: clip.id, removeFile: true)
+            return
+        }
+        clip.setTrim(startTime: start, sourceStartTime: start - trim.fileTimelineStart, duration: end - start)
+        clip.setFadeInDuration(punchCrossfadeDuration)
+        clip.setFadeOutDuration(punchCrossfadeDuration)
+    }
+
+    // MARK: - Transport: Stop
+
+    public func stop(tracks: [AudioTrack]) {
+        noteGraphEvent("stop")
+        // While the transport clock still says where the keys were played.
+        finishMIDICapture()
+        startPlaybackTask?.cancel()
+        startPlaybackTask = nil
+        playbackRetryTask?.cancel()
+        playbackRetryTask = nil
+        isStartingPlayback = false
+        stopPlayheadTimer()
+        guard isPlaying || isRecording else { return }
+        // The stop lands a timer tick past the song end flag; recorded clips
+        // are cut back to it and the playhead is left on it.
+        let songEndCut = isStoppingAtSongEnd ? songEndTime : nil
+
+        stopMetronome()
+
+        // 1. Immediately flag recording as stopped
+        let writersToFinalize = captureLock.withLock { () -> [UUID: AudioDiskWriter] in
+            self.recordingActiveState = false
+            let snapshot = self.writersSnapshot
+            self.writersSnapshot = [:]
+            return snapshot
+        }
+
+        activeWriters.removeAll()
+
+        // 2. Stop the renderers
+        stopRenderers()
+        setRecordingMutedTracks([])
+        punchArmedTrackIDs.removeAll()
+        punchPlaybackState = 0
+        isPunchRecording = false
+        isRecordPass = false
+        if isRollbackPass {
+            isRollbackPass = false
+            punchInTime = nil
+            punchOutTime = nil
+        }
+        // Keep AVAudioEngine running during normal transport stop. This is the
+        // host's continuous render path and lets Audio Units preserve tails,
+        // meters, and GUI-related runtime state between transport operations.
+
+        // 3. Finalize all disk writers and attach URLs to tracks
+        let punchTrim = recordingPunchTrim
+        recordingPunchTrim = nil
+        recordingFinalizationTask = Task { @MainActor [weak self] in
+            for (trackId, writer) in writersToFinalize {
+                if let savedURL = await writer.finalize() {
+                    if let self,
+                       let track = tracks.first(where: { $0.id == trackId }) {
+                        if let clip = self.activeClips[trackId], clip.fileURL == savedURL {
+                            clip.loadMetadata()
+                            if let punchTrim {
+                                Self.trimToPunchRange(clip, in: track, punchTrim)
+                            }
+                            if let songEndCut,
+                               track.clips.contains(where: { $0 === clip }),
+                               clip.startTime + clip.duration > songEndCut,
+                               songEndCut - clip.startTime >= 0.02 {
+                                clip.setTrim(
+                                    startTime: clip.startTime,
+                                    sourceStartTime: clip.sourceStartTime,
+                                    duration: songEndCut - clip.startTime
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            // Newly recorded clips are added after the previous graph sync.
+            // Refresh the playback file cache after their files are finalized.
+            // (Only after a recording: a plain stop needs no sync, and one
+            // here would rewire at once while effect tails still ring.)
+            if let self,
+               !writersToFinalize.isEmpty,
+               !self.isPlaying,
+               !self.isRecording {
+                self.syncTracks(tracks, fxChannels: self.syncedFXChannels)
+            }
+            self?.activeClips.removeAll()
+            self?.recordingTakePunchTrim = nil
+            self?.hasPendingRecording = false
+            self?.recordingFinalizationTask = nil
+        }
+
+        stopPlayheadTimer()
+        recordingTimingLock.withLock {
+            pendingRecordingClipStartTime = nil
+        }
+        isPlaying = false
+        isRecording = false
+        if let songEndCut {
+            currentTime = songEndCut
+        }
+        applyDeferredRewiresWhenQuiet()
+    }
+
+    /// `restoresDevices` false leaves the default devices and sample rates
+    /// to a relaunched MyDAW that took them over.
+    public func shutdown(restoresDevices: Bool = true) {
+        isShutDown = true
+        startPlaybackTask?.cancel()
+        startPlaybackTask = nil
+        playbackRetryTask?.cancel()
+        playbackRetryTask = nil
+        isStartingPlayback = false
+        stopPlayheadTimer()
+        stopMetronome()
+        loadMonitor.stop()
+
+        captureLock.withLock {
+            recordingActiveState = false
+            writersSnapshot.removeAll()
+        }
+        stopRenderers()
+        engine.stop()
+        // Drained here, not after terminate: (which never returns), so the
+        // plug-ins are really disposed while the process still runs.
+        autoreleasepool {
+            releaseVST3Instances()
+            releaseAudioUnits()
+        }
+        if restoresDevices {
+            restoreOriginalDeviceSettings()
+        } else {
+            originalNominalSampleRates.removeAll()
+            originalDefaultDevices = nil
+        }
+
+        isPlaying = false
+        isRecording = false
+        isRecordPass = false
+    }
+
+    // VST3 modules must be torn down (instances destroyed, module released so
+    // its bundleExit runs) before the process exits; otherwise plug-ins such
+    // as Guitar Rig crash in their own static destructors during exit().
+    private func releaseVST3Instances() {
+        for pluginID in Array(vst3Instances.keys) {
+            closePluginWindow(pluginID: pluginID)
+        }
+        for unit in pluginAudioUnits.values {
+            (unit.auAudioUnit as? VST3AudioUnit)?.detachInstance()
+        }
+        vst3Instances.removeAll()
+    }
+
+    // AU plug-ins must also be disposed before exit(): plug-ins that run
+    // their own threads (JUCE timers, UADx services) otherwise crash in their
+    // static destructors while those threads are still running.
+    private func releaseAudioUnits() {
+        removeLatencyListeners()
+        for pluginID in Array(pluginWindows.keys) {
+            closePluginWindow(pluginID: pluginID)
+        }
+        pluginViewControllers.removeAll()
+        pluginStateRestoreTasks.values.forEach { $0.cancel() }
+        pluginStateRestoreTasks.removeAll()
+        let nodes: [AVAudioNode] = Array(pluginAudioUnits.values) +
+            trackPluginNodes.values.flatMap { $0 } +
+            fxPluginNodes.values.flatMap { $0 } +
+            masterPluginNodes
+        for node in nodes {
+            safeDisconnectNodeOutput(node)
+            safeDisconnectNodeInput(node)
+            safeDetach(node)
+        }
+        pluginAudioUnits.removeAll()
+        trackPluginNodes.removeAll()
+        fxPluginNodes.removeAll()
+        masterPluginNodes.removeAll()
+    }
+
+    /// Renders the master output in real time into `url` as a 32-bit float
+    /// file at the hardware rate (`ExportEncoder` makes the final file).
+    /// Returns that rate. `progress` gets 0...1 as the range is captured.
+    @discardableResult
+    public func exportMasterMix(
+        to url: URL,
+        startTime: Double,
+        endTime: Double,
+        tracks: [AudioTrack],
+        fxChannels: [FXChannel],
+        progress: ((Double) -> Void)? = nil
+    ) async throws -> Double {
+        guard !isPlaying && !isRecording else {
+            throw NSError(domain: "MyDAW.Export", code: 1, userInfo: [NSLocalizedDescriptionKey: String(localized: "Stop playback before exporting.")])
+        }
+        let start = max(0.0, startTime)
+        let end = max(start + 0.01, endTime)
+        syncTracks(tracks, fxChannels: fxChannels)
+        guard isPluginGraphReady(for: tracks, fxChannels: fxChannels) else {
+            throw NSError(domain: "MyDAW.Export", code: 2, userInfo: [NSLocalizedDescriptionKey: String(localized: "Audio plug-ins are still loading. Try again in a moment.")])
+        }
+        // The master meter mixer follows the master plug-ins: its tap gets
+        // what is heard, at the hardware rate.
+        guard let captureNode = masterMeterNode else {
+            throw NSError(domain: "MyDAW.Export", code: 3, userInfo: [NSLocalizedDescriptionKey: String(localized: "Could not prepare the master output.")])
+        }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: hardwareSampleRate,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        let writeQueue = DispatchQueue(label: "MyDAW.master-export", qos: .userInitiated)
+        var writeError: Error?
+        let previousTime = currentTime
+
+        // The sync above may have restarted the engine; wait until it
+        // renders again before scheduling.
+        if !engine.isRunning {
+            try? startEngine()
+        }
+        let renderWaitStart = Date()
+        let firstRenderTime = captureNode.lastRenderTime?.sampleTime
+        while Date().timeIntervalSince(renderWaitStart) < 2.0 {
+            if let time = captureNode.lastRenderTime, time.isSampleTimeValid,
+               firstRenderTime == nil || time.sampleTime != firstRenderTime {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // The tap goes on first; the window opens once the start time is
+        // known (after the renderers have read ahead).
+        let window = ExportWindow(
+            frameCount: AVAudioFramePosition(saturating: ((end - start) * hardwareSampleRate).rounded()),
+            sampleRate: hardwareSampleRate
+        )
+        peakLock.withLock {
+            masterExportSink = { buffer, when in
+                guard writeError == nil, let cut = window.slice(buffer, at: when) else { return }
+                // A new buffer, used only by the write queue from here on.
+                nonisolated(unsafe) let slice = cut
+                writeQueue.async {
+                    do {
+                        try file.write(from: slice)
+                    } catch {
+                        writeError = error
+                    }
+                }
+            }
+        }
+
+        // startPlayback picks the start once the renderers have read ahead;
+        // `start` is heard then, and the master plug-ins delay it further.
+        // The file holds exactly the frames from there to `end`.
+        currentTime = start
+        let transportStartTime = startPlayback(tracks: tracks, startSec: start)
+        window.open(at: transportStartTime.hostTime + Self.hostTicks(masterPluginLatency))
+
+        func finish() {
+            peakLock.withLock { masterExportSink = nil }
+            stopRenderers()
+            writeQueue.sync { }
+            isPlaying = false
+            isRecording = false
+            currentTime = previousTime
+        }
+        isPlaying = true
+
+        do {
+            let deadline = Date().addingTimeInterval((end - start) + transportPreRoll + masterPluginLatency + 3.0)
+            while !window.isComplete && Date() < deadline {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                progress?(window.fraction)
+            }
+        } catch {
+            finish()
+            throw error
+        }
+        let isComplete = window.isComplete
+        finish()
+        if let writeError { throw writeError }
+        guard isComplete else {
+            throw NSError(domain: "MyDAW.Export", code: 4, userInfo: [NSLocalizedDescriptionKey: String(localized: "The export ended before the whole range was captured.")])
+        }
+        return hardwareSampleRate
+    }
+
+    // MARK: - Transport: Rewind
+
+    public func rewind(tracks: [AudioTrack], to time: Double = 0.0) {
+        let wasPlaying = isPlaying || isRecording
+        if wasPlaying {
+            stop(tracks: tracks)
+        }
+        currentTime = max(0.0, time)
+        playheadStartOffset = currentTime
+        playheadStartTime = Date()
+    }
+
+    public func seek(to time: Double, tracks: [AudioTrack], fxChannels: [FXChannel] = []) {
+        let wasPlaying = isPlaying || isRecording
+        // Playback goes on as playback, even with armed tracks: only a record
+        // pass goes on recording (and rolling back).
+        let wasRecordPass = isRecordPass
+        if wasPlaying {
+            stop(tracks: tracks)
+        }
+        currentTime = max(0.0, time)
+        playheadStartOffset = currentTime
+        playheadStartTime = Date()
+
+        if wasPlaying {
+            startPlayOrRecord(tracks: tracks, fxChannels: fxChannels, recordArmedTracks: wasRecordPass)
+        }
+    }
+
+    // MARK: - Playhead Timer
+
+    private func startPlayheadTimer(at hostTime: UInt64? = nil) {
+        playheadStartTime = Date()
+        playheadStartHostTime = hostTime
+        playheadStartOffset = currentTime
+        hasReachedSongEnd = false
+
+        playheadTimer?.invalidate()
+        playheadTimerGeneration += 1
+        let generation = playheadTimerGeneration
+        playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playheadTimerGeneration == generation else { return }
+                let elapsed: Double
+                if let startHostTime = self.playheadStartHostTime {
+                    let nowHostTime = mach_absolute_time()
+                    let elapsedNanos: UInt64
+                    if nowHostTime >= startHostTime {
+                        elapsedNanos = AudioConvertHostTimeToNanos(nowHostTime - startHostTime)
+                    } else {
+                        elapsedNanos = 0
+                    }
+                    elapsed = Double(elapsedNanos) / 1_000_000_000.0
+                } else if let startTime = self.playheadStartTime {
+                    elapsed = Date().timeIntervalSince(startTime)
+                } else {
+                    return
+                }
+                self.currentTime = self.playheadStartOffset + elapsed
+                if let end = self.songEndTime,
+                   !self.hasReachedSongEnd,
+                   self.playheadStartOffset < end,
+                   self.currentTime >= end {
+                    self.hasReachedSongEnd = true
+                    self.isStoppingAtSongEnd = true
+                    self.onReachSongEnd?()
+                    self.isStoppingAtSongEnd = false
+                }
+            }
+        }
+    }
+
+    private func stopPlayheadTimer() {
+        playheadTimer?.invalidate()
+        playheadTimer = nil
+        playheadTimerGeneration += 1
+    }
+}
+
+public extension Notification.Name {
+    static let audioEngineUpdatedPeaks = Notification.Name("audioEngineUpdatedPeaks")
+}
+
+/// Called on an arbitrary thread when a plug-in reports a new latency.
+private let pluginLatencyListener: AudioUnitPropertyListenerProc = { context, _, _, _, _ in
+    let manager = Unmanaged<AudioEngineManager>.fromOpaque(context).takeUnretainedValue()
+    Task { @MainActor in
+        manager.pluginLatencyDidChange()
+    }
+}
+
+/// The frames of a master export: `frameCount` of them, from the one heard
+/// at the host time given to `open(at:)`; nothing is kept before that call.
+/// Fed from the tap thread.
+private final class ExportWindow: @unchecked Sendable {
+    private var startHostTime: UInt64?
+    private let frameCount: AVAudioFramePosition
+    private let sampleRate: Double
+    private let lock = NSLock()
+    private var written: AVAudioFramePosition = 0
+    /// The last tap buffers before `open(at:)`, kept in case the window
+    /// starts inside one of them.
+    private var held: [(buffer: AVAudioPCMBuffer, when: AVAudioTime)] = []
+
+    init(frameCount: AVAudioFramePosition, sampleRate: Double) {
+        self.frameCount = frameCount
+        self.sampleRate = sampleRate
+    }
+
+    func open(at hostTime: UInt64) {
+        lock.withLock { startHostTime = hostTime }
+    }
+
+    var isComplete: Bool {
+        lock.withLock { written >= frameCount }
+    }
+
+    var fraction: Double {
+        lock.withLock { frameCount > 0 ? min(1.0, Double(written) / Double(frameCount)) : 1.0 }
+    }
+
+    /// The part of `buffer` (starting at `when`) that belongs in the file.
+    func slice(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) -> AVAudioPCMBuffer? {
+        guard when.isHostTimeValid, buffer.floatChannelData != nil else { return nil }
+        guard let startHostTime = lock.withLock({ self.startHostTime }) else {
+            // Not open yet: keep a copy, the window may start in it.
+            if let copy = buffer.copy() as? AVAudioPCMBuffer {
+                lock.withLock {
+                    held.append((copy, when))
+                    if held.count > 8 { held.removeFirst() }
+                }
+            }
+            return nil
+        }
+        let earlier = lock.withLock { () -> [(buffer: AVAudioPCMBuffer, when: AVAudioTime)] in
+            defer { held.removeAll() }
+            return held
+        }
+        guard !earlier.isEmpty else { return cut(buffer, at: when, startHostTime: startHostTime) }
+        // Held buffers first, then this one, joined into one slice.
+        let pieces = (earlier + [(buffer, when)]).compactMap { cut($0.buffer, at: $0.when, startHostTime: startHostTime) }
+        guard let first = pieces.first else { return nil }
+        let total = pieces.reduce(0) { $0 + Int($1.frameLength) }
+        guard let joined = AVAudioPCMBuffer(pcmFormat: first.format, frameCapacity: AVAudioFrameCount(total)),
+              let destination = joined.floatChannelData else { return nil }
+        var offset = 0
+        for piece in pieces {
+            guard let data = piece.floatChannelData else { continue }
+            for channel in 0..<Int(piece.format.channelCount) {
+                (destination[channel] + offset).update(from: data[channel], count: Int(piece.frameLength))
+            }
+            offset += Int(piece.frameLength)
+        }
+        joined.frameLength = AVAudioFrameCount(total)
+        return joined
+    }
+
+    private func cut(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, startHostTime: UInt64) -> AVAudioPCMBuffer? {
+        guard let source = buffer.floatChannelData else { return nil }
+        let bufferStart = Double(AudioConvertHostTimeToNanos(when.hostTime)) / 1_000_000_000.0
+        let windowStart = Double(AudioConvertHostTimeToNanos(startHostTime)) / 1_000_000_000.0
+        let skip = max(0, Int(((windowStart - bufferStart) * sampleRate).rounded()))
+        let available = Int(buffer.frameLength) - skip
+        guard available > 0 else { return nil }
+        let take: Int = lock.withLock {
+            let count = min(available, Int(frameCount - written))
+            if count > 0 { written += AVAudioFramePosition(count) }
+            return count
+        }
+        guard take > 0,
+              let slice = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: AVAudioFrameCount(take)),
+              let destination = slice.floatChannelData else { return nil }
+        for channel in 0..<Int(buffer.format.channelCount) {
+            destination[channel].update(from: source[channel] + skip, count: take)
+        }
+        slice.frameLength = AVAudioFrameCount(take)
+        return slice
+    }
+}
+
+/// The master fader level (see `AudioEngineManager.masterVolumeState`).
+@MainActor
+public final class MasterVolumeState: ObservableObject {
+    @Published public var value: Float = 1.0
+}
+
+/// The project tempo and song position for hosted Audio Units, so
+/// tempo-synced plug-ins (MyDelay, MyChorusPan's SYNC) follow the BPM and
+/// lock to the bars.
+///
+/// AVAudioEngine clears every unit's `musicalContextBlock` and
+/// `transportStateBlock` when it stops, and MyDAW stops and restarts it
+/// often. So the MyFX units take the blocks from `MyFXHostContext` (set
+/// here once); other units get them on instantiation and again before
+/// every engine start (`AudioEngineManager.startEngine`).
+///
+/// The song position comes from the track renderers: each render cycle
+/// they report the timeline time they play, before the plug-ins after them
+/// ask. The transport counts as moving while those reports keep coming;
+/// stopped, the position is the playhead. Plug-ins with a timeline of their
+/// own (Synthesizer V) follow the sample position, not the beat.
+/// Values are single 64-bit words, read and written on the render thread.
+public final class HostMusicalContext: @unchecked Sendable {
+    public static let shared = HostMusicalContext()
+
+    private enum Field: Int, CaseIterable {
+        case tempo, songSeconds, reportHostTicks, stoppedSeconds, sampleRate, beatsPerBar, beatUnit
+    }
+    private let fields = UnsafeMutablePointer<Double>.allocate(capacity: Field.allCases.count)
+    private let ticksPerSecond: Double
+    /// Reports older than this mean the transport stopped.
+    private static let stoppedAfterSeconds = 0.25
+    private let musicalContextBlock: AUHostMusicalContextBlock
+    private let transportStateBlock: AUHostTransportStateBlock
+
+    private init() {
+        fields.initialize(repeating: 0, count: Field.allCases.count)
+        fields[Field.tempo.rawValue] = 120
+        fields[Field.sampleRate.rawValue] = 44100
+        fields[Field.beatsPerBar.rawValue] = Double(MusicalMeter.common.beatsPerBar)
+        fields[Field.beatUnit.rawValue] = Double(MusicalMeter.common.beatUnit)
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let ticksPerSecond = 1_000_000_000.0 * Double(timebase.denom) / Double(timebase.numer)
+        self.ticksPerSecond = ticksPerSecond
+        let fields = self.fields
+        let isMoving: () -> Bool = {
+            let age = (Double(mach_absolute_time()) - fields[Field.reportHostTicks.rawValue]) / ticksPerSecond
+            return age < Self.stoppedAfterSeconds
+        }
+        let songSeconds: (Bool) -> Double = { moving in
+            fields[(moving ? Field.songSeconds : Field.stoppedSeconds).rawValue]
+        }
+        musicalContextBlock = { currentTempo, numerator, denominator, beatPosition, sampleOffset, downbeat in
+            let tempo = fields[Field.tempo.rawValue]
+            let beat = songSeconds(isMoving()) * tempo / 60
+            let beatsPerBar = fields[Field.beatsPerBar.rawValue]
+            let beatUnit = fields[Field.beatUnit.rawValue]
+            // The beat position counts quarter notes in any meter.
+            let quarterNotesPerBar = beatsPerBar * 4 / beatUnit
+            currentTempo?.pointee = tempo
+            numerator?.pointee = beatsPerBar
+            denominator?.pointee = Int(beatUnit)
+            beatPosition?.pointee = beat
+            sampleOffset?.pointee = 0
+            downbeat?.pointee = (beat / quarterNotesPerBar).rounded(.down) * quarterNotesPerBar
+            return true
+        }
+        transportStateBlock = { flags, samplePosition, cycleStart, cycleEnd in
+            let moving = isMoving()
+            flags?.pointee = moving ? [.moving] : []
+            samplePosition?.pointee = max(0, songSeconds(moving) * fields[Field.sampleRate.rawValue])
+            cycleStart?.pointee = 0
+            cycleEnd?.pointee = 0
+            return true
+        }
+        MyFXHostContext.musicalContextBlock = musicalContextBlock
+        MyFXHostContext.transportStateBlock = transportStateBlock
+    }
+
+    public var beatsPerMinute: Double {
+        get { fields[Field.tempo.rawValue] }
+        set { fields[Field.tempo.rawValue] = newValue }
+    }
+
+    public var meter: MusicalMeter {
+        get {
+            MusicalMeter(beatsPerBar: Int(fields[Field.beatsPerBar.rawValue]),
+                         beatUnit: Int(fields[Field.beatUnit.rawValue]))
+        }
+        set {
+            fields[Field.beatsPerBar.rawValue] = Double(newValue.beatsPerBar)
+            fields[Field.beatUnit.rawValue] = Double(newValue.beatUnit)
+        }
+    }
+
+    /// The playhead on the main thread: the position while stopped.
+    public var playheadSeconds: Double {
+        get { fields[Field.stoppedSeconds.rawValue] }
+        set { fields[Field.stoppedSeconds.rawValue] = newValue }
+    }
+
+    public var sampleRate: Double {
+        get { fields[Field.sampleRate.rawValue] }
+        set { fields[Field.sampleRate.rawValue] = newValue }
+    }
+
+    /// Render thread (TrackRenderer, while playing): the timeline time this cycle plays.
+    func reportPlayhead(seconds: Double) {
+        fields[Field.songSeconds.rawValue] = seconds
+        fields[Field.reportHostTicks.rawValue] = Double(mach_absolute_time())
+    }
+
+    /// On instantiation, for units other than MyFX (they read MyFXHostContext).
+    public func attach(to unit: AUAudioUnit?) {
+        unit?.musicalContextBlock = musicalContextBlock
+        unit?.transportStateBlock = transportStateBlock
+    }
+}
+
+/// The engine's playhead position (see `AudioEngineManager.transportClock`).
+@MainActor
+public final class TransportClock: ObservableObject {
+    @Published public var time: Double = 0.0
+}

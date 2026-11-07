@@ -1,0 +1,506 @@
+import Foundation
+import SwiftUI
+import AppKit
+
+/// What a project file may say, whatever is in it (damaged, or edited by
+/// hand). Numbers read here reach integer conversions and index computations
+/// that end the app on absurd values, so they are brought in range once, on
+/// reading, and a project that plays today is not changed by it.
+enum ProjectFileLimits {
+    /// About three years.
+    static let maximumSeconds = 1e8
+
+    static func seconds(_ value: Double) -> Double {
+        value.isFinite ? min(max(value, 0.0), maximumSeconds) : 0.0
+    }
+
+    /// Nil unless a device could run at it.
+    static func sampleRate(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && $0 >= 1_000.0 && $0 <= 1_000_000.0 ? $0 : nil }
+    }
+}
+
+public struct PluginStateDocument: Codable, Hashable {
+    public let pluginID: UUID
+    public let stateData: Data
+    public let format: String
+
+    public init(pluginID: UUID, stateData: Data, format: String = "binary-plist") {
+        self.pluginID = pluginID
+        self.stateData = stateData
+        self.format = format
+    }
+}
+
+public struct PunchRangeDocument: Codable, Hashable {
+    public let startBeat: Double
+    public let endBeat: Double
+    public let enabled: Bool
+
+    public init(startBeat: Double = 4.0, endBeat: Double = 8.0, enabled: Bool = false) {
+        self.startBeat = startBeat
+        self.endBeat = endBeat
+        self.enabled = enabled
+    }
+}
+
+/// Song start / end flags in beats, like the punch range, so they follow a
+/// tempo change. Either may be absent.
+public struct SongRangeDocument: Codable, Hashable {
+    public let startBeat: Double?
+    public let endBeat: Double?
+
+    public init(startBeat: Double? = nil, endBeat: Double? = nil) {
+        self.startBeat = startBeat
+        self.endBeat = endBeat
+    }
+}
+
+public struct ProjectDocument: Codable {
+    public let version: Int
+    public let pixelsPerSecond: Double
+    public let selectedTrackId: UUID?
+    public let currentTime: Double
+    public let timelineScrollTime: Double
+    public let showsBeats: Bool
+    public let bpm: Double
+    public let meter: MusicalMeter
+    public let metronomeEnabled: Bool
+    public let metronomeTimingOffsetMs: Double
+    public let metronomeVolume: Double
+    public let masterVolume: Float
+    public let isMasterVolumeAutomationEnabled: Bool
+    public let masterVolumeAutomation: [VolumeAutomationPoint]
+    public let manualRecordingCompensationMs: Double
+    public let waveformVerticalScale: Double
+    public let trackHeightScale: Double
+    public let tracks: [TrackDocument]
+    /// Track folders, each with its place among the rows (absent before
+    /// version 5).
+    public let folders: [TrackFolderDocument]
+    public let fxChannels: [FXChannelDocument]
+    public let masterPlugins: [TrackPluginDescriptor]
+    public let pluginStates: [PluginStateDocument]
+    public let punchRange: PunchRangeDocument
+    public let songRange: SongRangeDocument
+    /// File name last used for the master export (nil: the default).
+    public let masterExportFileName: String?
+    /// Format last used for the master export (nil: never exported).
+    public let masterExportSettings: ExportSettings?
+    /// Folder of the master export, relative to the project folder when
+    /// inside it ("." is the project folder itself; nil: the project folder).
+    public let masterExportFolderPath: String?
+    /// Sample rate the project runs at; MyDAW sets the audio devices to it
+    /// while the project is open (nil: saved before it was kept).
+    public let sampleRate: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case version, pixelsPerSecond, selectedTrackId, currentTime, timelineScrollTime
+        case showsBeats, bpm, meter, metronomeEnabled, metronomeTimingOffsetMs, metronomeVolume, masterVolume, isMasterVolumeAutomationEnabled, masterVolumeAutomation, manualRecordingCompensationMs, waveformVerticalScale, trackHeightScale, tracks, folders, fxChannels, masterPlugins, pluginStates, punchRange, songRange, masterExportFileName, masterExportSettings, masterExportFolderPath, sampleRate
+    }
+
+    public init(
+        pixelsPerSecond: Double,
+        selectedTrackId: UUID?,
+        currentTime: Double,
+        timelineScrollTime: Double,
+        showsBeats: Bool,
+        bpm: Double,
+        meter: MusicalMeter = .common,
+        metronomeEnabled: Bool,
+        metronomeTimingOffsetMs: Double,
+        metronomeVolume: Double,
+        masterVolume: Float,
+        isMasterVolumeAutomationEnabled: Bool = false,
+        masterVolumeAutomation: [VolumeAutomationPoint] = [],
+        manualRecordingCompensationMs: Double,
+        waveformVerticalScale: Double,
+        trackHeightScale: Double = 1.0,
+        tracks: [TrackDocument],
+        folders: [TrackFolderDocument] = [],
+        fxChannels: [FXChannelDocument] = [],
+        masterPlugins: [TrackPluginDescriptor] = [],
+        pluginStates: [PluginStateDocument] = [],
+        punchRange: PunchRangeDocument = PunchRangeDocument(),
+        songRange: SongRangeDocument = SongRangeDocument(),
+        masterExportFileName: String? = nil,
+        masterExportSettings: ExportSettings? = nil,
+        masterExportFolderPath: String? = nil,
+        sampleRate: Double? = nil
+    ) {
+        self.version = 7
+        self.pixelsPerSecond = pixelsPerSecond
+        self.selectedTrackId = selectedTrackId
+        self.currentTime = currentTime
+        self.timelineScrollTime = timelineScrollTime
+        self.showsBeats = showsBeats
+        self.bpm = bpm
+        self.meter = meter
+        self.metronomeEnabled = metronomeEnabled
+        self.metronomeTimingOffsetMs = metronomeTimingOffsetMs
+        self.metronomeVolume = metronomeVolume
+        self.masterVolume = masterVolume
+        self.isMasterVolumeAutomationEnabled = isMasterVolumeAutomationEnabled
+        self.masterVolumeAutomation = masterVolumeAutomation
+        self.manualRecordingCompensationMs = manualRecordingCompensationMs
+        self.waveformVerticalScale = waveformVerticalScale
+        self.trackHeightScale = trackHeightScale
+        self.tracks = tracks
+        self.folders = folders
+        self.fxChannels = fxChannels
+        self.masterPlugins = masterPlugins
+        self.pluginStates = pluginStates
+        self.punchRange = punchRange
+        self.songRange = songRange
+        self.masterExportFileName = masterExportFileName
+        self.masterExportSettings = masterExportSettings
+        self.masterExportFolderPath = masterExportFolderPath
+        self.sampleRate = sampleRate
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        pixelsPerSecond = try values.decodeIfPresent(Double.self, forKey: .pixelsPerSecond) ?? 80.0
+        selectedTrackId = try values.decodeIfPresent(UUID.self, forKey: .selectedTrackId)
+        currentTime = ProjectFileLimits.seconds(try values.decodeIfPresent(Double.self, forKey: .currentTime) ?? 0.0)
+        timelineScrollTime = ProjectFileLimits.seconds(try values.decodeIfPresent(Double.self, forKey: .timelineScrollTime) ?? 0.0)
+        showsBeats = try values.decodeIfPresent(Bool.self, forKey: .showsBeats) ?? true
+        bpm = try values.decodeIfPresent(Double.self, forKey: .bpm) ?? 120.0
+        // Projects from before V4.1 have none: they were all in 4/4.
+        meter = (try values.decodeIfPresent(MusicalMeter.self, forKey: .meter)).flatMap { $0.isSelectable ? $0 : nil } ?? .common
+        metronomeEnabled = try values.decodeIfPresent(Bool.self, forKey: .metronomeEnabled) ?? false
+        metronomeTimingOffsetMs = try values.decodeIfPresent(Double.self, forKey: .metronomeTimingOffsetMs) ?? 0.0
+        metronomeVolume = try values.decodeIfPresent(Double.self, forKey: .metronomeVolume) ?? 1.0
+        masterVolume = try values.decodeIfPresent(Float.self, forKey: .masterVolume) ?? 1.0
+        isMasterVolumeAutomationEnabled = try values.decodeIfPresent(Bool.self, forKey: .isMasterVolumeAutomationEnabled) ?? false
+        // In time order, whatever an edited file says.
+        masterVolumeAutomation = (try values.decodeIfPresent([VolumeAutomationPoint].self, forKey: .masterVolumeAutomation) ?? [])
+            .sorted { $0.time < $1.time }
+        manualRecordingCompensationMs = try values.decodeIfPresent(Double.self, forKey: .manualRecordingCompensationMs) ?? 0.0
+        waveformVerticalScale = try values.decodeIfPresent(Double.self, forKey: .waveformVerticalScale) ?? 1.0
+        trackHeightScale = try values.decodeIfPresent(Double.self, forKey: .trackHeightScale) ?? 1.0
+        tracks = try values.decodeIfPresent([TrackDocument].self, forKey: .tracks) ?? []
+        folders = try values.decodeIfPresent([TrackFolderDocument].self, forKey: .folders) ?? []
+        fxChannels = try values.decodeIfPresent([FXChannelDocument].self, forKey: .fxChannels) ?? []
+        masterPlugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .masterPlugins) ?? []
+        pluginStates = try values.decodeIfPresent([PluginStateDocument].self, forKey: .pluginStates) ?? []
+        punchRange = try values.decodeIfPresent(PunchRangeDocument.self, forKey: .punchRange) ?? PunchRangeDocument()
+        songRange = try values.decodeIfPresent(SongRangeDocument.self, forKey: .songRange) ?? SongRangeDocument()
+        masterExportFileName = try values.decodeIfPresent(String.self, forKey: .masterExportFileName)
+        masterExportSettings = try values.decodeIfPresent(ExportSettings.self, forKey: .masterExportSettings)
+        masterExportFolderPath = try values.decodeIfPresent(String.self, forKey: .masterExportFolderPath)
+        sampleRate = ProjectFileLimits.sampleRate(try values.decodeIfPresent(Double.self, forKey: .sampleRate))
+    }
+}
+
+public struct TrackDocument: Codable {
+    public let id: UUID
+    /// Absent before version 6 (every track was an audio track).
+    public let kind: TrackKind
+    public let name: String
+    public let channelMode: ChannelMode
+    public let inputChannelIndex: Int
+    public let isRecordArmed: Bool
+    public let isMuted: Bool
+    public let isSoloed: Bool
+    public let isInputMonitoring: Bool
+    public let volume: Float
+    public let pan: Float
+    public let trackHeight: Double
+    public let color: ColorDocument
+    /// The folder the track is in (absent before version 5).
+    public let folderID: UUID?
+    public let selectedClipId: UUID?
+    public let clips: [ClipDocument]
+    public let plugins: [TrackPluginDescriptor]
+    public let fxSends: [FXSend]
+    /// Instrument tracks only (version 6).
+    public let instrument: TrackPluginDescriptor?
+    public let midiClips: [MIDIClipDocument]
+    /// Instrument output channels only (version 7).
+    public let parentTrackID: UUID?
+    public let outputBus: Int
+    /// The channel this one sends to (absent: MASTER).
+    public let outputDestinationID: UUID?
+    public let areOutputChannelsHidden: Bool
+    /// Absent in files saved before volume automation.
+    public let isVolumeAutomationEnabled: Bool
+    public let volumeAutomation: [VolumeAutomationPoint]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, name, channelMode, inputChannelIndex, isRecordArmed, isMuted, isSoloed, isInputMonitoring
+        case volume, pan, trackHeight, color, folderID, selectedClipId, clips, plugins, fxSends
+        case instrument, midiClips, parentTrackID, outputBus, outputDestinationID, areOutputChannelsHidden
+        case isVolumeAutomationEnabled, volumeAutomation
+    }
+
+    public init(
+        id: UUID,
+        kind: TrackKind = .audio,
+        name: String,
+        channelMode: ChannelMode,
+        inputChannelIndex: Int,
+        isRecordArmed: Bool,
+        isMuted: Bool,
+        isSoloed: Bool,
+        isInputMonitoring: Bool = false,
+        volume: Float,
+        pan: Float,
+        trackHeight: Double = 170.0,
+        color: ColorDocument,
+        folderID: UUID? = nil,
+        selectedClipId: UUID?,
+        clips: [ClipDocument],
+        plugins: [TrackPluginDescriptor] = [],
+        fxSends: [FXSend] = [],
+        instrument: TrackPluginDescriptor? = nil,
+        midiClips: [MIDIClipDocument] = [],
+        parentTrackID: UUID? = nil,
+        outputBus: Int = 0,
+        outputDestinationID: UUID? = nil,
+        areOutputChannelsHidden: Bool = false,
+        isVolumeAutomationEnabled: Bool = false,
+        volumeAutomation: [VolumeAutomationPoint] = []
+    ) {
+        self.isVolumeAutomationEnabled = isVolumeAutomationEnabled
+        self.volumeAutomation = volumeAutomation
+        self.areOutputChannelsHidden = areOutputChannelsHidden
+        self.outputDestinationID = outputDestinationID
+        self.parentTrackID = parentTrackID
+        self.outputBus = outputBus
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.channelMode = channelMode
+        self.inputChannelIndex = inputChannelIndex
+        self.isRecordArmed = isRecordArmed
+        self.isMuted = isMuted
+        self.isSoloed = isSoloed
+        self.isInputMonitoring = isInputMonitoring
+        self.volume = volume
+        self.pan = pan
+        self.trackHeight = trackHeight
+        self.color = color
+        self.folderID = folderID
+        self.selectedClipId = selectedClipId
+        self.clips = clips
+        self.plugins = plugins
+        self.fxSends = fxSends
+        self.instrument = instrument
+        self.midiClips = midiClips
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        // A kind from a newer MyDAW is read as audio rather than failing.
+        kind = (try? values.decodeIfPresent(TrackKind.self, forKey: .kind)) ?? .audio
+        name = try values.decode(String.self, forKey: .name)
+        channelMode = try values.decodeIfPresent(ChannelMode.self, forKey: .channelMode) ?? .stereo
+        // Used as an index into the input's channels on the audio thread.
+        inputChannelIndex = max(0, try values.decodeIfPresent(Int.self, forKey: .inputChannelIndex) ?? 0)
+        isRecordArmed = try values.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        isInputMonitoring = try values.decodeIfPresent(Bool.self, forKey: .isInputMonitoring) ?? false
+        volume = try values.decodeIfPresent(Float.self, forKey: .volume) ?? 1.0
+        pan = try values.decodeIfPresent(Float.self, forKey: .pan) ?? 0.0
+        trackHeight = try values.decodeIfPresent(Double.self, forKey: .trackHeight) ?? 170.0
+        color = try values.decode(ColorDocument.self, forKey: .color)
+        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
+        selectedClipId = try values.decodeIfPresent(UUID.self, forKey: .selectedClipId)
+        clips = try values.decodeIfPresent([ClipDocument].self, forKey: .clips) ?? []
+        plugins = try values.decodeIfPresent([TrackPluginDescriptor].self, forKey: .plugins) ?? []
+        fxSends = try values.decodeIfPresent([FXSend].self, forKey: .fxSends) ?? []
+        instrument = try values.decodeIfPresent(TrackPluginDescriptor.self, forKey: .instrument)
+        midiClips = try values.decodeIfPresent([MIDIClipDocument].self, forKey: .midiClips) ?? []
+        parentTrackID = try values.decodeIfPresent(UUID.self, forKey: .parentTrackID)
+        outputBus = try values.decodeIfPresent(Int.self, forKey: .outputBus) ?? 0
+        outputDestinationID = try values.decodeIfPresent(UUID.self, forKey: .outputDestinationID)
+        areOutputChannelsHidden = try values.decodeIfPresent(Bool.self, forKey: .areOutputChannelsHidden) ?? false
+        isVolumeAutomationEnabled = try values.decodeIfPresent(Bool.self, forKey: .isVolumeAutomationEnabled) ?? false
+        // In time order, whatever an edited file says.
+        volumeAutomation = (try values.decodeIfPresent([VolumeAutomationPoint].self, forKey: .volumeAutomation) ?? [])
+            .sorted { $0.time < $1.time }
+    }
+}
+
+public struct TrackFolderDocument: Codable {
+    public let id: UUID
+    public let name: String
+    public let color: ColorDocument
+    public let isOpen: Bool
+    public let isMuted: Bool
+    public let isSoloed: Bool
+    /// Index of the folder's header among all rows (tracks and folders).
+    public let position: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, color, isOpen, isMuted, isSoloed, position
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "Folder"
+        color = try values.decodeIfPresent(ColorDocument.self, forKey: .color)
+            ?? ColorDocument(color: Color(red: 0.55, green: 0.65, blue: 0.70))
+        isOpen = try values.decodeIfPresent(Bool.self, forKey: .isOpen) ?? true
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        position = try values.decodeIfPresent(Int.self, forKey: .position) ?? Int.max
+    }
+
+    @MainActor
+    public init(folder: TrackFolder, position: Int) {
+        id = folder.id
+        name = folder.name
+        color = ColorDocument(color: folder.color)
+        isOpen = folder.isOpen
+        isMuted = folder.isMuted
+        isSoloed = folder.isSoloed
+        self.position = position
+    }
+
+    @MainActor
+    func makeFolder() -> TrackFolder {
+        TrackFolder(
+            id: id,
+            name: name,
+            color: color.color,
+            isOpen: isOpen,
+            isMuted: isMuted,
+            isSoloed: isSoloed
+        )
+    }
+}
+
+public struct FXChannelDocument: Codable {
+    public let id: UUID
+    public let name: String
+    public let volume: Float
+    public let pan: Float
+    public let isMuted: Bool
+    public let isSoloed: Bool
+    public let color: ColorDocument
+    public let plugins: [TrackPluginDescriptor]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, volume, pan, isMuted, isSoloed, color, plugins
+    }
+
+    @MainActor
+    public init(channel: FXChannel) {
+        id = channel.id
+        name = channel.name
+        volume = channel.volume
+        pan = channel.pan
+        isMuted = channel.isMuted
+        isSoloed = channel.isSoloed
+        color = ColorDocument(color: channel.color)
+        plugins = channel.plugins
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        volume = try values.decode(Float.self, forKey: .volume)
+        pan = try values.decode(Float.self, forKey: .pan)
+        // Projects saved before FX mute / solo existed have neither key.
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isSoloed = try values.decodeIfPresent(Bool.self, forKey: .isSoloed) ?? false
+        color = try values.decode(ColorDocument.self, forKey: .color)
+        plugins = try values.decode([TrackPluginDescriptor].self, forKey: .plugins)
+    }
+}
+
+public struct ClipDocument: Codable {
+    public let id: UUID
+    public let startTime: Double
+    public let sourceStartTime: Double
+    public let duration: Double
+    public let originalDuration: Double
+    public let gainDB: Double
+    public let isMuted: Bool
+    public let fadeInDuration: Double
+    public let fadeOutDuration: Double
+    public let fadeInCurve: FadeCurve
+    public let fadeOutCurve: FadeCurve
+    public let filePath: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, startTime, sourceStartTime, duration, originalDuration, gainDB, isMuted, fadeInDuration, fadeOutDuration
+        case fadeInCurve, fadeOutCurve, filePath
+    }
+
+    public init(
+        id: UUID,
+        startTime: Double,
+        sourceStartTime: Double,
+        duration: Double,
+        originalDuration: Double,
+        gainDB: Double = 0.0,
+        isMuted: Bool = false,
+        fadeInDuration: Double = 0.0,
+        fadeOutDuration: Double = 0.0,
+        fadeInCurve: FadeCurve = .auto,
+        fadeOutCurve: FadeCurve = .auto,
+        filePath: String
+    ) {
+        self.id = id
+        self.startTime = startTime
+        self.sourceStartTime = sourceStartTime
+        self.duration = duration
+        self.originalDuration = originalDuration
+        // JSON has no -∞: silence is saved as -144 dB and read back as -∞.
+        self.gainDB = gainDB.isFinite ? min(AudioClip.maximumGainDB, max(-144.0, gainDB)) : -144.0
+        self.isMuted = isMuted
+        self.fadeInDuration = max(0.0, fadeInDuration)
+        self.fadeOutDuration = max(0.0, fadeOutDuration)
+        self.fadeInCurve = fadeInCurve
+        self.fadeOutCurve = fadeOutCurve
+        self.filePath = filePath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        startTime = ProjectFileLimits.seconds(try values.decode(Double.self, forKey: .startTime))
+        sourceStartTime = ProjectFileLimits.seconds(try values.decodeIfPresent(Double.self, forKey: .sourceStartTime) ?? 0.0)
+        duration = ProjectFileLimits.seconds(try values.decode(Double.self, forKey: .duration))
+        originalDuration = ProjectFileLimits.seconds(try values.decodeIfPresent(Double.self, forKey: .originalDuration) ?? duration)
+        gainDB = min(AudioClip.maximumGainDB, max(-144.0, try values.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0.0))
+        isMuted = try values.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        fadeInDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeInDuration) ?? 0.0)
+        fadeOutDuration = max(0.0, try values.decodeIfPresent(Double.self, forKey: .fadeOutDuration) ?? 0.0)
+        fadeInCurve = (try? values.decodeIfPresent(FadeCurve.self, forKey: .fadeInCurve)) ?? .auto
+        fadeOutCurve = (try? values.decodeIfPresent(FadeCurve.self, forKey: .fadeOutCurve)) ?? .auto
+        filePath = try values.decode(String.self, forKey: .filePath)
+    }
+}
+
+public struct ColorDocument: Codable {
+    public let red: Double
+    public let green: Double
+    public let blue: Double
+    public let opacity: Double
+
+    public init(color: Color) {
+        let resolved = NSColor(color).usingColorSpace(.deviceRGB) ?? NSColor.white
+        var red: CGFloat = 1
+        var green: CGFloat = 1
+        var blue: CGFloat = 1
+        var opacity: CGFloat = 1
+        resolved.getRed(&red, green: &green, blue: &blue, alpha: &opacity)
+        self.red = Double(red)
+        self.green = Double(green)
+        self.blue = Double(blue)
+        self.opacity = Double(opacity)
+    }
+
+    public var color: Color {
+        Color(.sRGB, red: red, green: green, blue: blue, opacity: opacity)
+    }
+}

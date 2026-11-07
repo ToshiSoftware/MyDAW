@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# ビルド中間ファイル
+/.build/
+/.build_cache/
+
+# 作業用・ローカル専用
+/.vscode/
+/snapshots/
+/Recordings/
+/Drums/
+/OriginalIcon/
+/Chat.txt
+/prompt.txt
+/*.wav
+
+# docs: *.md のみ登録
+/docs/*
+!/docs/*.md
+
+# build: 登録しない（MyDAW.zip は GitHub Releases へ）
+/build/
+
+# ThirdParty: 登録しない（VST3 SDK は各自取得）
+/ThirdParty/
+
+# scripts: ビルドに不要な作業用スクリプト（手元のみ）
+/scripts/extract-strings.sh
+/scripts/make-document-icon.swift
+/scripts/copy-to-note.sh
+
+# Claude Code personal settings
+.claude/settings.local.json
+
+# Local MIDI test data (not uploaded)
+TestMIDIData/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
