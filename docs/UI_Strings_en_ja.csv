@@ -1,0 +1,413 @@
+﻿No,表示場所,English（現在）,日本語（現在）,English（修正後）,日本語（修正後）,備考,ソースファイル
+1,ウィンドウのタイトル,MyDAW - Professional Audio Workstation,MyDAW - Professional Audio Workstation,MyDAW - Professional Audio Workstation,MyDAW - Professional Audio Workstation,,Sources/MyDAWApp.swift
+2,メニュー,About MyDAW,MyDAW について,About MyDAW,MyDAW について,,Sources/MyDAWApp.swift
+3,メニュー,New Project…,新規プロジェクト…,New Project…,新規プロジェクト…,,Sources/MyDAWApp.swift
+4,メニュー,Open Project…,プロジェクトを開く…,Open Project…,プロジェクトを開く…,,Sources/MyDAWApp.swift
+5,メニュー,Save Project…,プロジェクトを保存…,Save Project…,プロジェクトを保存…,,Sources/MyDAWApp.swift
+6,メニュー,Export Master Mix…,マスターを書き出し…,Export Master Mix…,マスターを書き出し…,,Sources/MyDAWApp.swift
+7,メニュー,Undo Clip Edit,クリップ編集を取り消す,Undo Clip Edit,クリップ編集を取り消す,,Sources/MyDAWApp.swift
+8,メニュー,Redo Clip Edit,クリップ編集をやり直す,Redo Clip Edit,クリップ編集をやり直す,,Sources/MyDAWApp.swift
+9,メニュー,Starting MyDAW...,MyDAW を起動しています...,Starting MyDAW...,MyDAW を起動しています...,,Sources/MyDAWApp.swift
+10,起動画面,MyDAW,MyDAW,MyDAW,MyDAW,記号・略語（通常は変更不要）,Sources/Views/ProjectSelectionView.swift
+11,起動画面,Version %@,バージョン %@,Version %@,バージョン %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/ProjectSelectionView.swift
+12,起動画面,Create a new project or open a project file,新規プロジェクトを作成するか、プロジェクトファイルを開いてください,Create a new project or open a project file,新規プロジェクトを作成するか、プロジェクトファイルを開いてください,,Sources/Views/ProjectSelectionView.swift
+13,起動画面,Create a new project,新しいプロジェクトを作成,Create a new project,新規プロジェクトを作成,,Sources/Views/ProjectSelectionView.swift
+14,起動画面,Open an existing project,既存のプロジェクトを開く,Open an existing project,既存プロジェクトを開く,,Sources/Views/ProjectSelectionView.swift
+15,起動画面,New Project,新規プロジェクト,New Project,新規プロジェクト,,Sources/Views/ProjectSelectionView.swift
+16,起動画面,Open Project,プロジェクトを開く,Open Project,プロジェクトを開く,,Sources/Views/ProjectSelectionView.swift
+17,起動時のプラグイン検出ログ,Scanning Audio Unit plug-ins...,Audio Unit プラグインを検出しています...,Scanning Audio Unit plug-ins...,Audio Unit プラグインを検出しています...,,Sources/Audio/PluginManager.swift
+18,起動時のプラグイン検出ログ,Audio Unit: %lld found,Audio Unit: %lld 件,Audio Unit: %lld found,Audio Unit: %lld 件,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/PluginManager.swift
+19,起動時のプラグイン検出ログ,Scanning VST3 plug-ins...,VST3 プラグインを検出しています...,Scanning VST3 plug-ins...,VST3 プラグインを検出しています...,,Sources/Audio/PluginManager.swift
+20,起動時のプラグイン検出ログ,VST3: %lld found (%lld hidden because an AU version exists),VST3: %lld 件（AU 版があるため非表示: %lld 件）,VST3: %lld found (%lld hidden because an AU version exists),VST3: %lld 件（AU 版があるため非表示: %lld 件）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/PluginManager.swift
+21,起動時のプラグイン検出ログ,Plug-in scan complete: %lld found,プラグインの検出が完了しました: %lld 件,Plug-in scan complete: %lld found,プラグインの検出が完了しました: %lld 件,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/PluginManager.swift
+22,トランスポートバー／設定ダイアログ,Show Time Ruler,ルーラーを時間表示にする,Show Time Ruler,ルーラーを時間表示にする,,Sources/Views/TransportBarView.swift
+23,トランスポートバー／設定ダイアログ,Show Bars and Beats Ruler,ルーラーを小節・拍表示にする,Show Bars and Beats Ruler,ルーラーを小節・拍表示にする,,Sources/Views/TransportBarView.swift
+24,トランスポートバー／設定ダイアログ,Rewind to Song Start (on or before it: to 00:00.000),開始フラグへ戻る（フラグ上かそれより前なら 00:00.000 へ）,Rewind to Song Start (on or before it: to 00:00.000),開始フラグへ戻る（フラグ上かそれより前なら 00:00.000 へ）,,Sources/Views/TransportBarView.swift
+25,トランスポートバー／設定ダイアログ,Start / Pause (Spacebar),再生／一時停止（Space）,Start / Pause (Spacebar),再生／一時停止（Space）,,Sources/Views/TransportBarView.swift
+26,トランスポートバー／設定ダイアログ,Record Armed Tracks (R),録音モードのトラックに録音（R）,Record Armed Tracks (R),録音モードのトラックに録音（R）,,Sources/Views/TransportBarView.swift
+27,トランスポートバー／設定ダイアログ,No Tracks Armed for Recording,録音待機中のトラックがありません,No Tracks Armed for Recording,録音モードのトラックがありません,,Sources/Views/TransportBarView.swift
+28,トランスポートバー／設定ダイアログ,Disable Punch In/Out,パンチイン／アウトを無効にする,Disable Punch In/Out,パンチイン／アウトを無効にする,,Sources/Views/TransportBarView.swift
+29,トランスポートバー／設定ダイアログ,Enable Punch In/Out,パンチイン／アウトを有効にする,Enable Punch In/Out,パンチイン／アウトを有効にする,,Sources/Views/TransportBarView.swift
+30,トランスポートバー／設定ダイアログ,(削除),(削除),,,トランスポートバーのゴミ箱ボタンは削除（削除は Delete キーと右クリックメニュー）,Sources/Views/TransportBarView.swift
+31,トランスポートバー／設定ダイアログ,Save Project,プロジェクトを保存,Save Project,プロジェクトを保存,,Sources/Views/TransportBarView.swift
+32,トランスポートバー／設定ダイアログ,Toggle Metronome Click,メトロノームのオン／オフ,Toggle Metronome Click (right-click for click volume),クリックのオン／オフ（右クリックで音量）,,Sources/Views/TransportBarView.swift
+33,トランスポートバー／設定ダイアログ,Settings,設定,Settings,設定,,Sources/Views/TransportBarView.swift
+34,トランスポートバー／設定ダイアログ,Disable Beat Snap,拍へのスナップを無効にする,Disable Beat Snap,スナップを無効にする,,Sources/Views/TransportBarView.swift
+35,トランスポートバー／設定ダイアログ,Enable Beat Snap,拍へのスナップを有効にする,Enable Beat Snap,スナップを有効にする,,Sources/Views/TransportBarView.swift
+36,トランスポートバー／設定ダイアログ,P,P,P,P,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+37,トランスポートバー／設定ダイアログ,TIME,時間,TIME,時間,,Sources/Views/TransportBarView.swift
+38,トランスポートバー／設定ダイアログ,TEMPO,テンポ,TEMPO,テンポ,,Sources/Views/TransportBarView.swift
+39,トランスポートバー／設定ダイアログ,BPM,BPM,BPM,BPM,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+40,トランスポートバー／設定ダイアログ,FORMAT,形式,FORMAT,形式,,Sources/Views/TransportBarView.swift
+41,トランスポートバー／設定ダイアログ,24-bit WAV,24-bit WAV,24-bit WAV,24-bit WAV,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+42,トランスポートバー／設定ダイアログ,%lld kHz,%lld kHz,%lld kHz,%lld kHz,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/TransportBarView.swift
+43,トランスポートバー／設定ダイアログ,Timeline pixels per second,時間方向の表示倍率（ピクセル／秒）,Timeline pixels per second,時間表示倍率（ピクセル／秒）,,Sources/Views/TransportBarView.swift
+44,トランスポートバー／設定ダイアログ,×%@,×%@,×%@,×%@,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+45,トランスポートバー／設定ダイアログ,All track heights,全トラックの高さ,All track heights,全トラックの高さ,,Sources/Views/TransportBarView.swift
+46,トランスポートバー／設定ダイアログ,Waveform vertical scale,波形の縦の倍率,Waveform vertical scale,波形の縦倍率,,Sources/Views/TransportBarView.swift
+47,トランスポートバー／設定ダイアログ,Input and output devices use the same Core Audio buffer size.,入力と出力の機器は同じ Core Audio バッファサイズを使います。,Input and output devices use the same Core Audio buffer size.,入力と出力の機器は同じ Core Audio バッファサイズを使います。,,Sources/Views/TransportBarView.swift
+48,トランスポートバー／設定ダイアログ,Language,言語,Language,言語,,Sources/Views/TransportBarView.swift
+49,トランスポートバー／設定ダイアログ,Input device,入力機器,Input device,入力機器,,Sources/Views/TransportBarView.swift
+50,トランスポートバー／設定ダイアログ,Output device,出力機器,Output device,出力機器,,Sources/Views/TransportBarView.swift
+51,トランスポートバー／設定ダイアログ,Sample rate,サンプルレート,Sample rate,サンプルレート,,Sources/Views/TransportBarView.swift
+52,トランスポートバー／設定ダイアログ,Buffer size,バッファサイズ,Buffer size,バッファサイズ,,Sources/Views/TransportBarView.swift
+53,トランスポートバー／設定ダイアログ,Recordings folder,録音フォルダ,Recordings folder,録音フォルダ,,Sources/Views/TransportBarView.swift
+54,トランスポートバー／設定ダイアログ,ms,ms,ms,ms,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+55,トランスポートバー／設定ダイアログ,0,0,0,0,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+56,トランスポートバー／設定ダイアログ,Click volume,クリックの音量,Click volume,クリックの音量,,Sources/Views/TransportBarView.swift
+57,トランスポートバー／設定ダイアログ,%lld%%,%lld%%,%lld%%,%lld%%,記号・略語（通常は変更不要）,Sources/Views/TransportBarView.swift
+58,トランスポートバー／設定ダイアログ,%lld frames (%@ ms),%lld フレーム（%@ ms）,%lld frames (%@ ms),%lld フレーム（%@ ms）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/TransportBarView.swift
+59,トランスポートバー／設定ダイアログ,Apply,適用,Apply,適用,,Sources/Views/TransportBarView.swift
+60,トラック一覧・ルーラー,TRACKS (%lld),トラック (%lld),TRACKS (%lld),トラック (%lld),%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/ArrangerView.swift
+61,トラック一覧・ルーラー,Add Audio Track,オーディオトラックを追加,Add Audio Track,オーディオトラックを追加,,Sources/Views/ArrangerView.swift
+62,トラック一覧・ルーラー,PUNCH,パンチ,PUNCH,パンチ,,Sources/Views/ArrangerView.swift
+63,トラックヘッダー,Change track color,トラックの色を変更,Change track color,トラックの色を変更,,Sources/Views/TrackHeaderView.swift
+64,トラックヘッダー,Track Name,トラック名,Track Name,トラック名,,Sources/Views/TrackHeaderView.swift
+65,トラックヘッダー,Mono,モノラル,Mono,モノラル,,Sources/Views/TrackHeaderView.swift
+66,トラックヘッダー,Stereo,ステレオ,Stereo,ステレオ,,Sources/Views/TrackHeaderView.swift
+67,トラックヘッダー,(削除),(削除),,,1/2 表示は Mono/Stereo（No.69/70）に変更,Sources/Views/TrackHeaderView.swift
+68,トラックヘッダー,(削除),(削除),,,1/2 表示は Mono/Stereo（No.69/70）に変更,Sources/Views/TrackHeaderView.swift
+69,トラックヘッダー,Recording Mode (Armed),録音待機中,Recording Mode (Armed),録音待機中,,Sources/Views/TrackHeaderView.swift
+70,トラックヘッダー,Playback Mode (Click to Arm Record),再生モード（クリックで録音待機）,Playback Mode (Click to Arm Record),再生モード（クリックで録音待機）,,Sources/Views/TrackHeaderView.swift
+71,トラックヘッダー,Mute Track,トラックをミュート,Mute Track,ミュート,,Sources/Views/TrackHeaderView.swift
+72,トラックヘッダー,Solo Track,トラックをソロ,Solo Track,ソロ,,Sources/Views/TrackHeaderView.swift
+73,トラックヘッダー,Input Monitoring (On),インプットモニター（オン）,Input Monitoring (On),インプットモニター（オン）,,Sources/Views/TrackHeaderView.swift
+74,トラックヘッダー,Input Monitoring (active when Record is armed),インプットモニター（録音待機中に有効）,Input Monitoring (active when Record is armed),インプットモニター（録音待機中に有効）,,Sources/Views/TrackHeaderView.swift
+75,トラックヘッダー,Input Monitoring (Off),インプットモニター（オフ）,Input Monitoring (Off),インプットモニター（オフ）,,Sources/Views/TrackHeaderView.swift
+76,トラックヘッダー,R,R,R,R,記号・略語（通常は変更不要）,Sources/Views/TrackHeaderView.swift
+77,トラックヘッダー,I,I,I,I,記号・略語（通常は変更不要）,Sources/Views/TrackHeaderView.swift
+78,トラックヘッダー,In %lld,入力 %lld,In %lld,入力 %lld,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/TrackHeaderView.swift
+79,トラックヘッダー,Resize track height,トラックの高さを変更,Resize track height,トラックの高さを変更,,Sources/Views/TrackHeaderView.swift
+80,トラックヘッダー,Custom…,カスタム…,Custom…,カスタム…,,Sources/Views/TrackHeaderView.swift
+81,入力チャンネル・機器の名前,Default Audio Interface,既定のオーディオインターフェース,Default Audio Interface,既定のオーディオインターフェース,,Sources/Audio/AudioDeviceManager.swift
+82,入力チャンネル・機器の名前,Default Input,既定の入力,Default Input,既定の入力,,Sources/Audio/AudioDeviceManager.swift
+83,入力チャンネル・機器の名前,Input %lld,入力 %lld,Input %lld,入力 %lld,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/AudioDeviceManager.swift
+84,入力チャンネル・機器の名前,Input %lld-%lld,入力 %lld-%lld,Input %lld-%lld,入力 %lld-%lld,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/AudioDeviceManager.swift
+85,入力チャンネル・機器の名前,Input 1-2,入力 1-2,Input 1-2,入力 1-2,,Sources/Audio/AudioDeviceManager.swift
+86,入力チャンネル・機器の名前,Audio Device %u,オーディオ機器 %u,Audio Device %u,オーディオ機器 %u,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/AudioDeviceManager.swift
+87,クリップ・右クリックメニュー・ツールチップ,No Audio Recorded - Click [R] to Arm for Recording,録音がありません - [R] を押して録音待機にします,No Audio Recorded - Click [R] to Arm for Recording,録音がありません - [R] を押して録音待機にします,,Sources/Views/WaveformLaneView.swift
+88,クリップ・右クリックメニュー・ツールチップ,Ready to Record: Press Start / Spacebar,録音できます: 録音ボタンを押してください,Ready to Record: Press Start / Spacebar,録音できます: 録音ボタンを押してください,,Sources/Views/WaveformLaneView.swift
+89,クリップ・右クリックメニュー・ツールチップ,Cut,カット,Cut,カット,,Sources/Views/WaveformLaneView.swift
+90,クリップ・右クリックメニュー・ツールチップ,Copy,コピー,Copy,コピー,,Sources/Views/WaveformLaneView.swift
+91,クリップ・右クリックメニュー・ツールチップ,Paste at Playhead,再生位置にペースト,Paste at Playhead,再生位置にペースト,,Sources/Views/WaveformLaneView.swift
+92,クリップ・右クリックメニュー・ツールチップ,Delete Range,範囲を削除,Delete Range,範囲を削除,,Sources/Views/WaveformLaneView.swift
+93,クリップ・右クリックメニュー・ツールチップ,Crop to Range,範囲だけを残す,Crop to Range,範囲だけを残す,,Sources/Views/WaveformLaneView.swift
+94,クリップ・右クリックメニュー・ツールチップ,Split at Range Edges,範囲の両端で分割,Split at Range Edges,範囲の両端で分割,,Sources/Views/WaveformLaneView.swift
+95,クリップ・右クリックメニュー・ツールチップ,Fade In %@,フェードイン %@,Fade In %@,フェードイン %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/WaveformLaneView.swift
+96,クリップ・右クリックメニュー・ツールチップ,Fade Out %@,フェードアウト %@,Fade Out %@,フェードアウト %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/WaveformLaneView.swift
+97,クリップ・右クリックメニュー・ツールチップ,Mid %@ dB  %@,中間 %@ dB  %@,Mid %@ dB  %@,中間 %@ dB  %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/WaveformLaneView.swift
+98,クリップ・右クリックメニュー・ツールチップ,Normalize,ノーマライズ,Normalize,ノーマライズ,,Sources/Views/WaveformLaneView.swift
+99,クリップ・右クリックメニュー・ツールチップ,Reverse,逆再生,Reverse,逆再生,,Sources/Views/WaveformLaneView.swift
+100,クリップ・右クリックメニュー・ツールチップ,Duplicate Recording,クリップを複製,Duplicate Recording,クリップを複製,,Sources/Views/WaveformLaneView.swift
+101,クリップ・右クリックメニュー・ツールチップ,Split at Cursor,再生位置で分割,Split at Cursor,再生位置で分割,,Sources/Views/WaveformLaneView.swift
+102,クリップ・右クリックメニュー・ツールチップ,Delete Recording,クリップを削除,Delete Recording,クリップを削除,,Sources/Views/WaveformLaneView.swift
+103,クリップ・右クリックメニュー・ツールチップ,The recording file cannot be found.,録音ファイルが見つかりません。,The recording file cannot be found.,録音ファイルが見つかりません。,,Sources/Views/WaveformLaneView.swift
+104,クリップ・右クリックメニュー・ツールチップ,Choose Recording File…,録音ファイルを選択…,Choose Recording File…,録音ファイルを選択…,,Sources/Views/WaveformLaneView.swift
+105,クリップ・右クリックメニュー・ツールチップ,Unmute Recording,クリップのミュートを解除,Unmute Recording,ミュートを解除,,Sources/Views/WaveformLaneView.swift
+106,クリップ・右クリックメニュー・ツールチップ,Mute Recording,クリップをミュート,Mute Recording,クリップをミュート,,Sources/Views/WaveformLaneView.swift
+107,フェードカーブの名前（ツールチップ）,Auto,Auto,Auto,Auto,記号・略語（通常は変更不要）,Sources/Models/ClipLayering.swift
+108,フェードカーブの名前（ツールチップ）,Equal Power,等パワー,Equal Power,等パワー,,Sources/Models/ClipLayering.swift
+109,フェードカーブの名前（ツールチップ）,Linear,直線,Linear,直線,,Sources/Models/ClipLayering.swift
+110,フェードカーブの名前（ツールチップ）,Custom,カスタム,Custom,カスタム,,Sources/Models/ClipLayering.swift
+111,ミキサー,Mixer,ミキサー,Mixer,ミキサー,,Sources/Views/MixerView.swift
+112,ミキサー,Add FX,FX を追加,Add FX,FX を追加,,Sources/Views/MixerView.swift
+113,ミキサー,Insert plug-in,プラグインを挿入,Insert plug-in,プラグインを挿入,,Sources/Views/MixerView.swift
+114,ミキサー,Disable plugin,プラグインを無効にする,Disable plugin,プラグインを無効にする,,Sources/Views/MixerView.swift
+115,ミキサー,Enable plugin,プラグインを有効にする,Enable plugin,プラグインを有効にする,,Sources/Views/MixerView.swift
+116,ミキサー,Double-click to rename,ダブルクリックで名前を変更,Double-click to rename,ダブルクリックで名前を変更,,Sources/Views/MixerView.swift
+117,ミキサー,M,M,M,M,記号・略語（通常は変更不要）,Sources/Views/MixerView.swift
+118,ミキサー,S,S,S,S,記号・略語（通常は変更不要）,Sources/Views/MixerView.swift
+119,ミキサー,(削除),(削除),,,FX ストリップの「FX」表示は M / S ボタン（No.121/122）に置き換え,Sources/Views/MixerView.swift
+120,ミキサー,Remove FX channel,FX チャンネルを削除,Remove %@,%@を削除,%@ は FX チャンネル名,Sources/Views/MixerView.swift
+121,ミキサー,STEREO OUT,STEREO OUT,STEREO OUT,STEREO OUT,記号・略語（通常は変更不要）,Sources/Views/MixerView.swift
+122,ミキサー,INSERT,インサート,INSERT,インサート,,Sources/Views/MixerView.swift
+123,ミキサー,SEND,センド,SEND,センド,,Sources/Views/MixerView.swift
+124,ミキサー,POST,ポスト,POST,ポスト,,Sources/Views/MixerView.swift
+125,ミキサーの目盛り,+%lld,+%lld,+%lld,+%lld,記号・略語（通常は変更不要）,Sources/Views/MixerControls.swift
+126,ミキサーの目盛り,%lld,%lld,%lld,%lld,記号・略語（通常は変更不要）,Sources/Views/MixerControls.swift
+128,ステータスバー・起動ログ画面・書き出しダイアログ,%@ (%lld In),%@（入力 %lld）,%@ (%lld In),%@（入力 %lld）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/MainDAWView.swift
+129,ステータスバー・起動ログ画面・書き出しダイアログ,Space: Play/Stop,Space: 再生／停止,Space: Play/Stop,Space: 再生／停止,,Sources/Views/MainDAWView.swift
+130,ステータスバー・起動ログ画面・書き出しダイアログ,Rewind: |<<,先頭へ: |<<,Rewind: |<<,先頭へ: |<<,,Sources/Views/MainDAWView.swift
+131,ステータスバー・起動ログ画面・書き出しダイアログ,[R]: Arm Record,[R]: 録音待機,[R]: Arm Record,[R]: 録音待機,,Sources/Views/MainDAWView.swift
+132,ステータスバー・起動ログ画面・書き出しダイアログ,Scanning for plug-ins,プラグインを検出しています,Scanning for plug-ins,プラグインを検出しています,,Sources/Views/MainDAWView.swift
+133,ステータスバー・起動ログ画面・書き出しダイアログ,Export Master Mix,マスターを書き出し,Export Master Mix,マスターを書き出し,,Sources/Views/MainDAWView.swift
+134,ステータスバー・起動ログ画面・書き出しダイアログ,"The master output is rendered in real time, then converted to the chosen format.",マスター出力をリアルタイムで書き出し、選んだ形式に変換します。,"The master output is rendered in real time, then converted to the chosen format.",マスター出力をリアルタイムで書き出し、選んだ形式に変換します。,,Sources/Views/MainDAWView.swift
+135,ステータスバー・起動ログ画面・書き出しダイアログ,File name,ファイル名,File name,ファイル名,,Sources/Views/MainDAWView.swift
+136,ステータスバー・起動ログ画面・書き出しダイアログ,Folder,保存先,Folder,保存先,,Sources/Views/MainDAWView.swift
+137,ステータスバー・起動ログ画面・書き出しダイアログ,Change…,変更…,Change…,変更…,,Sources/Views/MainDAWView.swift
+138,ステータスバー・起動ログ画面・書き出しダイアログ,Format,形式,Format,形式,,Sources/Views/MainDAWView.swift
+139,ステータスバー・起動ログ画面・書き出しダイアログ,Sample rate,サンプルレート,Sample rate,サンプルレート,,Sources/Views/MainDAWView.swift
+140,ステータスバー・起動ログ画面・書き出しダイアログ,Bit depth,ビット深度,Bit depth,ビット深度,,Sources/Views/MainDAWView.swift
+141,ステータスバー・起動ログ画面・書き出しダイアログ,Mode,モード,Mode,モード,,Sources/Views/MainDAWView.swift
+142,ステータスバー・起動ログ画面・書き出しダイアログ,Constant,固定,Constant,固定,,Sources/Views/MainDAWView.swift
+143,ステータスバー・起動ログ画面・書き出しダイアログ,VBR,VBR,VBR,VBR,,Sources/Views/MainDAWView.swift
+144,ステータスバー・起動ログ画面・書き出しダイアログ,Bitrate,ビットレート,Bitrate,ビットレート,,Sources/Views/MainDAWView.swift
+145,ステータスバー・起動ログ画面・書き出しダイアログ,Quality,品質,Quality,品質,,Sources/Views/MainDAWView.swift
+146,ステータスバー・起動ログ画面・書き出しダイアログ,High (V0),高 (V0),High (V0),高 (V0),,Sources/Views/MainDAWView.swift
+147,ステータスバー・起動ログ画面・書き出しダイアログ,Standard (V2),標準 (V2),Standard (V2),標準 (V2),,Sources/Views/MainDAWView.swift
+148,ステータスバー・起動ログ画面・書き出しダイアログ,Low (V4),低 (V4),Low (V4),低 (V4),,Sources/Views/MainDAWView.swift
+149,ステータスバー・起動ログ画面・書き出しダイアログ,Converting…,変換しています…,Converting…,変換しています…,,Sources/Views/MainDAWView.swift
+150,ステータスバー・起動ログ画面・書き出しダイアログ,MP3 is not available: the encoder library is missing.,MP3 は使用できません（エンコーダのライブラリが見つかりません）。,MP3 is not available: the encoder library is missing.,MP3 は使用できません（エンコーダのライブラリが見つかりません）。,,Sources/Views/MainDAWView.swift
+151,ステータスバー・起動ログ画面・書き出しダイアログ,Choose Export Folder,書き出し先フォルダを選択,Choose Export Folder,書き出し先フォルダを選択,,Sources/Models/ProjectState.swift
+152,ステータスバー・起動ログ画面・書き出しダイアログ,Choose,選択,Choose,選択,,Sources/Models/ProjectState.swift
+153,ステータスバー・起動ログ画面・書き出しダイアログ,Could not start the MP3 encoder.,MP3 エンコーダを開始できませんでした。,Could not start the MP3 encoder.,MP3 エンコーダを開始できませんでした。,,Sources/Audio/ExportEncoder.swift
+154,ステータスバー・起動ログ画面・書き出しダイアログ,Could not create the export file.,書き出しファイルを作成できませんでした。,Could not create the export file.,書き出しファイルを作成できませんでした。,,Sources/Audio/ExportEncoder.swift
+155,ステータスバー・起動ログ画面・書き出しダイアログ,The MP3 encoder reported an error.,MP3 エンコーダでエラーが発生しました。,The MP3 encoder reported an error.,MP3 エンコーダでエラーが発生しました。,,Sources/Audio/ExportEncoder.swift
+156,ステータスバー・起動ログ画面・書き出しダイアログ,The MP3 encoder (libmp3lame) was not found in the app.,アプリ内に MP3 エンコーダ（libmp3lame）が見つかりません。,The MP3 encoder (libmp3lame) was not found in the app.,アプリ内に MP3 エンコーダ（libmp3lame）が見つかりません。,,Sources/Audio/ExportEncoder.swift
+157,ステータスバー・起動ログ画面・書き出しダイアログ,Export failed: %@,書き出しに失敗しました: %@,Export failed: %@,書き出しに失敗しました: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/MainDAWView.swift
+158,ステータスバー・起動ログ画面・書き出しダイアログ,Export completed successfully.,書き出しが完了しました。,Export completed successfully.,書き出しが完了しました。,,Sources/Views/MainDAWView.swift
+159,ステータスバー・起動ログ画面・書き出しダイアログ,Exporting master mix…,マスターを書き出しています…,Exporting master mix…,マスターを書き出しています…,,Sources/Views/MainDAWView.swift
+160,ステータスバー・起動ログ画面・書き出しダイアログ,Start (seconds),開始（秒）,Start (seconds),開始（秒）,,Sources/Views/MainDAWView.swift
+161,ステータスバー・起動ログ画面・書き出しダイアログ,0.000,0.000,0.000,0.000,記号・略語（通常は変更不要）,Sources/Views/MainDAWView.swift
+162,ステータスバー・起動ログ画面・書き出しダイアログ,End (seconds),終了（秒）,End (seconds),終了（秒）,,Sources/Views/MainDAWView.swift
+163,ステータスバー・起動ログ画面・書き出しダイアログ,Close,閉じる,Close,閉じる,,Sources/Views/MainDAWView.swift
+164,ステータスバー・起動ログ画面・書き出しダイアログ,Cancel,キャンセル,Cancel,キャンセル,,Sources/Views/MainDAWView.swift
+165,ステータスバー・起動ログ画面・書き出しダイアログ,Export,書き出し,Export,書き出し,,Sources/Views/MainDAWView.swift
+166,書き出しのエラー・録音フォルダーの選択,Could not prepare the master output.,マスター出力を準備できませんでした。,Could not prepare the master output.,マスター出力を準備できませんでした。,,Sources/Audio/AudioEngineManager.swift
+167,書き出しのエラー・録音フォルダーの選択,Audio plug-ins are still loading. Try again in a moment.,プラグインを読み込んでいます。しばらくしてからもう一度お試しください。,Audio plug-ins are still loading. Try again in a moment.,プラグインを読み込んでいます。しばらくしてからもう一度お試しください。,,Sources/Audio/AudioEngineManager.swift
+168,書き出しのエラー・録音フォルダーの選択,Stop playback before exporting.,書き出す前に再生を停止してください。,Stop playback before exporting.,書き出す前に再生を停止してください。,,Sources/Audio/AudioEngineManager.swift
+169,書き出しのエラー・録音フォルダーの選択,Choose Recordings Folder,録音フォルダーを選択,Choose Recordings Folder,録音フォルダーを選択,,Sources/Audio/AudioEngineManager.swift
+170,WAV 取り込みのエラー,Unsupported audio format: %@,対応していないオーディオ形式です: %@,Unsupported audio format: %@,対応していないオーディオ形式です: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Audio/ClipAudioProcessing.swift
+171,ダイアログ・メッセージ（保存・読み込み・再起動など）,New MyDAW Project,新規 MyDAW プロジェクト,New MyDAW Project,新規 MyDAW プロジェクト,,Sources/Models/ProjectState.swift
+172,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not create the Recordings folder: %@,Recordings フォルダを作成できませんでした: %@,Could not create the Recordings folder: %@,Recordings フォルダを作成できませんでした: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+173,ダイアログ・メッセージ（保存・読み込み・再起動など）,Open MyDAW Project,MyDAW プロジェクトを開く,Open MyDAW Project,MyDAW プロジェクトを開く,,Sources/Models/ProjectState.swift
+174,ダイアログ・メッセージ（保存・読み込み・再起動など）,The project file and its Recordings folder are created in the chosen folder.,選んだフォルダに、プロジェクトファイルと Recordings フォルダを作成します。,The project file and its Recordings folder are created in the chosen folder.,選んだフォルダに、プロジェクトファイルと Recordings フォルダを作成します。,,Sources/Models/ProjectState.swift
+175,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not prepare project folder: %@,プロジェクトフォルダーを準備できませんでした: %@,Could not prepare project folder: %@,プロジェクトフォルダーを準備できませんでした: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+176,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not save project: %@,プロジェクトを保存できませんでした: %@,Could not save project: %@,プロジェクトを保存できませんでした: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+177,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not read the WAV file.\n\n%@,WAV ファイルを読み込めませんでした。\n\n%@,Could not read the WAV file.\n\n%@,WAV ファイルを読み込めませんでした。\n\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／\n は改行です,Sources/Models/ProjectState.swift
+178,ダイアログ・メッセージ（保存・読み込み・再起動など）,MyDAW Project,MyDAW プロジェクト,MyDAW Project,MyDAW プロジェクト,,Sources/Models/ProjectState.swift
+179,ダイアログ・メッセージ（保存・読み込み・再起動など）,OK,OK,OK,OK,記号・略語（通常は変更不要）,Sources/Models/ProjectState.swift
+180,ダイアログ・メッセージ（保存・読み込み・再起動など）,Choose Recording File,録音ファイルを選択,Choose Recording File,録音ファイルを選択,,Sources/Models/ProjectState.swift
+181,ダイアログ・メッセージ（保存・読み込み・再起動など）,This recording file cannot be used.\n\nSample rate: %lld Hz (required: %lld Hz),この録音ファイルは使用できません。\n\nサンプルレート: %lld Hz（必要: %lld Hz）,This recording file cannot be used.\n\nSample rate: %lld Hz (required: %lld Hz),この録音ファイルは使用できません。\n\nサンプルレート: %lld Hz（必要: %lld Hz）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／\n は改行です,Sources/Models/ProjectState.swift
+182,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not read the recording file.\n\n%@,録音ファイルを読み込めませんでした。\n\n%@,Could not read the recording file.\n\n%@,録音ファイルを読み込めませんでした。\n\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／\n は改行です,Sources/Models/ProjectState.swift
+183,ダイアログ・メッセージ（保存・読み込み・再起動など）,Project saved.,プロジェクトを保存しました。,Project saved.,プロジェクトを保存しました。,,Sources/Models/ProjectState.swift
+184,ダイアログ・メッセージ（保存・読み込み・再起動など）,Restart MyDAW to apply the new settings?,新しい設定を反映するために MyDAW を再起動しますか？,Restart MyDAW to apply the new settings?,新しい設定を反映するために MyDAW を再起動しますか？,,Sources/Models/ProjectState.swift
+185,ダイアログ・メッセージ（保存・読み込み・再起動など）,"MyDAW needs to restart for the new audio device, sample rate or language to take effect. Save the project before restarting?",オーディオ機器、サンプルレート、言語の変更を反映するには、MyDAW の再起動が必要です。再起動の前にプロジェクトを保存しますか？,"MyDAW needs to restart for the new audio device, sample rate or language to take effect. Save the project before restarting?",オーディオ機器、サンプルレート、言語の変更を反映するには、MyDAW の再起動が必要です。再起動の前にプロジェクトを保存しますか？,,Sources/Models/ProjectState.swift
+186,ダイアログ・メッセージ（保存・読み込み・再起動など）,Save and Restart,保存して再起動,Save and Restart,保存して再起動,,Sources/Models/ProjectState.swift
+187,ダイアログ・メッセージ（保存・読み込み・再起動など）,Restart Without Saving,保存せずに再起動,Restart Without Saving,保存せずに再起動,,Sources/Models/ProjectState.swift
+188,ダイアログ・メッセージ（保存・読み込み・再起動など）,MyDAW could not restart itself. Please quit and reopen it manually.\n\n%@,MyDAW を再起動できませんでした。手動で終了してから起動し直してください。\n\n%@,MyDAW could not restart itself. Please quit and reopen it manually.\n\n%@,MyDAW を再起動できませんでした。手動で終了してから起動し直してください。\n\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／\n は改行です,Sources/Models/ProjectState.swift
+189,ダイアログ・メッセージ（保存・読み込み・再起動など）,Could not open project: %@,プロジェクトを開けませんでした: %@,Could not open project: %@,プロジェクトを開けませんでした: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+190,終了時の保存確認,Save changes to MyDAW?,MyDAW の変更を保存しますか？,Save changes to MyDAW?,MyDAW の変更を保存しますか？,,Sources/Models/ProjectState.swift
+191,終了時の保存確認,Do you want to save the project before quitting MyDAW?,MyDAW を終了する前にプロジェクトを保存しますか？,Do you want to save the project before quitting MyDAW?,MyDAW を終了する前にプロジェクトを保存しますか？,,Sources/Models/ProjectState.swift
+192,終了時の保存確認,Save,保存,Save,保存,,Sources/Models/ProjectState.swift
+193,終了時の保存確認,Don't Save,保存しない,Don't Save,保存しない,,Sources/Models/ProjectState.swift
+194,削除の確認（トラック・FX チャンネル）,Delete “%@”?,「%@」を削除してよいですか？,Delete “%@”?,「%@」を削除してよいですか？,,Sources/Models/ProjectState.swift
+195,削除の確認（トラック・FX チャンネル）,"The track's clips, plug-ins and sends will be removed. This cannot be undone.",トラックのクリップ、プラグイン、センドも削除されます。この操作は取り消せません。,"The track's clips, plug-ins and sends will be removed. This cannot be undone.",トラックのクリップ、プラグイン、センドも削除されます。この操作は取り消せません。,,Sources/Models/ProjectState.swift
+196,削除の確認（トラック・FX チャンネル）,The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone.,この FX チャンネルのプラグインと、各トラックからこの FX へのセンドも削除されます。この操作は取り消せません。,The FX channel's plug-ins and every track's send to it will be removed. This cannot be undone.,この FX チャンネルのプラグインと、各トラックからこの FX へのセンドも削除されます。この操作は取り消せません。,,Sources/Models/ProjectState.swift
+197,削除の確認（トラック・FX チャンネル）,Delete,削除,Delete,削除,,Sources/Models/ProjectState.swift
+198,トラック一覧・ルーラー（開始／終了フラグ）,Set Song Start Here,ここを開始位置にする,Set Song Start Here,ここを開始位置にする,,Sources/Views/ArrangerView.swift
+199,トラック一覧・ルーラー（開始／終了フラグ）,Set Song End Here,ここを終了位置にする,Set Song End Here,ここを終了位置にする,,Sources/Views/ArrangerView.swift
+200,トラック一覧・ルーラー（開始／終了フラグ）,Remove Song Start,開始フラグを削除,Remove Song Start,開始フラグを削除,,Sources/Views/ArrangerView.swift
+201,トラック一覧・ルーラー（開始／終了フラグ）,Remove Song End,終了フラグを削除,Remove Song End,終了フラグを削除,,Sources/Views/ArrangerView.swift
+202,トラック一覧・ルーラー（開始／終了フラグ）,Song start,開始フラグ,Song start,開始フラグ,,Sources/Views/ArrangerView.swift
+203,トラック一覧・ルーラー（開始／終了フラグ）,Song end,終了フラグ,Song end,終了フラグ,,Sources/Views/ArrangerView.swift
+204,ファイルメニュー,Move Unused Recordings to Unused Folder,未使用の録音ファイルを Unused フォルダへ移動,Move Unused Recordings to Unused Folder,未使用の録音ファイルを Unused フォルダへ移動,,Sources/MyDAWApp.swift
+205,未使用ファイルの移動,No unused recordings,未使用の録音ファイルはありません,No unused recordings,未使用の録音ファイルはありません,,Sources/Models/ProjectState.swift
+206,未使用ファイルの移動,Every WAV file in the Recordings folder is used by the project.,Recordings フォルダの WAV ファイルは、すべてプロジェクトで使われています。,Every WAV file in the Recordings folder is used by the project.,Recordings フォルダの WAV ファイルは、すべてプロジェクトで使われています。,,Sources/Models/ProjectState.swift
+207,未使用ファイルの移動,Moved %lld unused recordings,未使用の録音ファイルを %lld 個移動しました,Moved %lld unused recordings,未使用の録音ファイルを %lld 個移動しました,,Sources/Models/ProjectState.swift
+208,未使用ファイルの移動,These files are not used by the project and were moved to:\n%@,次のファイルはプロジェクトで使われていないため、以下のフォルダへ移動しました:\n%@,These files are not used by the project and were moved to:\n%@,次のファイルはプロジェクトで使われていないため、以下のフォルダへ移動しました:\n%@,,Sources/Models/ProjectState.swift
+209,未使用ファイルの移動,Could not be moved:,移動できなかったファイル:,Could not be moved:,移動できなかったファイル:,,Sources/Models/ProjectState.swift
+210,未使用ファイルの移動,Could not read the Recordings folder.\n\n%@,Recordings フォルダを読み込めませんでした。\n\n%@,Could not read the Recordings folder.\n\n%@,Recordings フォルダを読み込めませんでした。\n\n%@,,Sources/Models/ProjectState.swift
+211,未使用ファイルの移動,Could not create the Unused folder.\n\n%@,Unused フォルダを作成できませんでした。\n\n%@,Could not create the Unused folder.\n\n%@,Unused フォルダを作成できませんでした。\n\n%@,,Sources/Models/ProjectState.swift
+212,未使用ファイルの移動,The project needs to be saved,プロジェクトを保存する必要があります,The project needs to be saved,プロジェクトを保存する必要があります,,Sources/Models/ProjectState.swift
+213,未使用ファイルの移動,The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z).,実行前にプロジェクトを保存します。\n直前の録音クリップの移動は、取り消せません（⌘Z）。,The project will be saved before proceeding.\nThe last recording clip move cannot be undone (⌘Z).,実行前にプロジェクトを保存します。\n直前の録音クリップの移動は、取り消せません（⌘Z）。,,Sources/Models/ProjectState.swift
+214,未使用ファイルの移動,Save Project and Continue,プロジェクトを保存して実行,Save Project and Continue,プロジェクトを保存して実行,,Sources/Models/ProjectState.swift
+215,未使用ファイルの移動,"The Undo history was cleared, since it referred to moved files.",移動したファイルを取り消しの履歴が使っていたため、取り消しの履歴を消去しました。,"The Undo history was cleared, since it referred to moved files.",移動したファイルを取り消しの履歴が使っていたため、取り消しの履歴を消去しました。,,Sources/Models/ProjectState.swift
+216,ダイアログ・メッセージ（保存・読み込み・再起動など）,The export ended before the whole range was captured.,書き出しが、指定した範囲をすべて取り込む前に終了しました。,The export ended before the whole range was captured.,書き出しが、指定した範囲をすべて取り込む前に終了しました。,,Sources/Audio/AudioEngineManager.swift
+217,クリップの右クリックメニュー,Show in Finder,Finder で表示,Show in Finder,Finder で表示,ファイル名の項目のヘルプ,Sources/Views/WaveformLaneView.swift
+218,起動画面,Recent Projects,最近使ったプロジェクト,Recent Projects,最近使ったプロジェクト,,Sources/Views/ProjectSelectionView.swift
+219,起動画面,No recent projects,最近使ったプロジェクトはありません,No recent projects,最近使ったプロジェクトはありません,,Sources/Views/ProjectSelectionView.swift
+220,起動画面,Remove from List,リストから削除,Remove from List,リストから削除,最近使ったプロジェクトの右クリックメニュー,Sources/Views/ProjectSelectionView.swift
+221,起動画面,Not found: %@,見つかりません: %@,Not found: %@,見つかりません: %@,見つからないプロジェクトのヘルプ。%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/ProjectSelectionView.swift
+222,ダイアログ・メッセージ（保存・読み込み・再起動など）,The project file could not be found:\n%@,プロジェクトファイルが見つかりません:\n%@,The project file could not be found:\n%@,プロジェクトファイルが見つかりません:\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+223,ステータスバー,Dropout,音飛び,Dropout,音飛び,CPU 表示の横に出る赤いマーク,Sources/Views/AudioLoadIndicator.swift
+224,ステータスバー（CPU のヘルプ）,Audio processing load: %lld%% (peak %lld%%),オーディオ処理負荷: %lld%%（ピーク %lld%%）,Audio processing load: %lld%% (peak %lld%%),オーディオ処理負荷: %lld%%（ピーク %lld%%）,%% は「%」を表します。%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/AudioLoadIndicator.swift
+225,ステータスバー（CPU のヘルプ）,MyDAW CPU usage (all cores): %lld%%,MyDAW の CPU 使用率（全コア）: %lld%%,MyDAW CPU usage (all cores): %lld%%,MyDAW の CPU 使用率（全コア）: %lld%%,%% は「%」を表します。%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/AudioLoadIndicator.swift
+226,ステータスバー（CPU のヘルプ）,Dropouts since launch: %lld,起動後の音飛び: %lld 回,Dropouts since launch: %lld,起動後の音飛び: %lld 回,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/AudioLoadIndicator.swift
+227,ステータスバー（CPU のヘルプ）,Last dropout: %@,最後の音飛び: %@,Last dropout: %@,最後の音飛び: %@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Views/AudioLoadIndicator.swift
+228,メニュー,MyDAW Help,MyDAW ヘルプ,MyDAW Help,MyDAW ヘルプ,,Sources/MyDAWApp.swift
+229,トランスポートバー／設定ダイアログ,Enable Auto-Scroll,自動スクロールを有効にする,Enable Auto-Scroll,自動スクロールを有効にする,,Sources/Views/TransportBarView.swift
+230,トランスポートバー／設定ダイアログ,Disable Auto-Scroll,自動スクロールを無効にする,Disable Auto-Scroll,自動スクロールを無効にする,,Sources/Views/TransportBarView.swift
+231,クリップ・右クリックメニュー・ツールチップ,%lld Clips,%lld個のクリップ,%lld Clips,%lld個のクリップ,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時のメニュー先頭,Sources/Views/WaveformLaneView.swift
+232,クリップ・右クリックメニュー・ツールチップ,Normalize (%lld),ノーマライズ（%lld個）,Normalize (%lld),ノーマライズ（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+233,クリップ・右クリックメニュー・ツールチップ,Reverse (%lld),逆再生（%lld個）,Reverse (%lld),逆再生（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+234,クリップ・右クリックメニュー・ツールチップ,Mute Recordings (%lld),クリップをミュート（%lld個）,Mute Recordings (%lld),クリップをミュート（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+235,クリップ・右クリックメニュー・ツールチップ,Unmute Recordings (%lld),ミュートを解除（%lld個）,Unmute Recordings (%lld),ミュートを解除（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+236,クリップ・右クリックメニュー・ツールチップ,Duplicate Recordings (%lld),クリップを複製（%lld個）,Duplicate Recordings (%lld),クリップを複製（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+237,クリップ・右クリックメニュー・ツールチップ,Split at Cursor (%lld),再生位置で分割（%lld個）,Split at Cursor (%lld),再生位置で分割（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時。個数は再生位置にかかるクリップの数,Sources/Views/WaveformLaneView.swift
+238,クリップ・右クリックメニュー・ツールチップ,Delete Recordings (%lld),クリップを削除（%lld個）,Delete Recordings (%lld),クリップを削除（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+239,ダイアログ・メッセージ（保存・読み込み・再起動など）,Create,作成,Create,作成,新規作成パネルのボタン,Sources/Models/ProjectState.swift
+240,未使用ファイルの移動,"Could not read the project %@ in the same folder, so no files were moved.\n\n%@",同じフォルダにあるプロジェクト「%@」を読み込めなかったため、ファイルは移動していません。\n\n%@,"Could not read the project %@ in the same folder, so no files were moved.\n\n%@",同じフォルダにあるプロジェクト「%@」を読み込めなかったため、ファイルは移動していません。\n\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+241,未使用ファイルの移動,Could not read the project folder.\n\n%@,プロジェクトのフォルダを読み込めませんでした。\n\n%@,Could not read the project folder.\n\n%@,プロジェクトのフォルダを読み込めませんでした。\n\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+242,未使用ファイルの移動,Every WAV file in the Recordings folder is used by this project or by the other projects in the same folder (%lld).,Recordings フォルダの WAV ファイルは、すべてこのプロジェクトか、同じフォルダにある他のプロジェクト（%lld個）で使われています。,Every WAV file in the Recordings folder is used by this project or by the other projects in the same folder (%lld).,Recordings フォルダの WAV ファイルは、すべてこのプロジェクトか、同じフォルダにある他のプロジェクト（%lld個）で使われています。,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+243,未使用ファイルの移動,Files used by the other projects in the same folder (%lld) were left in place.,同じフォルダにある他のプロジェクト（%lld個）で使われているファイルは、そのまま残しました。,Files used by the other projects in the same folder (%lld) were left in place.,同じフォルダにある他のプロジェクト（%lld個）で使われているファイルは、そのまま残しました。,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+244,ファイルメニュー,Save Project As…,名前を変えて保存…,Save Project As…,名前を変えて保存…,⇧⌘S,Sources/MyDAWApp.swift
+245,名前を変えて保存,Save Project As,名前を変えて保存,Save Project As,名前を変えて保存,,Sources/Models/ProjectState.swift
+246,名前を変えて保存,Enter a new project name. The project is saved in the same folder:\n%@,新しいプロジェクト名を入力してください。同じフォルダに保存されます:\n%@,Enter a new project name. The project is saved in the same folder:\n%@,新しいプロジェクト名を入力してください。同じフォルダに保存されます:\n%@,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+247,名前を変えて保存,"The name cannot be empty, start with “.”, or contain “/” or “:”.",名前を空にしたり、「.」で始めたり、「/」や「:」を含めたりすることはできません。,"The name cannot be empty, start with “.”, or contain “/” or “:”.",名前を空にしたり、「.」で始めたり、「/」や「:」を含めたりすることはできません。,,Sources/Models/ProjectState.swift
+248,名前を変えて保存,%@ already exists. Do you want to replace it?,「%@」はすでにあります。置き換えますか？,%@ already exists. Do you want to replace it?,「%@」はすでにあります。置き換えますか？,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+249,名前を変えて保存,The other project is replaced. Its recordings stay in the Recordings folder.,もう一方のプロジェクトは置き換えられます。その録音ファイルは Recordings フォルダに残ります。,The other project is replaced. Its recordings stay in the Recordings folder.,もう一方のプロジェクトは置き換えられます。その録音ファイルは Recordings フォルダに残ります。,,Sources/Models/ProjectState.swift
+250,名前を変えて保存,Replace,置き換える,Replace,置き換える,,Sources/Models/ProjectState.swift
+251,Finder から開く,Stop playback and recording before opening another project.,別のプロジェクトを開く前に、再生と録音を停止してください。,Stop playback and recording before opening another project.,別のプロジェクトを開く前に、再生と録音を停止してください。,,Sources/Models/ProjectState.swift
+252,Finder から開く,Save the current project before opening %@?,「%@」を開く前に、今のプロジェクトを保存しますか？,Save the current project before opening %@?,「%@」を開く前に、今のプロジェクトを保存しますか？,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+253,クリップ・右クリックメニュー・ツールチップ,Strip Silence…,無音部分をトリム…,Strip Silence…,無音部分をトリム…,,Sources/Views/WaveformLaneView.swift
+254,クリップ・右クリックメニュー・ツールチップ,Strip Silence… (%lld),無音部分をトリム…（%lld個）,Strip Silence… (%lld),無音部分をトリム…（%lld個）,%lld・%u は数値、%@ は文字列が入ります。数と順番は変えないでください／複数選択時,Sources/Views/WaveformLaneView.swift
+255,無音部分をトリム,Strip Silence,無音部分をトリム,Strip Silence,無音部分をトリム,,Sources/Models/ProjectState+Editing.swift
+256,無音部分をトリム,"Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted.",すべてのサンプルが無音レベル以下のまま指定の長さ以上続く部分（他の DAW から取り込んだステムの、録音されていない部分など）を取り除きます。その前後でクリップを分割し、無音のクリップを削除します。,"Removes parts where every sample stays at or below the silence level for at least the given length, such as the unrecorded parts of stems from another DAW. The clips are split there and the silent pieces are deleted.",すべてのサンプルが無音レベル以下のまま指定の長さ以上続く部分（他の DAW から取り込んだステムの、録音されていない部分など）を取り除きます。その前後でクリップを分割し、無音のクリップを削除します。,,Sources/Models/ProjectState+Editing.swift
+257,無音部分をトリム,Minimum silence length:,無音の最短の長さ:,Minimum silence length:,無音の最短の長さ:,,Sources/Models/ProjectState+Editing.swift
+258,無音部分をトリム,seconds,秒,seconds,秒,,Sources/Models/ProjectState+Editing.swift
+259,無音部分をトリム,Fade in/out:,フェードイン／アウト:,Fade in/out:,フェードイン／アウト:,,Sources/Models/ProjectState+Editing.swift
+260,無音部分をトリム,Silence level:,無音レベル:,Silence level:,無音レベル:,,Sources/Models/ProjectState+Editing.swift
+261,無音部分をトリム,dB or lower,dB 以下,dB or lower,dB 以下,,Sources/Models/ProjectState+Editing.swift
+262,トラック一覧の＋メニュー,Add Folder,フォルダを追加,Add Folder,フォルダを追加,,Sources/Views/ArrangerView.swift
+263,トラック一覧の＋ボタン（ツールチップ）,Add Track or Folder,トラックまたはフォルダを追加,Add Track or Folder,トラックまたはフォルダを追加,,Sources/Views/ArrangerView.swift
+264,新しいフォルダの名前,Folder %lld,フォルダ %lld,Folder %lld,フォルダ %lld,,Sources/Models/ProjectState+Folders.swift
+265,フォルダヘッダ（名前の入力欄）,Folder Name,フォルダ名,Folder Name,フォルダ名,,Sources/Views/FolderHeaderView.swift
+266,フォルダヘッダ（ツールチップ）,Change folder color,フォルダの色を変更,Change folder color,フォルダの色を変更,,Sources/Views/FolderHeaderView.swift
+267,フォルダヘッダ（ツールチップ）,Open Folder,フォルダを開く,Open Folder,フォルダを開く,,Sources/Views/FolderHeaderView.swift
+268,フォルダヘッダ（ツールチップ）,Close Folder,フォルダを閉じる,Close Folder,フォルダを閉じる,,Sources/Views/FolderHeaderView.swift
+269,フォルダヘッダ（ツールチップ）,Mute every track in the folder,フォルダ内のトラックをすべてミュート,Mute every track in the folder,フォルダ内のトラックをすべてミュート,,Sources/Views/FolderHeaderView.swift
+270,フォルダヘッダ（ツールチップ）,Solo every track in the folder,フォルダ内のトラックをすべてソロ,Solo every track in the folder,フォルダ内のトラックをすべてソロ,,Sources/Views/FolderHeaderView.swift
+271,フォルダヘッダ（ツールチップ）,Delete Folder (its tracks stay),フォルダを削除（中のトラックは残ります）,Delete Folder (its tracks stay),フォルダを削除（中のトラックは残ります）,,Sources/Views/FolderHeaderView.swift
+272,トラックヘッダ（ツールチップ）,Muted by the folder,フォルダのミュートで有効,Muted by the folder,フォルダのミュートで有効,,Sources/Views/TrackHeaderView.swift
+273,トラックヘッダ（ツールチップ）,Soloed by the folder,フォルダのソロで有効,Soloed by the folder,フォルダのソロで有効,,Sources/Views/TrackHeaderView.swift
+274,ミキサーのFXの線（ツールチップ）,Change FX color,FXの色を変更,Change FX color,FXの色を変更,,Sources/Views/MixerView.swift
+275,トラック／フォルダヘッダの右クリックメニュー,Show in Mixer,ミキサーに表示,Show in Mixer,ミキサーに表示,,Sources/Views/ArrangerView.swift
+276,フォルダ削除の確認ダイアログ,"The tracks in the folder are not deleted. They stay where they are, out of the folder.",フォルダ内のトラックは削除されません。フォルダから出て、その位置に残ります。,"The tracks in the folder are not deleted. They stay where they are, out of the folder.",フォルダ内のトラックは削除されません。フォルダから出て、その位置に残ります。,,Sources/Models/ProjectState+Folders.swift
+277,ミキサーの▲ボタン（ツールチップ）,Show Mixer,ミキサーを表示,Show Mixer,ミキサーを表示,,Sources/Views/MixerView.swift
+278,ミキサーの▼ボタン（ツールチップ）,Hide Mixer,ミキサーをたたむ,Hide Mixer,ミキサーをたたむ,,Sources/Views/MixerView.swift
+279,クリック音量のフェーダー（見出し）,Click,クリック,Click,クリック,,Sources/Views/TransportBarView.swift
+280,設定ダイアログ（大項目）,Environment,環境,Environment,環境,,Sources/Views/TransportBarView.swift
+281,設定ダイアログ（大項目）,Audio,オーディオ,Audio,オーディオ,,Sources/Views/TransportBarView.swift
+282,設定ダイアログ（大項目）,Compensation,補正,Compensation,補正,,Sources/Views/TransportBarView.swift
+283,設定ダイアログ（大項目）,Other,その他,Other,その他,,Sources/Views/TransportBarView.swift
+284,設定ダイアログ,Recording latency (optional),録音遅延（オプション）,Recording latency (optional),録音遅延（オプション）,,Sources/Views/TransportBarView.swift
+285,設定ダイアログ（説明）,Corrects the position of recorded clips. Positive values move them earlier.,録音したクリップの位置を補正します。正の値にすると、前に移動します。,Corrects the position of recorded clips. Positive values move them earlier.,録音したクリップの位置を補正します。正の値にすると、前に移動します。,,Sources/Views/TransportBarView.swift
+286,設定ダイアログ,Click timing,クリックタイミング,Click timing,クリックタイミング,,Sources/Views/TransportBarView.swift
+287,設定ダイアログ（説明）,Corrects when the click sounds. Positive values make it sound later.,クリックの発音タイミングを補正します。正の値にすると、遅れて鳴ります。,Corrects when the click sounds. Positive values make it sound later.,クリックの発音タイミングを補正します。正の値にすると、遅れて鳴ります。,,Sources/Views/TransportBarView.swift
+288,設定ダイアログ,Rollback when recording,録音時のロールバック,Rollback when recording,録音時のロールバック,,Sources/Views/TransportBarView.swift
+289,設定ダイアログ（単位）,bars,小節,bars,小節,,Sources/Views/TransportBarView.swift
+290,設定ダイアログ（入力欄の仮表示）,2,2,2,2,,Sources/Views/TransportBarView.swift
+291,設定ダイアログ（説明）,"In normal recording, the playhead rolls back by this many bars. Recording starts at the current playhead position.",通常録音のとき、指定した小節分、カーソルをロールバックします。現在のカーソル位置から録音されます。,"In normal recording, the playhead rolls back by this many bars. Recording starts at the current playhead position.",通常録音のとき、指定した小節分、カーソルをロールバックします。現在のカーソル位置から録音されます。,,Sources/Views/TransportBarView.swift
+292,トランスポートバー（ロールバックボタンのツールチップ）,Disable Rollback Recording (%lld bars),録音時のロールバックを無効にする（%lld 小節）,Disable Rollback Recording (%lld bars),録音時のロールバックを無効にする（%lld 小節）,,Sources/Views/TransportBarView.swift
+293,トランスポートバー（ロールバックボタンのツールチップ）,Enable Rollback Recording (%lld bars),録音時のロールバックを有効にする（%lld 小節）,Enable Rollback Recording (%lld bars),録音時のロールバックを有効にする（%lld 小節）,,Sources/Views/TransportBarView.swift
+294,ファイルメニュー,Optimize Recordings to Minimum Size,録音ファイルを最小サイズに最適化する,Optimize Recordings to Minimum Size,録音ファイルを最小サイズに最適化する,,Sources/MyDAWApp.swift
+295,録音ファイルの最適化,Recordings cannot be optimized,録音ファイルを最適化できません,Recordings cannot be optimized,録音ファイルを最適化できません,,Sources/Models/ProjectState.swift
+296,録音ファイルの最適化,"Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@",同じフォルダにある他のプロジェクトが Recordings フォルダを共有しているため、最適化するとそれらのプロジェクトのクリップが再生できなくなります。\n\n%@,"Other projects in the same folder share the Recordings folder, and their clips would lose their files.\n\n%@",同じフォルダにある他のプロジェクトが Recordings フォルダを共有しているため、最適化するとそれらのプロジェクトのクリップが再生できなくなります。\n\n%@,,Sources/Models/ProjectState.swift
+297,録音ファイルの最適化（確認）,Optimize recordings to minimum size?,録音ファイルを最小サイズに最適化しますか？,Optimize recordings to minimum size?,録音ファイルを最小サイズに最適化しますか？,,Sources/Models/ProjectState.swift
+298,録音ファイルの最適化（確認）,"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.",Recordingsフォルダ内の録音ファイルを最適化します。\nトリミングされて再生されない部分を削除し、クリップごとに録音ファイルを生成します。現在のプロジェクト設定に従い、音質を維持したまま、最小サイズのフォーマットに変換します。\n使用されなくなった録音ファイルは、Unusedフォルダへ移動します。,"Optimizes the recording files in the Recordings folder.\nRemoves the trimmed parts that are not played and creates a recording file for each clip. Following the current project settings, files are converted to the smallest format that keeps the sound quality.\nRecording files that are no longer used are moved to the Unused folder.",Recordingsフォルダ内の録音ファイルを最適化します。\nトリミングされて再生されない部分を削除し、クリップごとに録音ファイルを生成します。現在のプロジェクト設定に従い、音質を維持したまま、最小サイズのフォーマットに変換します。\n使用されなくなった録音ファイルは、Unusedフォルダへ移動します。,,Sources/Models/ProjectState.swift
+299,録音ファイルの最適化（確認）,This cannot be undone. Do you want to continue?,この処理は取り消せません。実行しますか？,This cannot be undone. Do you want to continue?,この処理は取り消せません。実行しますか？,,Sources/Models/ProjectState.swift
+300,録音ファイルの最適化（確認）,Optimize,実行,Optimize,実行,,Sources/Models/ProjectState.swift
+301,録音ファイルの最適化,Recordings are already optimized,録音ファイルはすでに最適化されています,Recordings are already optimized,録音ファイルはすでに最適化されています,,Sources/Models/ProjectState.swift
+302,録音ファイルの最適化,Every clip already plays a file of the minimum size.,すべてのクリップが、すでに最小サイズの録音ファイルを使っています。,Every clip already plays a file of the minimum size.,すべてのクリップが、すでに最小サイズの録音ファイルを使っています。,,Sources/Models/ProjectState.swift
+303,録音ファイルの最適化,Could not be read:,読み込めなかったファイル:,Could not be read:,読み込めなかったファイル:,,Sources/Models/ProjectState.swift
+304,録音ファイルの最適化,Could not optimize the recordings. No files were changed.\n\n%@,録音ファイルを最適化できませんでした。ファイルは変更していません。\n\n%@,Could not optimize the recordings. No files were changed.\n\n%@,録音ファイルを最適化できませんでした。ファイルは変更していません。\n\n%@,,Sources/Models/ProjectState.swift
+305,録音ファイルの最適化（結果）,Recordings optimized,録音ファイルを最適化しました,Recordings optimized,録音ファイルを最適化しました,,Sources/Models/ProjectState.swift
+306,録音ファイルの最適化（結果）,Created %lld recording files.\nTotal size: %@ → %@,録音ファイルを %lld 個生成しました。\n合計サイズ: %@ → %@,Created %lld recording files.\nTotal size: %@ → %@,録音ファイルを %lld 個生成しました。\n合計サイズ: %@ → %@,,Sources/Models/ProjectState.swift
+307,録音ファイルの最適化（結果）,Moved to the Unused folder:,Unused フォルダへ移動したファイル:,Moved to the Unused folder:,Unused フォルダへ移動したファイル:,,Sources/Models/ProjectState.swift
+308,録音ファイルの最適化（結果）,The Undo history and the clipboard were cleared.,取り消しの履歴とクリップボードを消去しました。,The Undo history and the clipboard were cleared.,取り消しの履歴とクリップボードを消去しました。,,Sources/Models/ProjectState.swift
+309,録音ファイルの最適化（進捗）,Optimizing Recordings,録音ファイルを最適化中,Optimizing Recordings,録音ファイルを最適化中,,Sources/Models/ProjectState.swift
+310,録音ファイルの最適化（進捗）,Creating recording files… (%lld / %lld),録音ファイルを生成しています…（%lld / %lld）,Creating recording files… (%lld / %lld),録音ファイルを生成しています…（%lld / %lld）,,Sources/Models/ProjectState.swift
+311,トラックヘッダの右クリックメニュー,Duplicate Track,トラックを複製,Duplicate Track,トラックを複製,,Sources/Views/ArrangerView.swift
+312,フォルダヘッダの右クリックメニュー,Duplicate Folder,フォルダを複製,Duplicate Folder,フォルダを複製,,Sources/Views/ArrangerView.swift
+313,ミキサー・インサートのツールチップ,%@-This plug-in cannot be used,%@-このプラグインは使用できません,%@-This plug-in cannot be used,%@-このプラグインは使用できません,%@ はプラグイン名が入ります。数と順番は変えないでください／赤く表示したプラグイン（この Mac にあるが使えない）,Sources/Views/MixerView.swift
+314,ミキサー・インサートのツールチップ,%@-This plug-in was not found,%@-このプラグインは見つかりません,%@-This plug-in was not found,%@-このプラグインは見つかりません,%@ はプラグイン名が入ります。数と順番は変えないでください／赤く表示したプラグイン（インストールされていない）,Sources/Views/MixerView.swift
+315,録音ファイルの最適化（確認）,Down-convert the sample rate (to %lld Hz),サンプリング周波数をダウンコンバートする（%lld Hz へ）,Down-convert the sample rate (to %lld Hz),サンプリング周波数をダウンコンバートする（%lld Hz へ）,%lld は現在のプロジェクトのサンプルレート（Hz）が入ります,Sources/Models/ProjectState.swift
+316,録音ファイルの最適化（確認）,Down-convert the bit depth (to 24-bit),ビット数をダウンコンバートする（24bit へ）,Down-convert the bit depth (to 24-bit),ビット数をダウンコンバートする（24bit へ）,,Sources/Models/ProjectState.swift
+317,録音ファイルの最適化（確認）,Down-convert the channels (stereo to mono on mono tracks),CH数をダウンコンバートする（モノトラックのステレオをモノへ）,Down-convert the channels (stereo to mono on mono tracks),CH数をダウンコンバートする（モノトラックのステレオをモノへ）,,Sources/Models/ProjectState.swift
+318,録音ファイルの最適化（確認）,Nothing is converted up. Files at or below the current project settings keep their original values.,アップコンバートは行いません。現在のプロジェクト設定値と同じか、それ以下のファイルは、元の設定値を維持します。,Nothing is converted up. Files at or below the current project settings keep their original values.,アップコンバートは行いません。現在のプロジェクト設定値と同じか、それ以下のファイルは、元の設定値を維持します。,,Sources/Models/ProjectState.swift
+319,ダイアログ・メッセージ（保存・読み込み・再起動など）,The audio device could not be set to the project's sample rate of %lld Hz. The project plays at %lld Hz.,オーディオ機器をプロジェクトのサンプルレート %lld Hz に設定できませんでした。プロジェクトは %lld Hz で再生されます。,The audio device could not be set to the project's sample rate of %lld Hz. The project plays at %lld Hz.,オーディオ機器をプロジェクトのサンプルレート %lld Hz に設定できませんでした。プロジェクトは %lld Hz で再生されます。,1つ目の %lld はプロジェクトの、2つ目は現在のサンプルレート（Hz）が入ります。数と順番は変えないでください,Sources/Models/ProjectState.swift
+320,トランスポートバー,Show/Hide Tuner,チューナーの表示／非表示,Show/Hide Tuner,チューナーの表示／非表示,,Sources/Views/TransportBarView.swift
+321,チューナー,Tuner,チューナー,Tuner,チューナー,,Sources/Audio/TunerHost.swift
+322,チューナー,No Input,入力なし,No Input,入力なし,,Sources/Audio/TunerHost.swift
+323,チューナー,The input channel the tuner listens to,チューナーが聴く入力チャンネル,The input channel the tuner listens to,チューナーが聴く入力チャンネル,,Sources/Audio/TunerHost.swift
+324,起動時のプラグイン検出ログ,Audio Unit instruments: %lld found,Audio Unit インストゥルメント: %lld 件,Audio Unit instruments: %lld found,Audio Unit インストゥルメント: %lld 件,%lld は数値が入ります,Sources/Audio/PluginManager.swift
+325,トラック一覧・ルーラー,Add Instrument Track,インストゥルメントトラックを追加,Add Instrument Track,インストゥルメントトラックを追加,,Sources/Views/ArrangerView.swift
+326,トラックヘッダー,Show Instrument,インストゥルメントを表示,Show Instrument,インストゥルメントを表示,音源名のボタンのヘルプ,Sources/Views/TrackHeaderView.swift
+327,トラックヘッダー,Choose Instrument,インストゥルメントを選択,Choose Instrument,インストゥルメントを選択,▼ボタンのヘルプ,Sources/Views/TrackHeaderView.swift
+328,トラックヘッダー,No Instrument,インストゥルメントなし,No Instrument,インストゥルメントなし,,Sources/Views/TrackHeaderView.swift
+329,トラックヘッダー,Loading…,読み込み中…,Loading…,読み込み中…,音源の読み込み中,Sources/Views/TrackHeaderView.swift
+330,トラックヘッダー,%@ (unavailable),%@（使用不可）,%@ (unavailable),%@（使用不可）,%@ は音源名が入ります,Sources/Views/TrackHeaderView.swift
+331,ファイルメニュー,Import MIDI File…,MIDI ファイルを読み込む…,Import MIDI File…,MIDI ファイルを読み込む…,,Sources/MyDAWApp.swift
+332,MIDI 読み込みダイアログ,Import MIDI File,MIDI ファイルを読み込む,Import MIDI File,MIDI ファイルを読み込む,,Sources/Models/ProjectState.swift
+333,MIDI 読み込みのエラー,Could not read the MIDI file.\n\n%@,MIDI ファイルを読み込めませんでした。\n\n%@,Could not read the MIDI file.\n\n%@,MIDI ファイルを読み込めませんでした。\n\n%@,%@ は理由が入ります,Sources/Models/ProjectState.swift
+334,MIDI 読み込みのエラー,The MIDI file has no notes.,MIDI ファイルにノートがありません。,The MIDI file has no notes.,MIDI ファイルにノートがありません。,,Sources/Models/ProjectState.swift
+335,MIDI 読み込みの確認,Use the MIDI file's tempo?,MIDI ファイルのテンポを使いますか？,Use the MIDI file's tempo?,MIDI ファイルのテンポを使いますか？,,Sources/Models/ProjectState.swift
+336,MIDI 読み込みの確認,The file is at %@ BPM; the project is at %@ BPM.,ファイルのテンポは %@ BPM、プロジェクトのテンポは %@ BPM です。,The file is at %@ BPM; the project is at %@ BPM.,ファイルのテンポは %@ BPM、プロジェクトのテンポは %@ BPM です。,%@ はテンポが入ります。順番は変えないでください,Sources/Models/ProjectState.swift
+337,MIDI 読み込みの確認,Use File Tempo,ファイルのテンポを使う,Use File Tempo,ファイルのテンポを使う,,Sources/Models/ProjectState.swift
+338,MIDI 読み込みの確認,Keep Project Tempo,プロジェクトのテンポのまま,Keep Project Tempo,プロジェクトのテンポのまま,,Sources/Models/ProjectState.swift
+339,MIDI 読み込みのエラー,The file is not a Standard MIDI File.,スタンダード MIDI ファイルではありません。,The file is not a Standard MIDI File.,スタンダード MIDI ファイルではありません。,,Sources/Models/StandardMIDIFile.swift
+340,MIDI 読み込みのエラー,MIDI files timed in SMPTE frames are not supported.,SMPTE フレーム単位の MIDI ファイルには対応していません。,MIDI files timed in SMPTE frames are not supported.,SMPTE フレーム単位の MIDI ファイルには対応していません。,,Sources/Models/StandardMIDIFile.swift
+341,MIDI 読み込みのエラー,The MIDI file is damaged.,MIDI ファイルが壊れています。,The MIDI file is damaged.,MIDI ファイルが壊れています。,,Sources/Models/StandardMIDIFile.swift
+342,MIDI クリップの右クリックメニュー,Mute Clip,クリップをミュート,Mute Clip,クリップをミュート,,Sources/Views/WaveformLaneView.swift
+343,MIDI クリップの右クリックメニュー,Unmute Clip,ミュートを解除,Unmute Clip,ミュートを解除,,Sources/Views/WaveformLaneView.swift
+344,MIDI クリップの右クリックメニュー,Duplicate Clip,クリップを複製,Duplicate Clip,クリップを複製,,Sources/Views/WaveformLaneView.swift
+345,MIDI クリップの右クリックメニュー,Delete Clip,クリップを削除,Delete Clip,クリップを削除,,Sources/Views/WaveformLaneView.swift
+346,トランスポート（MIDI 録音モードのヘルプ）,MIDI Recording: Replace (notes in the recorded range are removed),MIDI 録音：置き換え（録音した範囲の既存のノートを消します）,MIDI Recording: Replace (notes in the recorded range are removed),MIDI 録音：置き換え（録音した範囲の既存のノートを消します）,,Sources/Views/TransportBarView.swift
+347,トランスポート（MIDI 録音モードのヘルプ）,MIDI Recording: Overdub (notes already there are kept),MIDI 録音：重ね録り（既存のノートは残ります）,MIDI Recording: Overdub (notes already there are kept),MIDI 録音：重ね録り（既存のノートは残ります）,,Sources/Views/TransportBarView.swift
+348,MIDI クリップの右クリックメニュー,Merge Clips,クリップを結合,Merge Clips,クリップを結合,,Sources/Views/WaveformLaneView.swift
+349,ピアノロール,Double-click a MIDI clip to edit it here.,MIDI クリップをダブルクリックすると、ここで編集できます。,Double-click a MIDI clip to edit it here.,MIDI クリップをダブルクリックすると、ここで編集できます。,,Sources/Views/PianoRollView.swift
+353,ピアノロールのインスペクター,Straight,ストレート,Straight,ストレート,,Sources/Views/PianoRollView.swift
+354,ピアノロールのインスペクター,Triplet,3 連符,Triplet,3 連符,,Sources/Views/PianoRollView.swift
+355,ピアノロールのツール,Arrow Tool,矢印ツール,Arrow Tool,矢印ツール,,Sources/Views/PianoRollView.swift
+356,ピアノロールのツール,Pencil Tool,鉛筆ツール,Pencil Tool,鉛筆ツール,,Sources/Views/PianoRollView.swift
+357,ピアノロールのツール,Eraser Tool,消しゴムツール,Eraser Tool,消しゴムツール,,Sources/Views/PianoRollView.swift
+360,ピアノロールのツールバー,Snap to Grid,グリッドにスナップ,Snap to Grid,グリッドにスナップ,,Sources/Views/PianoRollView.swift
+361,ピアノロールのツールバー,Zoom Out,縮小,Zoom Out,縮小,,Sources/Views/PianoRollView.swift
+362,ピアノロールのツールバー,Zoom In,拡大,Zoom In,拡大,,Sources/Views/PianoRollView.swift
+363,下部パネルのタブ,Piano Roll,ピアノロール,Piano Roll,ピアノロール,,Sources/Views/PianoRollView.swift
+364,ピアノロールのツールバー,Follow the Track View (scrolls with the playhead),トラックの表示範囲に合わせる（再生位置に合わせてスクロール）,Follow the Track View (scrolls with the playhead),トラックの表示範囲に合わせる（再生位置に合わせてスクロール）,,Sources/Views/PianoRollView.swift
+365,ピアノロールのツールバー,Audition Notes: On,ノートを試聴：ON,Audition Notes: On,ノートを試聴：ON,,Sources/Views/PianoRollView.swift
+366,ピアノロールのツールバー,Audition Notes: Off,ノートを試聴：OFF,Audition Notes: Off,ノートを試聴：OFF,,Sources/Views/PianoRollView.swift
+367,ピアノロールの右クリックメニュー,Mute Notes,ノートをミュート,Mute Notes,ノートをミュート,,Sources/Views/PianoRollView.swift
+368,ピアノロールの右クリックメニュー,Unmute Notes,ノートのミュートを解除,Unmute Notes,ノートのミュートを解除,,Sources/Views/PianoRollView.swift
+369,ピアノロールの右クリックメニュー,Delete Notes,ノートを削除,Delete Notes,ノートを削除,,Sources/Views/PianoRollView.swift
+370,ピアノロールの右クリックメニュー,Select All Notes,すべてのノートを選択,Select All Notes,すべてのノートを選択,,Sources/Views/PianoRollView.swift
+372,ピアノロールのクォンタイズ（ヘルプ）,Quantize Note Starts,ノートの開始をクォンタイズ,Quantize Note Starts,ノートの開始をクォンタイズ,,Sources/Views/PianoRollView.swift
+373,ピアノロールのクォンタイズ（ヘルプ）,Quantize Note Ends,ノートの終了をクォンタイズ,Quantize Note Ends,ノートの終了をクォンタイズ,,Sources/Views/PianoRollView.swift
+374,ピアノロールのクォンタイズ（ヘルプ）,"Quantize Note Starts, Keeping Their Length",長さを保ってノートの開始をクォンタイズ,"Quantize Note Starts, Keeping Their Length",長さを保ってノートの開始をクォンタイズ,,Sources/Views/PianoRollView.swift
+375,ピアノロール（ノートの情報）,%@  Velocity %lld,%@  ベロシティ %lld,%@  Velocity %lld,%@  ベロシティ %lld,%@ は音名、%lld は数値が入ります,Sources/Views/PianoRollView.swift
+376,ピアノロールのインスペクター（調整）,Quantize the selected notes (Q),選んだノートをクォンタイズ（Q）,Quantize the selected notes (Q),選んだノートをクォンタイズ（Q）,,Sources/Views/PianoRollView.swift
+378,ピアノロールのインスペクター（調整）,Fixed Length,固定長,Fixed Length,固定長,,Sources/Views/PianoRollView.swift
+380,ピアノロールのインスペクター（調整）,Velocity,ベロシティ,Velocity,ベロシティ,,Sources/Views/PianoRollView.swift
+381,ピアノロールのインスペクター（調整）,Fixed,固定,Fixed,固定,,Sources/Views/PianoRollView.swift
+382,ピアノロールのインスペクター（調整）,Scale,比率,Scale,比率,,Sources/Views/PianoRollView.swift
+383,ピアノロールのインスペクター（調整）,Offset,相対,Offset,相対,,Sources/Views/PianoRollView.swift
+384,ピアノロールのインスペクター（調整）,Transpose,移調,Transpose,移調,,Sources/Views/PianoRollView.swift
+386,ピアノロールのインスペクター（調整）,Octave Shift,オクターブ移動,Octave Shift,オクターブ移動,,Sources/Views/PianoRollView.swift
+389,ピアノロールのインスペクター（調整）,Apply Swing,スウィングを適用,Apply Swing,スウィングを適用,,Sources/Views/PianoRollView.swift
+391,ピアノロールのインスペクター・ツールバー,Velocity Adjustment,ベロシティ調整,Velocity Adjustment,ベロシティ調整,,Sources/Views/PianoRollView.swift
+392,ピアノロールのインスペクター・ツールバー,Apply Transpose,移調を適用,Apply Transpose,移調を適用,,Sources/Views/PianoRollView.swift
+393,ピアノロールのインスペクター・ツールバー,Swing Adjustment,スウィング調整,Swing Adjustment,スウィング調整,,Sources/Views/PianoRollView.swift
+394,ピアノロールのインスペクター・ツールバー,Start,開始点,Start,開始点,,Sources/Views/PianoRollView.swift
+395,ピアノロールのインスペクター・ツールバー,In 1/128 of a bar,1 小節を 128 とした値,In 1/128 of a bar,1 小節を 128 とした値,,Sources/Views/PianoRollView.swift
+396,ピアノロールのインスペクター,Default Values,デフォルト値,Default Values,デフォルト値,,Sources/Views/PianoRollView.swift
+397,ピアノロールのインスペクター,Note Length / Quantize,ノート長／クォンタイズ,Note Length / Quantize,ノート長／クォンタイズ,,Sources/Views/PianoRollView.swift
+398,ピアノロールのインスペクター,Note Length Adjustment,ノート長調整,Note Length Adjustment,ノート長調整,,Sources/Views/PianoRollView.swift
+399,ピアノロールのインスペクター,Remove Overlaps,重なり除去,Remove Overlaps,重なり除去,,Sources/Views/PianoRollView.swift
+400,ピアノロールのレーンのタブ,Pitch Bend,ピッチベンド,Pitch Bend,ピッチベンド,,Sources/Models/PianoRollController.swift
+401,ピアノロールのレーンのタブ,Modulation,モジュレーション,Modulation,モジュレーション,,Sources/Models/PianoRollController.swift
+402,ピアノロールのレーンのタブ,Aftertouch,アフタータッチ,Aftertouch,アフタータッチ,,Sources/Models/PianoRollController.swift
+403,ピアノロールのベロシティ（ドラッグ中の値）,Velocity %lld,ベロシティ %lld,Velocity %lld,ベロシティ %lld,%lld は数値が入ります,Sources/Views/PianoRollView.swift
+404,ミキサーの音源の出力,Output %lld,出力 %lld,Output %lld,出力 %lld,%lld は数値が入ります,Sources/Audio/AudioEngineManager.swift
+405,ミキサーの音源の出力,Separate All Outputs,すべての出力を分ける,Separate All Outputs,すべての出力を分ける,,Sources/Views/MixerView.swift
+406,ミキサーの音源の出力,Back to the Mix,ミックスに戻す,Back to the Mix,ミックスに戻す,,Sources/Views/MixerView.swift
+407,ミキサーの音源の出力（ヘルプ）,Instrument Outputs,インストゥルメントの出力,Instrument Outputs,インストゥルメントの出力,,Sources/Views/MixerView.swift
+408,ミキサー,Bus %lld,Bus %lld,Bus %lld,Bus %lld,%lld は数値が入ります,Sources/Models/ProjectState+OutputRouting.swift
+409,ミキサー,Add Bus,Bus を追加,Add Bus,Bus を追加,,Sources/Views/MixerView.swift
+410,ミキサー,Delete Bus,Bus を削除,Delete Bus,Bus を削除,,Sources/Views/MixerView.swift
+411,ミキサー（ヘルプ）,Output Destination,送り先,Output Destination,送り先,,Sources/Views/MixerView.swift
+412,Bus 削除の確認,The bus's plug-ins and sends will be removed, and channels going to it will go to MASTER. This cannot be undone.,Bus のプラグインとセンドは削除され、この Bus に送っていたチャンネルは MASTER に送られます。元に戻せません。,The bus's plug-ins and sends will be removed, and channels going to it will go to MASTER. This cannot be undone.,Bus のプラグインとセンドは削除され、この Bus に送っていたチャンネルは MASTER に送られます。元に戻せません。,,Sources/Views/MixerView.swift
+413,ミキサーの音源の出力（ヘルプ）,Show Output Channels,出力チャンネルを表示,Show Output Channels,出力チャンネルを表示,,Sources/Views/MixerView.swift
+414,ミキサーの音源の出力（ヘルプ）,Hide Output Channels,出力チャンネルを隠す,Hide Output Channels,出力チャンネルを隠す,,Sources/Views/MixerView.swift
+415,ステータスバー,MIDI not connected,MIDI接続されていません,MIDI not connected,MIDI接続されていません,有効な MIDI 機器がないときの表示,Sources/Views/MIDIInputIndicator.swift
+416,トラックヘッダ（ヘルプ）,Volume Automation,ボリュームオートメーション,Volume Automation,ボリュームオートメーション,,Sources/Views/TrackHeaderView.swift
+417,トラックヘッダ（ヘルプ）,Automation gain at the playhead,再生位置のオートメーションゲイン,Automation gain at the playhead,再生位置のオートメーションゲイン,,Sources/Views/TrackHeaderView.swift
+418,オートメーションの青丸の右クリックメニュー,Enter Value…,数値で入力…,Enter Value…,数値で入力…,,Sources/Views/VolumeAutomationViews.swift
+419,オートメーションの数値入力,Automation Gain,オートメーションゲイン,Automation Gain,オートメーションゲイン,,Sources/Models/ProjectState+VolumeAutomation.swift
+420,オートメーションの数値入力,"Enter a level in dB, from +12 down to -inf.",レベルを dB で入力してください（+12 〜 -inf）。,"Enter a level in dB, from +12 down to -inf.",レベルを dB で入力してください（+12 〜 -inf）。,,Sources/Models/ProjectState+VolumeAutomation.swift
+421,トランスポートバー,METER,拍子,METER,拍子,,Sources/Views/TransportBarView.swift
+422,MIDI 読み込みの確認,Use the MIDI file's time signature?,MIDI ファイルの拍子を使いますか？,Use the MIDI file's time signature?,MIDI ファイルの拍子を使いますか？,,Sources/Models/ProjectState.swift
+423,MIDI 読み込みの確認,The file is in %@; the project is in %@.,ファイルの拍子は %@、プロジェクトの拍子は %@ です。,The file is in %@; the project is in %@.,ファイルの拍子は %@、プロジェクトの拍子は %@ です。,,Sources/Models/ProjectState.swift
+424,MIDI 読み込みの確認,Use File Time Signature,ファイルの拍子を使う,Use File Time Signature,ファイルの拍子を使う,,Sources/Models/ProjectState.swift
+425,MIDI 読み込みの確認,Keep Project Time Signature,プロジェクトの拍子のまま,Keep Project Time Signature,プロジェクトの拍子のまま,,Sources/Models/ProjectState.swift

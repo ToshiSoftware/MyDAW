@@ -547,6 +547,6 @@ AUv3 の拡張機能の音源は常に別プロセスで動く（`.loadInProcess
 
 - 変更前後で `snapshots/<名前>-<日時>/` にソースを保存する運用。2026-10-06 からは Git リポジトリでもある（VS Code からコミット。git ディレクトリは Google Drive の外）。
 - 内蔵エフェクトは `../MyPlugIn` で並行して開発している。修正はそちらで行い、MyDAW をビルドする前に `scripts/sync-myplugin.sh` を実行する。
-- ビルドは `./scripts/build.sh`。`build/MyDAW.zip` は作らない。git の pre-commit フック（`scripts/pre-commit.sh`、main のみ）が、ステージしたソースが `build/MyDAW.app` より新しいコミットを止め、`scripts/make-zip.sh` で ZIP を作り直してコミットに加える。post-commit フックは ZIP とマニュアルを Web 用フォルダへコピーする（`copy-to-note.sh`）。git ディレクトリ側のフックはこれらのスクリプトを呼ぶだけなので、新しいクローンでは作り直すこと。Google Drive 上でビルドする場合、署名前に拡張属性を除去する処理を含む。
+- ビルドは `./scripts/build.sh`。`build/MyDAW.zip` は作らない。git の pre-commit フック（`scripts/pre-commit.sh`、main のみ）が、ステージしたソースが `build/MyDAW.app` より新しいコミットを止め、`scripts/make-zip.sh` で ZIP を作り直す（ZIP はコミットせず、`scripts/make-release.sh` で GitHub Releases に公開する）。作者の手元では post-commit フックが ZIP とマニュアルを Web 用フォルダへコピーする（そのスクリプトはリポジトリに含まない）。git ディレクトリ側のフックはスクリプトを呼ぶだけなので、新しいクローンでは作り直すこと。Google Drive 上でビルドする場合、署名前に拡張属性を除去する処理を含む。
 - 実行時ログの取得: 標準出力はバッファされ、異常終了時に末尾が失われる。診断は標準エラー（`FileHandle.standardError`）かファイル出力が確実。`NSLog` はシステムログで読めない場合がある。
 - 音声タイミングの問題は、推測で直さず、共通時計でのタイムスタンプ計測やグラフ構成のダンプで事実を確認してから修正する。

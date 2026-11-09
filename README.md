@@ -171,7 +171,7 @@ MyDAW/
 ├── scripts/            build.sh, run.sh, build-lame.sh (MP3 encoder), sync-myplugin.sh (copies MyPlugIn sources),
 │                       make-zip.sh / pre-commit.sh (build/MyDAW.zip), make-release.sh (GitHub Release),
 │                       check-public.sh (checks the zip and manuals before publishing)
-├── docs/               Analysis, specification, manual sources (docs/manual)
+├── docs/               Analysis and specification documents, English/Japanese UI string table
 ├── OperationManual_*.pdf
 ├── AppIcon.icns        App icon
 ├── DocumentIcon.icns   .mydaw file icon (a page with the app icon)

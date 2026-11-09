@@ -171,7 +171,7 @@ MyDAW/
 ├── scripts/            build.sh、run.sh、build-lame.sh（MP3 エンコーダ）、sync-myplugin.sh（MyPlugIn のソースをコピー）、
 │                       make-zip.sh／pre-commit.sh（build/MyDAW.zip の作成）、make-release.sh（GitHub Release）、
 │                       check-public.sh（公開前に zip とマニュアルを確認）
-├── docs/               解析書、仕様書、マニュアル原稿（docs/manual）
+├── docs/               解析書、仕様書、UI 文字列の日英対照表
 ├── OperationManual_*.pdf
 ├── AppIcon.icns        アプリのアイコン
 ├── DocumentIcon.icns   .mydaw ファイルのアイコン（書類＋アプリアイコン）
