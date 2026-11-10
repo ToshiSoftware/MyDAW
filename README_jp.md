@@ -7,8 +7,8 @@ MyDAW は、Apple Silicon Mac 向けのマルチトラック・オーディオ�
 [NOTE]
 このプロジェクトは、AI（Copilot、Antigravity）を使用して自動生成されました。詳細については、以下の記事をご参照ください。
 
-* [日本語] https://note.com/tokada375/n/n8582557559d5
-* [英語, 機械翻訳] https://note.com/tokada375/n/n8582557559d5?hl=en
+* [日本語] [https://note.com/tokada375/n/n8582557559d5](https://note.com/tokada375/n/nf83e8a860512)
+* [英語, 機械翻訳] [https://note.com/tokada375/n/n8582557559d5?hl=en](https://note.com/tokada375/n/nf83e8a860512?hl=en)
 
 ## ダウンロード
 
