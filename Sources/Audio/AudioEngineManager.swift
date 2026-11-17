@@ -538,6 +538,13 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
     private var trackMeters: [UUID: RenderPeakMeter] = [:]
     private var fxOutputPeaks: [UUID: StereoPeak] = [:]
     private var liveWaveformPeaksBuffer: [UUID: [[(min: Float, max: Float)]]] = [:]
+    /// The unfinished live waveform point of each recording track channel
+    /// (min, max, samples so far), carried into the next input buffer so
+    /// the points stay exactly `liveWaveformSamplesPerPoint` samples apart.
+    /// Under peakLock; cleared when a recording starts.
+    private var liveWaveformCarry: [UUID: [(min: Float, max: Float, count: Int)]] = [:]
+    /// Samples per live waveform point: WaveformCache's `samplesPerPeak`.
+    private let liveWaveformSamplesPerPoint = 512
     // Track meter health (checkTrackMeters). The render cycle counts
     // advance even on silence; the master tap count is written under peakLock.
     private var masterTapCallbackCount = 0
@@ -1753,25 +1760,50 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
             // Stream directly to disk writer
             writer.write(buffer: trackBuffer)
 
-            // Calculate peak for live waveform
+            // Live waveform: the real min/max of every 512 samples (the
+            // WaveformCache resolution), not one peak per ~100 ms input
+            // buffer, which drew the take as coarse blocks. A partial point
+            // is carried into the next buffer.
+            let pointSize = liveWaveformSamplesPerPoint
+            var newPoints: [[(min: Float, max: Float)]] = Array(repeating: [], count: Int(outChannels))
             peakLock.lock()
+            var carry = self.liveWaveformCarry[cfg.trackId]
+                ?? Array(repeating: (min: 0, max: 0, count: 0), count: Int(outChannels))
+            peakLock.unlock()
+            for channel in 0..<Int(outChannels) {
+                let samples = trackData[channel]
+                var (lo, hi, count) = carry[channel]
+                newPoints[channel].reserveCapacity(capturedFrameLength / pointSize + 1)
+                var i = 0
+                while i < capturedFrameLength {
+                    let n = min(pointSize - count, capturedFrameLength - i)
+                    var j = i
+                    let stop = i + n
+                    while j < stop {
+                        let v = samples[j]
+                        if v < lo { lo = v }
+                        if v > hi { hi = v }
+                        j += 1
+                    }
+                    count += n
+                    i = stop
+                    if count == pointSize {
+                        newPoints[channel].append((min: lo, max: hi))
+                        lo = 0; hi = 0; count = 0
+                    }
+                }
+                carry[channel] = (lo, hi, count)
+            }
+            peakLock.lock()
+            self.liveWaveformCarry[cfg.trackId] = carry
             if self.liveWaveformPeaksBuffer[cfg.trackId] == nil {
                 self.liveWaveformPeaksBuffer[cfg.trackId] = Array(
                     repeating: [],
                     count: Int(outChannels)
                 )
             }
-            // WaveformCache uses 512 samples per point. Keep live waveform
-            // width in sync with the number of captured samples in this buffer.
-            let livePointCount = max(1, (capturedFrameLength + 511) / 512)
-            for channel in 0..<Int(outChannels) {
-                let sourceChannel = channel == 0 ? ch0 : ch1
-                let peakVal = currentBufferPeaks[sourceChannel]
-                for _ in 0..<livePointCount {
-                    self.liveWaveformPeaksBuffer[cfg.trackId]?[channel].append(
-                        (min: -peakVal, max: peakVal)
-                    )
-                }
+            for channel in 0..<Int(outChannels) where !newPoints[channel].isEmpty {
+                self.liveWaveformPeaksBuffer[cfg.trackId]?[channel].append(contentsOf: newPoints[channel])
             }
             peakLock.unlock()
         }
@@ -5178,6 +5210,9 @@ public final class AudioEngineManager: NSObject, ObservableObject, NSWindowDeleg
         }
         hasPendingRecording = !activeClips.isEmpty
 
+        peakLock.withLock {
+            self.liveWaveformCarry.removeAll()
+        }
         captureLock.withLock {
             self.writersSnapshot = activeWriters
             self.recordingActiveState = true
