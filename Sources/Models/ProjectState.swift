@@ -253,9 +253,13 @@ public final class ProjectState: ObservableObject {
             scheduleWaveformRenderSync()
         }
     }
-    /// The smallest scale still shows a standard track's name and buttons.
+    /// The smallest scale still shows a standard track's name.
     public static let minimumTrackHeightScale: CGFloat =
         TrackHeaderView.minimumRowHeight / AudioTrack.defaultTrackHeight
+    /// The smallest scale that still shows a standard track's buttons; a
+    /// double-click on the track height slider returns to it.
+    public static let controlsTrackHeightScale: CGFloat =
+        TrackHeaderView.controlsRowHeight / AudioTrack.defaultTrackHeight
     public static let maximumTrackHeightScale: CGFloat = 3.0
 
     /// Live preview of a waveform-scale change: while the control moves,

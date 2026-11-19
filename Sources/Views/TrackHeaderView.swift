@@ -92,10 +92,20 @@ public struct TrackHeaderView: View {
         track.trackHeight
     }
 
-    /// Shortest drawn row: top padding 6 + name row 16 + spacing 5 +
-    /// button row 22 + resize handle 4 + gap 3. The level meter below
-    /// them may be cut off.
-    public static let minimumRowHeight: CGFloat = 56.0
+    /// Shortest drawn row: top padding 6 + name row 16 + gap 2 + resize
+    /// handle 4. Only the name is shown at this height.
+    public static let minimumRowHeight: CGFloat = 28.0
+
+    /// Shortest drawn row that still shows the buttons: top padding 6 +
+    /// name row 16 + spacing 5 + button row 22 + resize handle 4 + gap 3.
+    /// The level meter below them may be cut off. Below this height only
+    /// the name row is shown.
+    public static let controlsRowHeight: CGFloat = 56.0
+
+    /// Whether the row is tall enough for the buttons and the meter.
+    private var showsControls: Bool {
+        Self.rowHeight(for: track) * projectState.trackHeightScale >= Self.controlsRowHeight - 0.5
+    }
 
     public var body: some View {
         HStack(spacing: 0) {
@@ -179,6 +189,7 @@ public struct TrackHeaderView: View {
                 }
 
                 // Middle Row: R / M / S buttons & Input Selector
+                if showsControls {
                 HStack(spacing: 5) {
                     // Record Arm [R] (Record Mode vs Playback Mode)
                     Button(action: {
@@ -303,6 +314,7 @@ public struct TrackHeaderView: View {
                 }
 
                 TrackHeaderMeter(meter: track.meter, isRecordArmed: track.isAudioRecordArmed)
+                }
 
             }
             .padding(.horizontal, 8)

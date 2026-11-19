@@ -54,6 +54,7 @@
 "Timeline pixels per second" = "Timeline pixels per second";
 "×%@" = "×%@";
 "All track heights" = "All track heights";
+"Double-click: smallest height with buttons" = "Double-click: smallest height with buttons";
 "Waveform vertical scale" = "Waveform vertical scale";
 "Input and output devices use the same Core Audio buffer size." = "Input and output devices use the same Core Audio buffer size.";
 "Language" = "Language";

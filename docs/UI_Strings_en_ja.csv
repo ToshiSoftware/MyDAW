@@ -411,3 +411,4 @@
 423,MIDI 読み込みの確認,The file is in %@; the project is in %@.,ファイルの拍子は %@、プロジェクトの拍子は %@ です。,The file is in %@; the project is in %@.,ファイルの拍子は %@、プロジェクトの拍子は %@ です。,,Sources/Models/ProjectState.swift
 424,MIDI 読み込みの確認,Use File Time Signature,ファイルの拍子を使う,Use File Time Signature,ファイルの拍子を使う,,Sources/Models/ProjectState.swift
 425,MIDI 読み込みの確認,Keep Project Time Signature,プロジェクトの拍子のまま,Keep Project Time Signature,プロジェクトの拍子のまま,,Sources/Models/ProjectState.swift
+426,トランスポートバー／設定ダイアログ,Double-click: smallest height with buttons,ダブルクリック: ボタンが表示される最小の高さに戻す,Double-click: smallest height with buttons,ダブルクリック: ボタンが表示される最小の高さに戻す,,Sources/Views/TransportBarView.swift

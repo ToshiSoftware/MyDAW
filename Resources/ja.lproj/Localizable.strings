@@ -54,6 +54,7 @@
 "Timeline pixels per second" = "時間表示倍率（ピクセル／秒）";
 "×%@" = "×%@";
 "All track heights" = "全トラックの高さ";
+"Double-click: smallest height with buttons" = "ダブルクリック: ボタンが表示される最小の高さに戻す";
 "Waveform vertical scale" = "波形の縦倍率";
 "Input and output devices use the same Core Audio buffer size." = "入力と出力の機器は同じ Core Audio バッファサイズを使います。";
 "Language" = "言語";

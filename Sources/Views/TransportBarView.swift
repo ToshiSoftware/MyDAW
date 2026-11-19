@@ -460,6 +460,12 @@ public struct TransportBarView: View {
                 )
                     .frame(width: 70)
                     .accentColor(.yellow)
+                    // Double-click: back to the smallest height that still
+                    // shows the track buttons.
+                    .background(DoubleClickMonitor {
+                        projectState.zoomTrackHeightAroundCurrentTrack(ProjectState.controlsTrackHeightScale)
+                    })
+                    .help("Double-click: smallest height with buttons")
                 Text("×\(String(format: "%.1f", projectState.trackHeightScale))")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
@@ -964,3 +970,67 @@ private struct BufferSettingsView: View {
     }
 }
 
+
+/// Calls `action` on a double-click inside its frame. The native Slider
+/// tracks the mouse itself, so SwiftUI tap gestures on it never fire; this
+/// watches the window's mouse-downs instead and consumes the second click,
+/// so the slider does not move to the click point after the reset.
+private struct DoubleClickMonitor: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassThroughView()
+        context.coordinator.view = view
+        context.coordinator.startMonitoring()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stopMonitoring()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    private final class PassThroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        var action: () -> Void
+        private var monitor: Any?
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        func startMonitoring() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard let self,
+                      event.clickCount == 2,
+                      let view = self.view,
+                      let window = view.window,
+                      event.window === window,
+                      view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else {
+                    return event
+                }
+                self.action()
+                return nil
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+}
