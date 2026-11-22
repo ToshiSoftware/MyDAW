@@ -1,5 +1,6 @@
 #!/bin/bash
 # Publishes build/MyDAW.zip as a GitHub Release of the current commit.
+# build/SampleSongProject.zip is attached too when it exists.
 # The tag is v<version>, e.g. v4.0.20261107.1530, from the app's Info.plist. Runs check-public.sh first and stops if it finds anything.
 # Needs the GitHub CLI (gh) signed in. Usage: make-release.sh [--draft]
 set -e
@@ -9,6 +10,7 @@ PROJECT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 cd "$PROJECT_DIR"
 APP_BUNDLE="build/MyDAW.app"
 APP_ZIP="build/MyDAW.zip"
+SAMPLE_ZIP="build/SampleSongProject.zip"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "make-release: commit your changes first" >&2
@@ -27,5 +29,15 @@ NOTES="MyDAW $VERSION for Apple Silicon Macs (macOS 13 or later).
 The app is not notarized: after unzipping, allow it in System Settings > Privacy & Security (Open Anyway).
 Manuals: OperationManual_en.pdf / OperationManual_jp.pdf in the repository."
 
-gh release create "$TAG" "$APP_ZIP" --target "$(git rev-parse HEAD)" \
+ASSETS=("$APP_ZIP")
+if [ -f "$SAMPLE_ZIP" ]; then
+    ASSETS+=("$SAMPLE_ZIP")
+    NOTES="$NOTES
+
+SampleSongProject.zip: a sample song project (BalloonAdventure). Unzip it anywhere and open BalloonAdventure.mydaw with File > Open Project… in MyDAW. Keep the Recordings folder next to the .mydaw file."
+else
+    echo "make-release: $SAMPLE_ZIP not found, releasing without the sample project" >&2
+fi
+
+gh release create "$TAG" "${ASSETS[@]}" --target "$(git rev-parse HEAD)" \
     --title "MyDAW $VERSION" --notes "$NOTES" "$@"
