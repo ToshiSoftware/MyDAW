@@ -412,3 +412,5 @@
 424,MIDI 読み込みの確認,Use File Time Signature,ファイルの拍子を使う,Use File Time Signature,ファイルの拍子を使う,,Sources/Models/ProjectState.swift
 425,MIDI 読み込みの確認,Keep Project Time Signature,プロジェクトの拍子のまま,Keep Project Time Signature,プロジェクトの拍子のまま,,Sources/Models/ProjectState.swift
 426,トランスポートバー／設定ダイアログ,Double-click: smallest height with buttons,ダブルクリック: ボタンが表示される最小の高さに戻す,Double-click: smallest height with buttons,ダブルクリック: ボタンが表示される最小の高さに戻す,,Sources/Views/TransportBarView.swift
+427,メニュー（ウインドウ）,Minimize,しまう,Minimize,しまう,⌘M はクリップのミュートに使うためキーなし,Sources/MyDAWApp.swift
+428,メニュー（ウインドウ）,Zoom,拡大／縮小,Zoom,拡大／縮小,,Sources/MyDAWApp.swift

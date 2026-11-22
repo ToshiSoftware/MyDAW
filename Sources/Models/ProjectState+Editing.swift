@@ -246,7 +246,7 @@ extension ProjectState {
         audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
     }
 
-    // MARK: Selected clips by key (⌘T, ⌘D, ⌃M)
+    // MARK: Selected clips by key (⌘T, ⌘D, ⌘M)
 
     /// The selected audio clips, track by track.
     private var selectedAudioClips: [(track: AudioTrack, clip: AudioClip)] {
@@ -301,7 +301,7 @@ extension ProjectState {
         audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
     }
 
-    /// ⌃M: mutes the selected clips (audio and MIDI), or unmutes them all
+    /// ⌘M: mutes the selected clips (audio and MIDI), or unmutes them all
     /// when all are muted.
     public func toggleMuteSelectedClips() {
         guard !audioEngine.isRecording else { return }

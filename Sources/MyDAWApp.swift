@@ -174,6 +174,16 @@ struct MyDAWApp: App {
                 }
                 .disabled(!projectState.canMoveUnusedRecordings)
             }
+            // Minimize without ⌘M: in MyDAW ⌘M mutes the selected clips
+            // (MainDAWView's key monitor; plug-in windows still minimize).
+            CommandGroup(replacing: .windowSize) {
+                Button("Minimize") {
+                    NSApp.keyWindow?.performMiniaturize(nil)
+                }
+                Button("Zoom") {
+                    NSApp.keyWindow?.performZoom(nil)
+                }
+            }
             CommandGroup(replacing: .help) {
                 Button("MyDAW Help") {
                     // The manual PDF on the web, in the GUI language; the

@@ -698,8 +698,9 @@ struct MenuShortcut {
     static let split = MenuShortcut(key: "t", modifiers: .command)
     static let duplicate = MenuShortcut(key: "d", modifiers: .command)
     static let merge = MenuShortcut(key: "j", modifiers: .command)
-    /// ⌃M, as Logic mutes regions (⌘M is the system's Minimize).
-    static let mute = MenuShortcut(key: "m", modifiers: .control)
+    /// ⌘M. The Window menu's Minimize has no key in MyDAW (see MyDAWApp);
+    /// plug-in windows still minimize with ⌘M.
+    static let mute = MenuShortcut(key: "m", modifiers: .command)
 }
 
 final class ClosureMenuItem: NSMenuItem {

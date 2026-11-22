@@ -518,7 +518,7 @@ private struct MasterExportDialog: View {
 /// Clip-editing keys handled in the arranger (outside text fields).
 private enum EditCommand {
     case cut, copy, paste, selectAll, clearSelection
-    /// ⌘T, ⌘D, ⌘J, ⌃M: the clip commands of the right-click menus.
+    /// ⌘T, ⌘D, ⌘J, ⌘M: the clip commands of the right-click menus.
     case split, duplicate, merge, toggleMute
     /// ⌫ / ⌦: the selected clips or range (notes in the piano roll).
     case delete
@@ -635,24 +635,22 @@ private struct SpacebarHandler: NSViewRepresentable {
                     // Clip commands only in the main window, so a plug-in
                     // window keeps these keys.
                     let clipCommands: [UInt16: EditCommand] = [
-                        17: .split, 2: .duplicate, 38: .merge
+                        17: .split, 2: .duplicate, 38: .merge, 46: .toggleMute
                     ]
                     if !hasShift, event.window === self.view?.window,
                        let command = clipCommands[event.keyCode] {
-                        self.edit(command)
+                        // ⌘M mutes; holding it must not toggle back and forth.
+                        if !(command == .toggleMute && event.isARepeat) {
+                            self.edit(command)
+                        }
                         return nil
                     }
-                }
-
-                // ⌃M (Logic's region mute; ⌘M is the system's Minimize):
-                // mute or unmute the selected clips (notes in the piano roll).
-                if event.keyCode == 46,
-                   modifiers.intersection([.command, .control, .option, .shift]) == .control,
-                   event.window === self.view?.window {
-                    if !event.isARepeat {
-                        self.edit(.toggleMute)
+                    // ⌘M in another window (a plug-in's) still minimizes it:
+                    // the Window menu's Minimize has no key in MyDAW.
+                    if !hasShift, event.keyCode == 46, let window = event.window {
+                        window.performMiniaturize(nil)
+                        return nil
                     }
-                    return nil
                 }
 
                 guard modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {

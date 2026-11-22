@@ -543,7 +543,7 @@ public final class PianoRollController: ObservableObject {
         if paste { self.paste() }
         if selectAll { self.selectAll() }
         if clear { selection = [] }
-        // ⌃M: mutes the selected notes, or unmutes them when all are muted.
+        // ⌘M: mutes the selected notes, or unmutes them when all are muted.
         if toggleMute { setSelectionMuted(selectionHasUnmutedNotes) }
         if delete { deleteSelection() }
         return true
