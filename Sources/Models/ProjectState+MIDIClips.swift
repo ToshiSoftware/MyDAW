@@ -50,7 +50,7 @@ extension ProjectState {
         selectedTrackId = trackId
     }
 
-    private var selectedMIDIClips: [(track: AudioTrack, clip: MIDIClip)] {
+    var selectedMIDIClips: [(track: AudioTrack, clip: MIDIClip)] {
         tracks.flatMap { track in
             track.midiClips.filter { track.selectedMIDIClipIDs.contains($0.id) }.map { (track, $0) }
         }

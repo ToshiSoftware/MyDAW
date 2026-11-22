@@ -1626,29 +1626,33 @@ final class PianoRollCanvas: NSView {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.addItem(ClosureMenuItem(String(localized: "Mute Notes"), symbol: "speaker.slash",
-                                     enabled: controller.selectionHasUnmutedNotes) {
+                                     enabled: controller.selectionHasUnmutedNotes, shortcut: .mute) {
             controller.setSelectionMuted(true)
         })
         menu.addItem(ClosureMenuItem(String(localized: "Unmute Notes"), symbol: "speaker.wave.2",
-                                     enabled: controller.selectionHasMutedNotes) {
+                                     enabled: controller.selectionHasMutedNotes, shortcut: .mute) {
             controller.setSelectionMuted(false)
         })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(String(localized: "Cut"), symbol: "scissors", enabled: hasSelection) {
+        menu.addItem(ClosureMenuItem(String(localized: "Cut"), symbol: "scissors", enabled: hasSelection,
+                                     shortcut: .cut) {
             controller.cutSelection()
         })
-        menu.addItem(ClosureMenuItem(String(localized: "Copy"), symbol: "doc.on.doc", enabled: hasSelection) {
+        menu.addItem(ClosureMenuItem(String(localized: "Copy"), symbol: "doc.on.doc", enabled: hasSelection,
+                                     shortcut: .copy) {
             controller.copySelection()
         })
         menu.addItem(ClosureMenuItem(String(localized: "Paste at Playhead"), symbol: "doc.on.clipboard",
-                                     enabled: controller.canPaste) {
+                                     enabled: controller.canPaste, shortcut: .paste) {
             controller.paste()
         })
-        menu.addItem(ClosureMenuItem(String(localized: "Delete Notes"), symbol: "trash", enabled: hasSelection) {
+        menu.addItem(ClosureMenuItem(String(localized: "Delete Notes"), symbol: "trash", enabled: hasSelection,
+                                     shortcut: .delete) {
             controller.deleteSelection()
         })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(String(localized: "Select All Notes"), symbol: nil, enabled: true) {
+        menu.addItem(ClosureMenuItem(String(localized: "Select All Notes"), symbol: nil, enabled: true,
+                                     shortcut: .selectAll) {
             controller.selectAll()
         })
         return menu

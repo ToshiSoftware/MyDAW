@@ -246,6 +246,85 @@ extension ProjectState {
         audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
     }
 
+    // MARK: Selected clips by key (⌘T, ⌘D, ⌃M)
+
+    /// The selected audio clips, track by track.
+    private var selectedAudioClips: [(track: AudioTrack, clip: AudioClip)] {
+        tracks.flatMap { track in
+            track.clips.filter { track.selectedClipIDs.contains($0.id) }.map { (track, $0) }
+        }
+    }
+
+    /// ⌘T: splits at both edges of the selected range, or else splits the
+    /// selected clips (audio and MIDI) at the playhead, like the menus.
+    public func splitSelectionAtPlayhead() {
+        guard !audioEngine.isRecording else { return }
+        if timeSelection != nil {
+            splitAtTimeSelection()
+            return
+        }
+        if hasMIDISelection {
+            splitSelectedMIDIClips()
+        }
+        // The menu command on any selected clip acts on the whole selection.
+        if let anchor = selectedAudioClips.first {
+            splitMenuTargets(trackId: anchor.track.id, clipId: anchor.clip.id)
+        }
+    }
+
+    /// ⌘D: copies the selected clips (audio and MIDI) as one block whose
+    /// start lands on the playhead, each on its own track, as one undo step;
+    /// the copies become the selection.
+    public func duplicateSelectedClips() {
+        guard !audioEngine.isRecording else { return }
+        let audio = selectedAudioClips
+        let midi = selectedMIDIClips
+        let bpm = audioEngine.bpm
+        let starts = audio.map(\.clip.startTime) + midi.map { MIDITiming.seconds(ticks: $0.clip.startTick, bpm: bpm) }
+        guard let blockStart = starts.min() else { return }
+        let offset = audioEngine.currentTime - blockStart
+        let tickOffset = MIDITiming.ticks(seconds: audioEngine.currentTime, bpm: bpm)
+            - MIDITiming.ticks(seconds: blockStart, bpm: bpm)
+        beginClipEdit()
+        clearSelection()
+        for (track, clip) in audio {
+            let copy = clip.duplicate(at: max(0.0, clip.startTime + offset))
+            track.restoreClip(copy)
+            track.selectedClipIDs.insert(copy.id)
+        }
+        for (track, clip) in midi {
+            let copy = clip.duplicate(at: max(0, clip.startTick + tickOffset))
+            track.restoreMIDIClip(copy)
+            track.selectedMIDIClipIDs.insert(copy.id)
+        }
+        endClipEdit()
+        audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+    }
+
+    /// ⌃M: mutes the selected clips (audio and MIDI), or unmutes them all
+    /// when all are muted.
+    public func toggleMuteSelectedClips() {
+        guard !audioEngine.isRecording else { return }
+        let audio = selectedAudioClips.map(\.clip)
+        let midi = selectedMIDIClips.map(\.clip)
+        guard !audio.isEmpty || !midi.isEmpty else { return }
+        let mute = audio.contains { !$0.isMuted } || midi.contains { !$0.isMuted }
+        // Audio clips as in their menu: switched in the engine, no undo step.
+        for clip in audio where clip.isMuted != mute {
+            clip.isMuted = mute
+            audioEngine.setClipMuted(clip.id, muted: mute)
+        }
+        // MIDI clips as in their menu: one undo step.
+        if !midi.isEmpty {
+            beginClipEdit()
+            for clip in midi {
+                clip.isMuted = mute
+            }
+            endClipEdit()
+            audioEngine.syncAfterClipEdit(tracks, fxChannels: fxChannels)
+        }
+    }
+
     // MARK: Clipboard
 
     /// Copies the selected range, or else the selected clips.

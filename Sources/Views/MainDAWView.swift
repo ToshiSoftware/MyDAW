@@ -198,6 +198,15 @@ public struct MainDAWView: View {
                 case .paste: if !pianoRoll.handle(paste: true) { projectState.paste() }
                 case .selectAll: if !pianoRoll.handle(selectAll: true) { projectState.selectAllClips() }
                 case .clearSelection: if !pianoRoll.handle(clear: true) { projectState.clearSelection() }
+                case .toggleMute: if !pianoRoll.handle(toggleMute: true) { projectState.toggleMuteSelectedClips() }
+                case .delete:
+                    guard !projectState.audioEngine.isRecording else { return }
+                    if !pianoRoll.handle(delete: true) { projectState.deleteSelectedClip() }
+                // Clip commands; the piano roll has none of them, so they do
+                // nothing while it has the keyboard.
+                case .split: if !pianoRoll.hasKeyboard { projectState.splitSelectionAtPlayhead() }
+                case .duplicate: if !pianoRoll.hasKeyboard { projectState.duplicateSelectedClips() }
+                case .merge: if !pianoRoll.hasKeyboard { projectState.mergeSelectedMIDIClips() }
                 }
             }
         )
@@ -509,6 +518,10 @@ private struct MasterExportDialog: View {
 /// Clip-editing keys handled in the arranger (outside text fields).
 private enum EditCommand {
     case cut, copy, paste, selectAll, clearSelection
+    /// ⌘T, ⌘D, ⌘J, ⌃M: the clip commands of the right-click menus.
+    case split, duplicate, merge, toggleMute
+    /// ⌫ / ⌦: the selected clips or range (notes in the piano roll).
+    case delete
 }
 
 private struct SpacebarHandler: NSViewRepresentable {
@@ -619,6 +632,27 @@ private struct SpacebarHandler: NSViewRepresentable {
                         self.edit(command)
                         return nil
                     }
+                    // Clip commands only in the main window, so a plug-in
+                    // window keeps these keys.
+                    let clipCommands: [UInt16: EditCommand] = [
+                        17: .split, 2: .duplicate, 38: .merge
+                    ]
+                    if !hasShift, event.window === self.view?.window,
+                       let command = clipCommands[event.keyCode] {
+                        self.edit(command)
+                        return nil
+                    }
+                }
+
+                // ⌃M (Logic's region mute; ⌘M is the system's Minimize):
+                // mute or unmute the selected clips (notes in the piano roll).
+                if event.keyCode == 46,
+                   modifiers.intersection([.command, .control, .option, .shift]) == .control,
+                   event.window === self.view?.window {
+                    if !event.isARepeat {
+                        self.edit(.toggleMute)
+                    }
+                    return nil
                 }
 
                 guard modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
@@ -633,6 +667,11 @@ private struct SpacebarHandler: NSViewRepresentable {
                     if !event.isARepeat {
                         self.action()
                     }
+                    return nil
+                case 51, 117 where event.window === self.view?.window:
+                    // ⌫ / ⌦ in the main window. The arranger takes no keyboard
+                    // focus, so SwiftUI's onDeleteCommand never reached it.
+                    self.edit(.delete)
                     return nil
                 case 123:
                     self.rewind()

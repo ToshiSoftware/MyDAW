@@ -958,9 +958,6 @@ public struct ArrangerView: View {
                 }
             }
             .background(Color(red: 0.08, green: 0.09, blue: 0.11))
-            .onDeleteCommand {
-                projectState.deleteSelectedClip()
-            }
 
             if isMasterLaneShown {
                 MasterAutomationLane(

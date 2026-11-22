@@ -535,14 +535,23 @@ public final class PianoRollController: ObservableObject {
     /// Edit keys while the piano roll has the keyboard; false leaves the
     /// command to the arranger.
     public func handle(cut: Bool = false, copy: Bool = false, paste: Bool = false,
-                       selectAll: Bool = false, clear: Bool = false) -> Bool {
-        guard hasKeyFocus, clip != nil else { return false }
+                       selectAll: Bool = false, clear: Bool = false, toggleMute: Bool = false,
+                       delete: Bool = false) -> Bool {
+        guard hasKeyboard else { return false }
         if cut { cutSelection() }
         if copy { copySelection() }
         if paste { self.paste() }
         if selectAll { self.selectAll() }
         if clear { selection = [] }
+        // ⌃M: mutes the selected notes, or unmutes them when all are muted.
+        if toggleMute { setSelectionMuted(selectionHasUnmutedNotes) }
+        if delete { deleteSelection() }
         return true
+    }
+
+    /// True while the piano roll has the keyboard (clicked, with a clip open).
+    public var hasKeyboard: Bool {
+        hasKeyFocus && clip != nil
     }
 
     // MARK: Audition

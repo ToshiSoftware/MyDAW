@@ -265,21 +265,22 @@ private enum LaneMenu {
     private static func addEditItems(to menu: NSMenu, _ projectState: ProjectState) {
         let isRecording = projectState.audioEngine.isRecording
         menu.addItem(ClosureMenuItem(String(localized: "Cut"), symbol: "scissors",
-                                     enabled: !isRecording && projectState.hasSelection) {
+                                     enabled: !isRecording && projectState.hasSelection, shortcut: .cut) {
             projectState.cutSelection()
         })
         menu.addItem(ClosureMenuItem(String(localized: "Copy"), symbol: "doc.on.doc",
-                                     enabled: projectState.hasSelection) {
+                                     enabled: projectState.hasSelection, shortcut: .copy) {
             projectState.copySelection()
         })
         menu.addItem(ClosureMenuItem(String(localized: "Paste at Playhead"), symbol: "doc.on.clipboard",
-                                     enabled: !isRecording && projectState.canPaste) {
+                                     enabled: !isRecording && projectState.canPaste, shortcut: .paste) {
             projectState.paste()
         })
         guard projectState.timeSelection != nil else { return }
+        // With a range selected, ⌫ and ⌘T act on the range.
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(String(localized: "Delete Range"), symbol: "delete.left",
-                                     enabled: !isRecording) {
+                                     enabled: !isRecording, shortcut: .delete) {
             projectState.deleteTimeSelection()
         })
         menu.addItem(ClosureMenuItem(String(localized: "Crop to Range"), symbol: "crop",
@@ -287,9 +288,15 @@ private enum LaneMenu {
             projectState.cropToTimeSelection()
         })
         menu.addItem(ClosureMenuItem(String(localized: "Split at Range Edges"), symbol: "square.split.2x1",
-                                     enabled: !isRecording) {
+                                     enabled: !isRecording, shortcut: .split) {
             projectState.splitAtTimeSelection()
         })
+    }
+
+    /// The key of a clip command, unless a range is selected: then the same
+    /// key acts on the range (shown on the range items instead).
+    private static func clipShortcut(_ shortcut: MenuShortcut, _ projectState: ProjectState) -> MenuShortcut? {
+        projectState.timeSelection == nil ? shortcut : nil
     }
 
     /// "Guitar_001.wav, mono 24bit 44.1kHz 7.8MB": the name, then the format
@@ -327,22 +334,26 @@ private enum LaneMenu {
         menu.addItem(ClosureMenuItem(
             String(localized: clip.isMuted ? "Unmute Clip" : "Mute Clip"),
             symbol: clip.isMuted ? "speaker.wave.2" : "speaker.slash",
-            enabled: !isRecording
+            enabled: !isRecording,
+            shortcut: .mute
         ) {
             projectState.toggleMuteMIDIClips(trackId: track.id, clipId: clip.id)
         })
-        menu.addItem(ClosureMenuItem(String(localized: "Duplicate Clip"), symbol: "plus.square.on.square", enabled: !isRecording) {
+        menu.addItem(ClosureMenuItem(String(localized: "Duplicate Clip"), symbol: "plus.square.on.square",
+                                     enabled: !isRecording, shortcut: .duplicate) {
             projectState.duplicateMIDIClips(trackId: track.id, clipId: clip.id)
         })
         menu.addItem(ClosureMenuItem(String(localized: "Split at Cursor"), symbol: "scissors",
-                                     enabled: projectState.canChangeInstrument) {
+                                     enabled: projectState.canChangeInstrument,
+                                     shortcut: clipShortcut(.split, projectState)) {
             projectState.splitMIDIClips(trackId: track.id, clipId: clip.id)
         })
         menu.addItem(ClosureMenuItem(String(localized: "Merge Clips"), symbol: "rectangle.compress.vertical",
-                                     enabled: !isRecording && projectState.canMergeMIDIClips) {
+                                     enabled: !isRecording && projectState.canMergeMIDIClips, shortcut: .merge) {
             projectState.mergeSelectedMIDIClips()
         })
-        menu.addItem(ClosureMenuItem(String(localized: "Delete Clip"), symbol: "trash", enabled: !isRecording) {
+        menu.addItem(ClosureMenuItem(String(localized: "Delete Clip"), symbol: "trash",
+                                     enabled: !isRecording, shortcut: clipShortcut(.delete, projectState)) {
             projectState.deleteMIDIClips(trackId: track.id, clipId: clip.id)
         })
         menu.addItem(.separator())
@@ -420,7 +431,7 @@ private enum LaneMenu {
         case (false, true): muteTitle = String(localized: "Unmute Recordings (\(count))")
         }
         menu.addItem(ClosureMenuItem(muteTitle, symbol: willMute ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                                     enabled: !isRecording) {
+                                     enabled: !isRecording, shortcut: .mute) {
             projectState.toggleMuteMenuTargets(trackId: trackId, clipId: clipId)
         })
 
@@ -428,14 +439,15 @@ private enum LaneMenu {
         if !isMissingOnly {
             menu.addItem(ClosureMenuItem(
                 isMulti ? String(localized: "Duplicate Recordings (\(count))") : String(localized: "Duplicate Recording"),
-                symbol: "plus.square.on.square", enabled: !isRecording
+                symbol: "plus.square.on.square", enabled: !isRecording, shortcut: .duplicate
             ) {
                 projectState.duplicateMenuTargets(trackId: trackId, clipId: clipId)
             })
             let splitCount = projectState.splittableMenuTargets(trackId: trackId, clipId: clipId).count
             menu.addItem(ClosureMenuItem(
                 isMulti ? String(localized: "Split at Cursor (\(splitCount))") : String(localized: "Split at Cursor"),
-                symbol: "scissors", enabled: splitCount > 0 && !isBusy
+                symbol: "scissors", enabled: splitCount > 0 && !isBusy,
+                shortcut: clipShortcut(.split, projectState)
             ) {
                 projectState.splitMenuTargets(trackId: trackId, clipId: clipId)
             })
@@ -443,7 +455,7 @@ private enum LaneMenu {
         }
         menu.addItem(ClosureMenuItem(
             isMulti ? String(localized: "Delete Recordings (\(count))") : String(localized: "Delete Recording"),
-            symbol: "trash", enabled: !isRecording
+            symbol: "trash", enabled: !isRecording, shortcut: clipShortcut(.delete, projectState)
         ) {
             projectState.deleteMenuTargets(trackId: trackId, clipId: clipId)
         })
@@ -639,12 +651,36 @@ private struct MIDIClipPreview: View {
     }
 }
 
+/// The key shown next to a right-click menu item. It is only a label: the
+/// key itself is handled by the main window's key monitor (`SpacebarHandler`)
+/// and the piano roll, so it also works with the menu closed.
+struct MenuShortcut {
+    let key: String
+    let modifiers: NSEvent.ModifierFlags
+
+    static let cut = MenuShortcut(key: "x", modifiers: .command)
+    static let copy = MenuShortcut(key: "c", modifiers: .command)
+    static let paste = MenuShortcut(key: "v", modifiers: .command)
+    static let selectAll = MenuShortcut(key: "a", modifiers: .command)
+    /// Shown as ⌫.
+    static let delete = MenuShortcut(key: String(Character(UnicodeScalar(UInt8(NSBackspaceCharacter)))), modifiers: [])
+    static let split = MenuShortcut(key: "t", modifiers: .command)
+    static let duplicate = MenuShortcut(key: "d", modifiers: .command)
+    static let merge = MenuShortcut(key: "j", modifiers: .command)
+    /// ⌃M, as Logic mutes regions (⌘M is the system's Minimize).
+    static let mute = MenuShortcut(key: "m", modifiers: .control)
+}
+
 final class ClosureMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
 
-    init(_ title: String, symbol: String?, enabled: Bool, handler: @escaping @MainActor () -> Void) {
+    init(_ title: String, symbol: String?, enabled: Bool, shortcut: MenuShortcut? = nil,
+         handler: @escaping @MainActor () -> Void) {
         self.handler = handler
-        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        super.init(title: title, action: #selector(run), keyEquivalent: shortcut?.key ?? "")
+        if let shortcut {
+            keyEquivalentModifierMask = shortcut.modifiers
+        }
         target = self
         isEnabled = enabled
         if let symbol {
