@@ -4,6 +4,8 @@
 # main (scripts/pre-commit.sh); can also be run by hand.
 # Skips the zip when it is already newer than the app; --force always zips.
 # ditto keeps the signature and permissions and adds no __MACOSX folder.
+# --norsrc --noextattr leave out extended attributes (Google Drive IDs etc.): ditto would store them as ._ files
+# inside the bundle, and `unzip` then breaks the code signature ("a sealed resource is missing or invalid").
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -25,5 +27,5 @@ if [ "$1" != "--force" ] && [ -f "$APP_ZIP" ] && [ "$APP_ZIP" -nt "$APP_EXECUTAB
 fi
 
 rm -f "$APP_ZIP"
-ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
+ditto -c -k --norsrc --noextattr --keepParent "$APP_BUNDLE" "$APP_ZIP"
 echo "make-zip: zipped MyDAW $VERSION"
