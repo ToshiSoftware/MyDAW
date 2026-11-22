@@ -570,7 +570,7 @@ AU のパラメータツリーからスライダー一覧を生成する汎用 U
 
 ### V4.0（MIDI）で変わった既存のビュー
 - **`TrackHeaderView`**: インストゥルメントトラックでは、モノ／ステレオと I を出さず、入力の代わりに `InstrumentSelector`（音源名で GUI、▼で差し替え）。メーターは `isAudioRecordArmed` で入力／出力を切り替える。
-- **`WaveformLaneView`**: `MIDIClipView`（クリック・⇧、ドラッグ・⌥、上下でトラック移動、両端のトリム、ダブルクリックでピアノロール）、`MIDIClipPreview`（ノートの縮小図）、`MIDIClipDragImage`。右クリックは `LaneMenu.midiClipMenu`。.mid のドロップは SMF の読み込み。
+- **`WaveformLaneView`**: `MIDIClipView`（クリック・⇧、ドラッグ・⌥、上下でトラック移動、両端のトリム、選択中のクリップのダブルクリックでピアノロール。選択はマウスを押した時点で行う（`onPress`。選択済みのクリップは離した時点で単独選択にして、複数選択のままドラッグできるようにする。タップジェスチャーは離すまで、ダブルタップと並べると判定時間まで待つため使わない）。オーディオクリップ（`AudioClipView`）も同じく押した時点で選択（⌘ は ⌘ドラッグの範囲選択と区別するため離した時点））、`MIDIClipPreview`（ノートの縮小図）、`MIDIClipDragImage`。右クリックは `LaneMenu.midiClipMenu`。.mid のドロップは SMF の読み込み。
 - **`ArrangerView`**: 「インストゥルメントトラックを追加」（＋とヘッダーの右クリック）、別トラックへドラッグ中の MIDI クリップの描画（`midiClipDragPreviews`）、曲の長さに MIDI クリップを含める。
 - **`MixerView`**: 下部パネルの `BottomPanelTab`（ミキサー／ピアノロール）、インストゥルメントの欄（`InstrumentRow`）。パネル全体の右クリック（FX を追加）はミキサー表示のときだけ。
 - **`TransportBarView`**: MIDI 録音の重ね録り／置き換えボタン。録音ボタンの点灯はインストゥルメントトラックの R も数える。

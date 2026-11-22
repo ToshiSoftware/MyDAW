@@ -481,6 +481,12 @@ private struct MIDIClipView: View {
     @State private var dragStartTick: Int?
     @State private var dragTrackDelta = 0
     @State private var trimStartTick: Int?
+    /// The selection was already changed at mouse-down (or the piano roll
+    /// opened), so mouse-up leaves it.
+    @State private var handledOnPress = false
+    /// When the last press began and whether the clip was selected then,
+    /// to tell a double-click.
+    @State private var lastPress: (time: TimeInterval, wasSelected: Bool)?
 
     private static let edgeWidth: CGFloat = 6
 
@@ -500,22 +506,47 @@ private struct MIDIClipView: View {
             .overlay(alignment: .trailing) { edgeHandle(isStart: false) }
             .contentShape(Rectangle())
             .gesture(moveGesture)
-            .onTapGesture(count: 2) {
-                projectState.selectMIDIClip(trackId: track.id, clipId: clip.id)
-                projectState.openPianoRoll(trackId: track.id, clipId: clip.id)
-            }
-            .onTapGesture {
-                projectState.selectMIDIClip(
-                    trackId: track.id,
-                    clipId: clip.id,
-                    toggle: NSEvent.modifierFlags.contains(.shift)
-                )
-            }
+            // Selected at mouse-down. Tap gestures waited: one for the
+            // mouse-up, and a single tap next to a double tap also for the
+            // double-click interval.
+            .onPress(clickTolerance: 3, down: pressDown, up: pressUp)
             .offset(x: CGFloat(clip.startTick) * pixelsPerTick, y: 2)
             // While dragged to another track the arranger draws it above
             // every lane (see ArrangerView.midiClipDragPreviews).
             .opacity(projectState.midiDragVerticalOffset != 0 && isSelected ? 0 : 1)
             .allowsHitTesting(canEdit)
+    }
+
+    /// Mouse-down: a press on an unselected clip selects it (Shift adds).
+    /// A double-click opens the piano roll only on a clip that was selected
+    /// before it; on an unselected one the second click does nothing.
+    private func pressDown() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastPress, now - last.time <= NSEvent.doubleClickInterval {
+            lastPress = nil
+            handledOnPress = true
+            if last.wasSelected && isSelected {
+                projectState.selectMIDIClip(trackId: track.id, clipId: clip.id)
+                projectState.openPianoRoll(trackId: track.id, clipId: clip.id)
+            }
+            return
+        }
+        lastPress = (now, isSelected)
+        handledOnPress = !isSelected
+        if !isSelected {
+            projectState.selectMIDIClip(trackId: track.id, clipId: clip.id,
+                                        toggle: NSEvent.modifierFlags.contains(.shift))
+        }
+    }
+
+    /// Mouse-up without a drag on a clip that was already selected: it
+    /// becomes the only selection (Shift removes it), so a press on a
+    /// selection can still drag the whole selection.
+    private func pressUp(isClick: Bool) {
+        defer { handledOnPress = false }
+        guard isClick, !handledOnPress else { return }
+        projectState.selectMIDIClip(trackId: track.id, clipId: clip.id,
+                                    toggle: NSEvent.modifierFlags.contains(.shift))
     }
 
     private var moveGesture: some Gesture {
@@ -796,6 +827,8 @@ private struct AudioClipView: View {
     @State private var dragStartLocationY: CGFloat?
     @State private var dragTargetTrackId: UUID?
     @State private var isRangeDragging = false
+    /// The selection was already changed at mouse-down, so mouse-up leaves it.
+    @State private var handledOnPress = false
     @State private var resizeStartTime: Double?
     @State private var resizeSourceStartTime: Double?
     @State private var resizeDuration: Double?
@@ -1125,9 +1158,8 @@ private struct AudioClipView: View {
                             )
                     }
             )
-            .onTapGesture {
-                selectOnClick()
-            }
+            // Selected at mouse-down; a tap gesture waited for the mouse-up.
+            .onPress(clickTolerance: 10, down: pressDown, up: pressUp)
             // The take being recorded cannot be moved, trimmed or faded
             // until its file is finalized.
             .allowsHitTesting(!isActiveClip)
@@ -1182,6 +1214,30 @@ private struct AudioClipView: View {
 
     /// Plain click selects only this clip; Shift- or Cmd-click adds it to or
     /// removes it from the selection.
+    /// Mouse-down on an unselected clip selects it (Shift adds). Cmd waits
+    /// for mouse-up, as Cmd-drag selects a time range instead.
+    private func pressDown() {
+        let modifiers = NSEvent.modifierFlags
+        let isSelected = track.selectedClipIDs.contains(clip.id)
+        handledOnPress = !modifiers.contains(.command) && !isSelected
+        guard handledOnPress else { return }
+        if modifiers.contains(.shift) {
+            projectState.toggleClipSelection(trackId: track.id, clipId: clip.id)
+        } else {
+            projectState.selectClip(trackId: track.id, clipId: clip.id)
+        }
+    }
+
+    /// Mouse-up without a drag: the click as before (Cmd / Shift toggle,
+    /// otherwise the only selection), unless mouse-down already selected.
+    /// A press on a selected clip waits for this, so it can still drag the
+    /// whole selection.
+    private func pressUp(isClick: Bool) {
+        defer { handledOnPress = false }
+        guard isClick, !handledOnPress else { return }
+        selectOnClick()
+    }
+
     private func selectOnClick() {
         let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) || modifiers.contains(.shift) {
@@ -1464,6 +1520,38 @@ private struct AudioClipView: View {
 }
 
 /// Small value readout shown next to a handle while it is being dragged.
+/// Calls `down` at mouse-down and `up` at mouse-up; `up` gets whether the
+/// pointer stayed within `clickTolerance` points (a click, not a drag). It
+/// runs alongside the view's other gestures.
+private struct PressModifier: ViewModifier {
+    let clickTolerance: CGFloat
+    let down: () -> Void
+    let up: (_ isClick: Bool) -> Void
+    @State private var isPressed = false
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { _ in
+                    guard !isPressed else { return }
+                    isPressed = true
+                    down()
+                }
+                .onEnded { value in
+                    isPressed = false
+                    up(hypot(value.translation.width, value.translation.height) < clickTolerance)
+                }
+        )
+    }
+}
+
+private extension View {
+    func onPress(clickTolerance: CGFloat, down: @escaping () -> Void,
+                 up: @escaping (_ isClick: Bool) -> Void) -> some View {
+        modifier(PressModifier(clickTolerance: clickTolerance, down: down, up: up))
+    }
+}
+
 private struct EditValueTooltip: View {
     let text: String
 
